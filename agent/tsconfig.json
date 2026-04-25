@@ -11,6 +11,7 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmitOnError": true,
+    "types": ["node"],
     "verbatimModuleSyntax": true
   },
   "include": ["src/**/*.ts"]

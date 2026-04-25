@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "pnpm --filter @agent-invest/agent dev",
     "build": "pnpm -r --if-present build",
+    "db:migrate": "pnpm --filter @agent-invest/agent db:migrate",
     "lint": "eslint .",
     "format": "prettier --check ."
   },

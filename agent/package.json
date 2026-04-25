@@ -6,14 +6,17 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/api/server.ts",
-    "start": "node dist/api/server.js"
+    "start": "node dist/api/server.js",
+    "db:migrate": "pnpm build && node dist/db/migrate.js"
   },
   "dependencies": {
     "fastify": "^5.6.1",
-    "pino": "^10.1.0"
+    "pino": "^10.1.0",
+    "pg": "^8.16.3"
   },
   "devDependencies": {
     "@types/node": "^24.9.1",
+    "@types/pg": "^8.15.2",
     "tsx": "^4.20.6"
   }
 }
