@@ -1,2 +1,7 @@
 node_modules/
 dist/
+tasks
+tools
+.claude
+plan.md
+task-decomposer.md
