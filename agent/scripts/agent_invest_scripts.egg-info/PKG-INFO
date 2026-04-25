@@ -1,6 +1,0 @@
-Metadata-Version: 2.4
-Name: agent-invest-scripts
-Version: 0.1.0
-Summary: Python agent scripts and shared libraries for agent-invest
-Requires-Python: >=3.12
-Requires-Dist: polars>=1.8.0
