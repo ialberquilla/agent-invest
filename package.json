@@ -3,6 +3,7 @@
   "private": true,
   "packageManager": "pnpm@10.19.0",
   "scripts": {
+    "dev": "pnpm --filter @agent-invest/agent dev",
     "build": "pnpm -r --if-present build",
     "lint": "eslint .",
     "format": "prettier --check ."
