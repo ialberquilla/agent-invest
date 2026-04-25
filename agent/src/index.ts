@@ -5,4 +5,10 @@ export {
   buildToolManifestSection,
   MEMORY_DISCIPLINE_GUIDANCE,
 } from "./agent/prompt.js";
+export {
+  DEFAULT_OPENCODE_MODEL,
+  createSessionManager,
+  getOrCreateSession,
+  resolveOpencodeModel,
+} from "./agent/session.js";
 export * from "./storage/s3.js";
