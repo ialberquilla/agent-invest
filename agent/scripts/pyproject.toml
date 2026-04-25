@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-invest-scripts"
+version = "0.1.0"
+description = "Python agent scripts and shared libraries for agent-invest"
+requires-python = ">=3.12"
+dependencies = [
+  "polars>=1.8.0",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0.0",
+  "ruff>=0.11.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["agent_invest_scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+
+[tool.uv]
+default-groups = ["dev"]
