@@ -4,6 +4,7 @@
   "packageManager": "pnpm@10.19.0",
   "scripts": {
     "build": "pnpm -r --if-present build",
+    "db:migrate": "pnpm --filter @agent-invest/agent db:migrate",
     "lint": "eslint .",
     "format": "prettier --check ."
   },
