@@ -1,1 +1,1 @@
-"""Standalone ingestion and maintenance scripts for agent-invest."""
+"""Non-agent Python entrypoints for ingestion and maintenance tasks."""

@@ -31,11 +31,11 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-
 [tool.hatch.build.targets.wheel]
 packages = ["agent_invest_scripts", "scripts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.hatch.build.targets.sdist]
 include = [
