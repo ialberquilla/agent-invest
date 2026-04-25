@@ -1,1 +1,1 @@
-"""Python entrypoints and shared libraries for agent-invest."""
+"""Python entrypoints and shared helpers for agent-facing scripts."""

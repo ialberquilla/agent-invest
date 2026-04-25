@@ -1,12 +1,12 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
 
 [project]
 name = "agent-invest-scripts"
 version = "0.1.0"
-description = "Python agent scripts and shared libraries for agent-invest"
-requires-python = ">=3.12"
+description = "Agent-facing Python scripts for agent-invest."
+requires-python = ">=3.12,<3.13"
 dependencies = [
   "polars>=1.8.0",
 ]
@@ -14,17 +14,17 @@ dependencies = [
 [dependency-groups]
 dev = [
   "pytest>=8.0.0",
-  "ruff>=0.11.0",
+  "ruff>=0.11.13,<0.12.0",
 ]
-
-[tool.setuptools.packages.find]
-include = ["agent_invest_scripts*"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.uv]
 default-groups = ["dev"]
