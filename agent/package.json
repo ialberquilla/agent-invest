@@ -7,12 +7,14 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/api/server.ts",
     "start": "node dist/api/server.js",
-    "db:migrate": "pnpm build && node dist/db/migrate.js"
+    "db:migrate": "pnpm build && node dist/db/migrate.js",
+    "s3:smoke": "tsx src/storage/smoke.ts"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1037.0",
     "fastify": "^5.6.1",
-    "pino": "^10.1.0",
-    "pg": "^8.16.3"
+    "pg": "^8.16.3",
+    "pino": "^10.1.0"
   },
   "devDependencies": {
     "@types/node": "^24.9.1",
