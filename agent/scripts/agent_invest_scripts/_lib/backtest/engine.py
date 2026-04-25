@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 
 import polars as pl
+
+from agent_invest_scripts._lib.signals.cross_sectional_momentum import (
+    select_top_k,
+    trailing_return_scores,
+)
 
 from .costs import TradingCostModel, count_rebalance_swaps, portfolio_turnover
 from .metrics import calculate_summary_metrics
@@ -44,7 +48,7 @@ def run_cross_sectional_momentum_backtest(
     returns_wide = prices_wide.select(
         "date", *[pl.col(column).pct_change().alias(column) for column in asset_columns]
     )
-    score_wide = _trailing_return_scores(
+    score_wide = trailing_return_scores(
         prices_wide, lookback_days=lookback_days, skip_days=skip_days
     )
 
@@ -66,7 +70,7 @@ def run_cross_sectional_momentum_backtest(
         score_row = score_rows.get(signal_date, {})
         regime_on = regime_by_date.get(signal_date, True)
         ranked = (
-            _select_top_k(score_row, top_k=top_k, positive_only=True)
+            select_top_k(score_row, top_k=top_k, positive_only=True)
             if regime_on
             else []
         )
@@ -216,44 +220,6 @@ def _wide_prices(prices_long: pl.DataFrame, universe: list[str] | None) -> pl.Da
         .pivot(values="price", index="date", on="coin_id", aggregate_function="last")
         .sort("date")
     )
-
-
-def _trailing_return_scores(
-    prices_wide: pl.DataFrame, lookback_days: int, skip_days: int = 0
-) -> pl.DataFrame:
-    value_columns = [column for column in prices_wide.columns if column != "date"]
-    expressions = []
-
-    for column in value_columns:
-        if skip_days:
-            expression = (
-                pl.col(column).shift(skip_days)
-                / pl.col(column).shift(skip_days + lookback_days)
-                - 1.0
-            ).alias(column)
-        else:
-            expression = (
-                pl.col(column) / pl.col(column).shift(lookback_days) - 1.0
-            ).alias(column)
-        expressions.append(expression)
-
-    return prices_wide.select("date", *expressions)
-
-
-def _select_top_k(
-    scores_row: Mapping[str, object], top_k: int, positive_only: bool = True
-) -> list[tuple[str, float]]:
-    ranked: list[tuple[str, float]] = []
-    for coin_id, value in scores_row.items():
-        if coin_id == "date" or value is None:
-            continue
-        score = float(value)
-        if positive_only and score <= 0:
-            continue
-        ranked.append((coin_id, score))
-
-    ranked.sort(key=lambda item: item[1], reverse=True)
-    return ranked[:top_k]
 
 
 def _rebalance_signal_dates(dates: list[date], rebalance_frequency: str) -> list[date]:
