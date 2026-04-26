@@ -21,6 +21,7 @@ const NOT_IMPLEMENTED_RESPONSE = {
 } as const;
 
 const POLL_INTERVAL_MS = 100;
+const DEFAULT_TURN_LOCK_TIMEOUT_MS = 5_000;
 
 type QueryResult<TRow extends QueryResultRow> = {
   rowCount: number | null;
@@ -32,6 +33,14 @@ type DatabaseQueryable = {
     text: string,
     values?: unknown[],
   ): Promise<QueryResult<TRow>>;
+};
+
+type DatabaseClient = DatabaseQueryable & {
+  release(): void;
+};
+
+type DatabasePool = DatabaseQueryable & {
+  connect(): Promise<DatabaseClient>;
 };
 
 type RouteParams = {
@@ -86,10 +95,11 @@ type RunState = {
 };
 
 type ServerDependencies = {
-  db?: DatabaseQueryable;
+  db?: DatabasePool;
   buildSystemPrompt?: typeof defaultBuildSystemPrompt;
   getSessionId?: (strategyId: string) => Promise<string>;
   getOpencodeTurnClient?: () => Promise<OpencodeTurnClient>;
+  turnLockTimeoutMs?: number;
 };
 
 class RouteError extends Error {
@@ -113,6 +123,22 @@ function getPort() {
   return port;
 }
 
+function resolveTurnLockTimeoutMs(env: NodeJS.ProcessEnv = process.env) {
+  const rawTimeout = env.TURN_LOCK_TIMEOUT_MS?.trim();
+
+  if (!rawTimeout) {
+    return DEFAULT_TURN_LOCK_TIMEOUT_MS;
+  }
+
+  const timeoutMs = Number.parseInt(rawTimeout, 10);
+
+  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
+    throw new Error(`Invalid TURN_LOCK_TIMEOUT_MS value: ${rawTimeout}`);
+  }
+
+  return timeoutMs;
+}
+
 async function notImplemented(_request: FastifyRequest, reply: FastifyReply) {
   return reply.code(501).send(NOT_IMPLEMENTED_RESPONSE);
 }
@@ -128,6 +154,36 @@ function errorResponse(code: string, message: string) {
 
 function getErrorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function getPostgresErrorCode(error: unknown) {
+  if (typeof error !== "object" || error === null) {
+    return undefined;
+  }
+
+  const { code } = error as { code?: unknown };
+
+  return typeof code === "string" ? code : undefined;
+}
+
+function formatTurnLockTimeoutMessage(timeoutMs: number) {
+  return `Timed out after ${timeoutMs}ms waiting for the user turn lock`;
+}
+
+function toRouteError(error: unknown, turnLockTimeoutMs: number) {
+  if (error instanceof RouteError) {
+    return error;
+  }
+
+  if (getPostgresErrorCode(error) === "55P03") {
+    return new RouteError(
+      409,
+      "turn_lock_timeout",
+      formatTurnLockTimeoutMessage(turnLockTimeoutMs),
+    );
+  }
+
+  return error;
 }
 
 function getAssistantErrorMessage(result: OpencodePromptResult) {
@@ -238,6 +294,40 @@ async function ensureStrategyExists(
 
   if (!strategy || strategy.user_id !== userId) {
     throw new RouteError(404, "strategy_not_found", "Strategy not found");
+  }
+}
+
+async function acquireUserTurnClient(
+  db: DatabasePool,
+  userId: string,
+  turnLockTimeoutMs: number,
+) {
+  const client = await db.connect();
+  let inTransaction = false;
+
+  try {
+    await client.query("BEGIN");
+    inTransaction = true;
+    await client.query("SELECT set_config('lock_timeout', $1, true)", [
+      `${turnLockTimeoutMs}ms`,
+    ]);
+    await client.query(
+      "SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE",
+      [userId],
+    );
+
+    return client;
+  } catch (error) {
+    if (inTransaction) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {
+        // Prefer the original lock acquisition error.
+      }
+    }
+
+    client.release();
+    throw toRouteError(error, turnLockTimeoutMs);
   }
 }
 
@@ -413,12 +503,13 @@ function sendRunResponse(reply: FastifyReply, run: RunState) {
 async function executeRun(options: {
   app: ReturnType<typeof Fastify>;
   buildSystemPrompt: typeof defaultBuildSystemPrompt;
-  db: DatabaseQueryable;
+  db: DatabasePool;
   getOpencodeTurnClient: () => Promise<OpencodeTurnClient>;
   getSessionId: (strategyId: string) => Promise<string>;
   runId: string;
   strategyId: string;
   text: string;
+  turnClient: DatabaseClient;
   userId: string;
 }) {
   const {
@@ -430,8 +521,10 @@ async function executeRun(options: {
     runId,
     strategyId,
     text,
+    turnClient,
     userId,
   } = options;
+  let inTransaction = true;
 
   try {
     const systemPrompt = await buildSystemPrompt({ userId, strategyId });
@@ -450,7 +543,7 @@ async function executeRun(options: {
     }
 
     await markRunCompleted(
-      db,
+      turnClient,
       runId,
       sessionId,
       result.info.id,
@@ -459,7 +552,7 @@ async function executeRun(options: {
 
     try {
       const session = await opencode.getSession(sessionId);
-      await maybeUpdateStrategyTitle(db, strategyId, session.title);
+      await maybeUpdateStrategyTitle(turnClient, strategyId, session.title);
     } catch (error) {
       app.log.warn(
         {
@@ -470,8 +563,27 @@ async function executeRun(options: {
         "Failed to refresh strategy title after run completion",
       );
     }
+
+    await turnClient.query("COMMIT");
+    inTransaction = false;
   } catch (error) {
     const message = getErrorMessage(error);
+
+    if (inTransaction) {
+      try {
+        await turnClient.query("ROLLBACK");
+        inTransaction = false;
+      } catch (rollbackError) {
+        app.log.error(
+          {
+            error: getErrorMessage(rollbackError),
+            runId,
+            strategyId,
+          },
+          "Failed to roll back turn transaction",
+        );
+      }
+    }
 
     try {
       await markRunFailed(db, runId, message);
@@ -494,16 +606,20 @@ async function executeRun(options: {
       },
       "Failed to execute agent turn",
     );
+  } finally {
+    turnClient.release();
   }
 }
 
 export function buildServer(dependencies: ServerDependencies = {}) {
-  const db = dependencies.db ?? (pg as unknown as DatabaseQueryable);
+  const db = dependencies.db ?? (pg as unknown as DatabasePool);
   const buildSystemPrompt =
     dependencies.buildSystemPrompt ?? defaultBuildSystemPrompt;
   const getSessionId = dependencies.getSessionId ?? getOrCreateSession;
   const getOpencodeTurnClient =
     dependencies.getOpencodeTurnClient ?? createOpencodeTurnClient;
+  const turnLockTimeoutMs =
+    dependencies.turnLockTimeoutMs ?? resolveTurnLockTimeoutMs();
   const app = Fastify({
     loggerInstance: pino(),
   });
@@ -527,9 +643,25 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
         await ensureStrategyExists(db, userId, strategyId);
 
+        const turnClient = await acquireUserTurnClient(
+          db,
+          userId,
+          turnLockTimeoutMs,
+        );
+
         const runId = randomUUID();
 
-        await insertRunStart(db, runId, strategyId);
+        try {
+          await insertRunStart(db, runId, strategyId);
+        } catch (error) {
+          try {
+            await turnClient.query("ROLLBACK");
+          } finally {
+            turnClient.release();
+          }
+
+          throw error;
+        }
 
         void executeRun({
           app,
@@ -540,6 +672,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
           runId,
           strategyId,
           text,
+          turnClient,
           userId,
         });
 
@@ -557,10 +690,12 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
         return sendRunResponse(reply, run);
       } catch (error) {
-        if (error instanceof RouteError) {
+        const routeError = toRouteError(error, turnLockTimeoutMs);
+
+        if (routeError instanceof RouteError) {
           return reply
-            .code(error.statusCode)
-            .send(errorResponse(error.code, error.message));
+            .code(routeError.statusCode)
+            .send(errorResponse(routeError.code, routeError.message));
         }
 
         request.log.error(error);
@@ -593,10 +728,12 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
         return sendRunResponse(reply, run);
       } catch (error) {
-        if (error instanceof RouteError) {
+        const routeError = toRouteError(error, turnLockTimeoutMs);
+
+        if (routeError instanceof RouteError) {
           return reply
-            .code(error.statusCode)
-            .send(errorResponse(error.code, error.message));
+            .code(routeError.statusCode)
+            .send(errorResponse(routeError.code, routeError.message));
         }
 
         request.log.error(error);

@@ -30,174 +30,347 @@ type EventState = {
   payload: Record<string, unknown>;
 };
 
+type Deferred<T> = {
+  promise: Promise<T>;
+  resolve(value: T | PromiseLike<T>): void;
+  reject(reason?: unknown): void;
+};
+
+type ClientState = {
+  id: number;
+  lockTimeoutMs: number;
+  lockedUserIds: Set<string>;
+};
+
+type LockWaiter = {
+  client: ClientState;
+  reject(reason?: unknown): void;
+  resolve(): void;
+  timer?: NodeJS.Timeout;
+};
+
 function createState() {
   return {
     users: new Set<string>(),
     strategies: new Map<string, StrategyState>(),
     runs: new Map<string, RunState>(),
     events: new Map<string, EventState[]>(),
+    nextClientId: 1,
+    userLockQueues: new Map<string, LockWaiter[]>(),
+    userLocks: new Map<string, number>(),
   };
 }
 
+function createDeferred<T = void>(): Deferred<T> {
+  let resolve!: Deferred<T>["resolve"];
+  let reject!: Deferred<T>["reject"];
+  const promise = new Promise<T>((nextResolve, nextReject) => {
+    resolve = nextResolve;
+    reject = nextReject;
+  });
+
+  return { promise, reject, resolve };
+}
+
+function sleep(milliseconds: number) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function createDatabaseDouble(state: ReturnType<typeof createState>) {
+  async function acquireUserLock(client: ClientState, userId: string) {
+    const currentOwner = state.userLocks.get(userId);
+
+    if (currentOwner === undefined || currentOwner === client.id) {
+      state.userLocks.set(userId, client.id);
+      client.lockedUserIds.add(userId);
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      const waiter: LockWaiter = {
+        client,
+        reject,
+        resolve: () => {
+          if (waiter.timer) {
+            clearTimeout(waiter.timer);
+          }
+
+          state.userLocks.set(userId, client.id);
+          client.lockedUserIds.add(userId);
+          resolve();
+        },
+      };
+      const queue = state.userLockQueues.get(userId) ?? [];
+
+      if (client.lockTimeoutMs > 0) {
+        waiter.timer = setTimeout(() => {
+          state.userLockQueues.set(
+            userId,
+            (state.userLockQueues.get(userId) ?? []).filter(
+              (queuedWaiter) => queuedWaiter !== waiter,
+            ),
+          );
+
+          reject(
+            Object.assign(
+              new Error("canceling statement due to lock timeout"),
+              {
+                code: "55P03",
+              },
+            ),
+          );
+        }, client.lockTimeoutMs);
+      }
+
+      queue.push(waiter);
+      state.userLockQueues.set(userId, queue);
+    });
+  }
+
+  function releaseUserLocks(client: ClientState) {
+    for (const userId of client.lockedUserIds) {
+      if (state.userLocks.get(userId) !== client.id) {
+        continue;
+      }
+
+      const queue = state.userLockQueues.get(userId) ?? [];
+      const nextWaiter = queue.shift();
+
+      if (queue.length > 0) {
+        state.userLockQueues.set(userId, queue);
+      } else {
+        state.userLockQueues.delete(userId);
+      }
+
+      if (!nextWaiter) {
+        state.userLocks.delete(userId);
+        continue;
+      }
+
+      nextWaiter.resolve();
+    }
+
+    client.lockedUserIds.clear();
+  }
+
+  async function executeQuery<TRow extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values: unknown[] = [],
+    client?: ClientState,
+  ): Promise<QueryResult<TRow>> {
+    if (text === "BEGIN") {
+      return { rowCount: null, rows: [] as TRow[] };
+    }
+
+    if (text === "COMMIT" || text === "ROLLBACK") {
+      if (client) {
+        releaseUserLocks(client);
+      }
+
+      return { rowCount: null, rows: [] as TRow[] };
+    }
+
+    if (text === "SELECT set_config('lock_timeout', $1, true)") {
+      if (client) {
+        const rawTimeout = String(values[0]);
+        client.lockTimeoutMs = Number.parseInt(
+          rawTimeout.replace(/ms$/, ""),
+          10,
+        );
+      }
+
+      return { rowCount: 1, rows: [] as TRow[] };
+    }
+
+    if (text === "SELECT user_id FROM users WHERE user_id = $1 FOR UPDATE") {
+      assert.ok(client);
+      await acquireUserLock(client, String(values[0]));
+
+      return {
+        rowCount: state.users.has(String(values[0])) ? 1 : 0,
+        rows: state.users.has(String(values[0]))
+          ? ([{ user_id: String(values[0]) }] as unknown as TRow[])
+          : ([] as TRow[]),
+      };
+    }
+
+    if (text.startsWith("INSERT INTO users")) {
+      state.users.add(String(values[0]));
+      return { rowCount: 1, rows: [] as TRow[] };
+    }
+
+    if (text.startsWith("INSERT INTO strategies")) {
+      const strategyId = String(values[0]);
+
+      if (!state.strategies.has(strategyId)) {
+        state.strategies.set(strategyId, {
+          userId: String(values[1]),
+          opencodeSessionId: String(values[2]),
+          title: String(values[3]),
+          lastUsedAt: new Date().toISOString(),
+        });
+      }
+
+      return { rowCount: 1, rows: [] as TRow[] };
+    }
+
+    if (text === "SELECT user_id FROM strategies WHERE strategy_id = $1") {
+      const strategy = state.strategies.get(String(values[0]));
+
+      return {
+        rowCount: strategy ? 1 : 0,
+        rows: strategy
+          ? ([{ user_id: strategy.userId }] as unknown as TRow[])
+          : ([] as TRow[]),
+      };
+    }
+
+    if (text.startsWith("UPDATE strategies SET last_used_at = NOW()")) {
+      const strategy = state.strategies.get(String(values[0]));
+
+      if (strategy) {
+        strategy.lastUsedAt = new Date().toISOString();
+      }
+
+      return { rowCount: strategy ? 1 : 0, rows: [] as TRow[] };
+    }
+
+    if (
+      text ===
+      "INSERT INTO runs (run_id, strategy_id, status) VALUES ($1, $2, $3)"
+    ) {
+      state.runs.set(String(values[0]), {
+        strategyId: String(values[1]),
+        status: String(values[2]),
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        exitCode: null,
+      });
+
+      return { rowCount: 1, rows: [] as TRow[] };
+    }
+
+    if (
+      text ===
+      "INSERT INTO events (run_id, seq, type, payload) VALUES ($1, $2, $3, $4::jsonb)"
+    ) {
+      const runId = String(values[0]);
+      const payload = JSON.parse(String(values[3])) as Record<string, unknown>;
+      const events = state.events.get(runId) ?? [];
+
+      events.push({
+        payload,
+        seq: Number(values[1]),
+        type: String(values[2]),
+      });
+      state.events.set(runId, events);
+
+      return { rowCount: 1, rows: [] as TRow[] };
+    }
+
+    if (
+      text ===
+      "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3 WHERE run_id = $1"
+    ) {
+      const run = state.runs.get(String(values[0]));
+
+      if (run) {
+        run.status = String(values[1]);
+        run.endedAt = new Date().toISOString();
+        run.exitCode = Number(values[2]);
+      }
+
+      return { rowCount: run ? 1 : 0, rows: [] as TRow[] };
+    }
+
+    if (text.startsWith("UPDATE strategies SET title = $2")) {
+      const strategy = state.strategies.get(String(values[0]));
+
+      if (strategy && !strategy.title.trim()) {
+        strategy.title = String(values[1]);
+      }
+
+      return { rowCount: strategy ? 1 : 0, rows: [] as TRow[] };
+    }
+
+    if (
+      text.startsWith(
+        "SELECT r.run_id, r.status, r.started_at, r.ended_at, r.exit_code",
+      )
+    ) {
+      const [userId, strategyId, runId] = values.map(String);
+      const strategy = state.strategies.get(strategyId);
+      const run = state.runs.get(runId);
+
+      if (
+        !strategy ||
+        !run ||
+        strategy.userId !== userId ||
+        run.strategyId !== strategyId
+      ) {
+        return { rowCount: 0, rows: [] as TRow[] };
+      }
+
+      return {
+        rowCount: 1,
+        rows: [
+          {
+            ended_at: run.endedAt,
+            exit_code: run.exitCode,
+            run_id: runId,
+            started_at: run.startedAt,
+            status: run.status,
+          },
+        ] as unknown as TRow[],
+      };
+    }
+
+    if (text.startsWith("SELECT type, payload FROM events")) {
+      const runId = String(values[0]);
+      const event = [...(state.events.get(runId) ?? [])]
+        .filter(({ type }) => type === "run.completed" || type === "run.failed")
+        .sort((left, right) => right.seq - left.seq)[0];
+
+      return {
+        rowCount: event ? 1 : 0,
+        rows: event
+          ? ([
+              { payload: event.payload, type: event.type },
+            ] as unknown as TRow[])
+          : ([] as TRow[]),
+      };
+    }
+
+    throw new Error(`Unexpected query: ${text}`);
+  }
+
   return {
+    async connect() {
+      const clientState: ClientState = {
+        id: state.nextClientId,
+        lockedUserIds: new Set<string>(),
+        lockTimeoutMs: 0,
+      };
+
+      state.nextClientId += 1;
+
+      return {
+        async query<TRow extends QueryResultRow = QueryResultRow>(
+          text: string,
+          values: unknown[] = [],
+        ) {
+          return executeQuery<TRow>(text, values, clientState);
+        },
+        release() {
+          releaseUserLocks(clientState);
+        },
+      };
+    },
     async query<TRow extends QueryResultRow = QueryResultRow>(
       text: string,
       values: unknown[] = [],
-    ): Promise<QueryResult<TRow>> {
-      if (text.startsWith("INSERT INTO users")) {
-        state.users.add(String(values[0]));
-        return { rowCount: 1, rows: [] as TRow[] };
-      }
-
-      if (text.startsWith("INSERT INTO strategies")) {
-        const strategyId = String(values[0]);
-
-        if (!state.strategies.has(strategyId)) {
-          state.strategies.set(strategyId, {
-            userId: String(values[1]),
-            opencodeSessionId: String(values[2]),
-            title: String(values[3]),
-            lastUsedAt: new Date().toISOString(),
-          });
-        }
-
-        return { rowCount: 1, rows: [] as TRow[] };
-      }
-
-      if (text === "SELECT user_id FROM strategies WHERE strategy_id = $1") {
-        const strategy = state.strategies.get(String(values[0]));
-
-        return {
-          rowCount: strategy ? 1 : 0,
-          rows: strategy
-            ? ([{ user_id: strategy.userId }] as unknown as TRow[])
-            : ([] as TRow[]),
-        };
-      }
-
-      if (text.startsWith("UPDATE strategies SET last_used_at = NOW()")) {
-        const strategy = state.strategies.get(String(values[0]));
-
-        if (strategy) {
-          strategy.lastUsedAt = new Date().toISOString();
-        }
-
-        return { rowCount: strategy ? 1 : 0, rows: [] as TRow[] };
-      }
-
-      if (
-        text ===
-        "INSERT INTO runs (run_id, strategy_id, status) VALUES ($1, $2, $3)"
-      ) {
-        state.runs.set(String(values[0]), {
-          strategyId: String(values[1]),
-          status: String(values[2]),
-          startedAt: new Date().toISOString(),
-          endedAt: null,
-          exitCode: null,
-        });
-
-        return { rowCount: 1, rows: [] as TRow[] };
-      }
-
-      if (
-        text ===
-        "INSERT INTO events (run_id, seq, type, payload) VALUES ($1, $2, $3, $4::jsonb)"
-      ) {
-        const runId = String(values[0]);
-        const payload = JSON.parse(String(values[3])) as Record<
-          string,
-          unknown
-        >;
-        const events = state.events.get(runId) ?? [];
-
-        events.push({
-          payload,
-          seq: Number(values[1]),
-          type: String(values[2]),
-        });
-        state.events.set(runId, events);
-
-        return { rowCount: 1, rows: [] as TRow[] };
-      }
-
-      if (
-        text ===
-        "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3 WHERE run_id = $1"
-      ) {
-        const run = state.runs.get(String(values[0]));
-
-        if (run) {
-          run.status = String(values[1]);
-          run.endedAt = new Date().toISOString();
-          run.exitCode = Number(values[2]);
-        }
-
-        return { rowCount: run ? 1 : 0, rows: [] as TRow[] };
-      }
-
-      if (text.startsWith("UPDATE strategies SET title = $2")) {
-        const strategy = state.strategies.get(String(values[0]));
-
-        if (strategy && !strategy.title.trim()) {
-          strategy.title = String(values[1]);
-        }
-
-        return { rowCount: strategy ? 1 : 0, rows: [] as TRow[] };
-      }
-
-      if (
-        text.startsWith(
-          "SELECT r.run_id, r.status, r.started_at, r.ended_at, r.exit_code",
-        )
-      ) {
-        const [userId, strategyId, runId] = values.map(String);
-        const strategy = state.strategies.get(strategyId);
-        const run = state.runs.get(runId);
-
-        if (
-          !strategy ||
-          !run ||
-          strategy.userId !== userId ||
-          run.strategyId !== strategyId
-        ) {
-          return { rowCount: 0, rows: [] as TRow[] };
-        }
-
-        return {
-          rowCount: 1,
-          rows: [
-            {
-              ended_at: run.endedAt,
-              exit_code: run.exitCode,
-              run_id: runId,
-              started_at: run.startedAt,
-              status: run.status,
-            },
-          ] as unknown as TRow[],
-        };
-      }
-
-      if (text.startsWith("SELECT type, payload FROM events")) {
-        const runId = String(values[0]);
-        const event = [...(state.events.get(runId) ?? [])]
-          .filter(
-            ({ type }) => type === "run.completed" || type === "run.failed",
-          )
-          .sort((left, right) => right.seq - left.seq)[0];
-
-        return {
-          rowCount: event ? 1 : 0,
-          rows: event
-            ? ([
-                { payload: event.payload, type: event.type },
-              ] as unknown as TRow[])
-            : ([] as TRow[]),
-        };
-      }
-
-      throw new Error(`Unexpected query: ${text}`);
+    ) {
+      return executeQuery<TRow>(text, values);
     },
   };
 }
@@ -367,6 +540,291 @@ test("GET /runs/{run_id}?wait waits for async completion and returns the reply",
       status: "completed",
     });
   } finally {
+    await app.close();
+  }
+});
+
+test("same-user turns serialize across strategies", async () => {
+  const state = createState();
+  const firstBuildStarted = createDeferred<void>();
+  const releaseFirstBuild = createDeferred<void>();
+  const buildOrder: string[] = [];
+  const app = buildServer({
+    buildSystemPrompt: async ({ strategyId, userId }) => {
+      buildOrder.push(`${userId}/${strategyId}`);
+
+      if (strategyId === "strategy-1") {
+        firstBuildStarted.resolve();
+        await releaseFirstBuild.promise;
+      }
+
+      return `system prompt for ${strategyId}`;
+    },
+    db: createDatabaseDouble(state),
+    getOpencodeTurnClient: async () => ({
+      async getSession() {
+        return {
+          title: "Serialized strategy",
+        };
+      },
+      async prompt() {
+        return {
+          info: {
+            cost: 0,
+            id: "assistant-serialized",
+            mode: "chat",
+            modelID: "gpt-5",
+            parentID: "run-serialized",
+            path: { cwd: "/tmp", root: "/tmp" },
+            providerID: "openai",
+            role: "assistant",
+            sessionID: "session-serialized",
+            time: { created: Date.now(), completed: Date.now() },
+            tokens: {
+              cache: { read: 0, write: 0 },
+              input: 0,
+              output: 0,
+              reasoning: 0,
+            },
+          },
+          parts: [
+            {
+              id: "text-serialized",
+              messageID: "assistant-serialized",
+              sessionID: "session-serialized",
+              text: "Serialized reply.",
+              type: "text",
+            },
+          ],
+        };
+      },
+    }),
+    getSessionId: async (strategyId) => {
+      const strategy = state.strategies.get(strategyId);
+
+      assert.ok(strategy);
+      strategy.opencodeSessionId ||= `session-${strategyId}`;
+
+      return strategy.opencodeSessionId;
+    },
+    turnLockTimeoutMs: 200,
+  });
+
+  try {
+    const firstResponse = app.inject({
+      method: "POST",
+      payload: { text: "Run the first turn" },
+      url: "/users/user-1/strategies/strategy-1/messages?wait=1",
+    });
+
+    await firstBuildStarted.promise;
+
+    const secondResponse = app.inject({
+      method: "POST",
+      payload: { text: "Run the second turn" },
+      url: "/users/user-1/strategies/strategy-2/messages?wait=1",
+    });
+
+    await sleep(25);
+    assert.deepEqual(buildOrder, ["user-1/strategy-1"]);
+
+    releaseFirstBuild.resolve();
+
+    const [first, second] = await Promise.all([firstResponse, secondResponse]);
+
+    assert.equal(first.statusCode, 200);
+    assert.equal(second.statusCode, 200);
+    assert.deepEqual(buildOrder, ["user-1/strategy-1", "user-1/strategy-2"]);
+  } finally {
+    releaseFirstBuild.resolve();
+    await app.close();
+  }
+});
+
+test("different users can build prompts in parallel", async () => {
+  const state = createState();
+  const bothBuildsStarted = createDeferred<void>();
+  const releaseBuilds = createDeferred<void>();
+  const buildOrder: string[] = [];
+  const app = buildServer({
+    buildSystemPrompt: async ({ userId }) => {
+      buildOrder.push(userId);
+
+      if (buildOrder.length === 2) {
+        bothBuildsStarted.resolve();
+      }
+
+      await releaseBuilds.promise;
+
+      return `system prompt for ${userId}`;
+    },
+    db: createDatabaseDouble(state),
+    getOpencodeTurnClient: async () => ({
+      async getSession() {
+        return {
+          title: "Parallel strategy",
+        };
+      },
+      async prompt() {
+        return {
+          info: {
+            cost: 0,
+            id: "assistant-parallel",
+            mode: "chat",
+            modelID: "gpt-5",
+            parentID: "run-parallel",
+            path: { cwd: "/tmp", root: "/tmp" },
+            providerID: "openai",
+            role: "assistant",
+            sessionID: "session-parallel",
+            time: { created: Date.now(), completed: Date.now() },
+            tokens: {
+              cache: { read: 0, write: 0 },
+              input: 0,
+              output: 0,
+              reasoning: 0,
+            },
+          },
+          parts: [
+            {
+              id: "text-parallel",
+              messageID: "assistant-parallel",
+              sessionID: "session-parallel",
+              text: "Parallel reply.",
+              type: "text",
+            },
+          ],
+        };
+      },
+    }),
+    getSessionId: async (strategyId) => {
+      const strategy = state.strategies.get(strategyId);
+
+      assert.ok(strategy);
+      strategy.opencodeSessionId ||= `session-${strategyId}`;
+
+      return strategy.opencodeSessionId;
+    },
+  });
+
+  try {
+    const firstResponse = app.inject({
+      method: "POST",
+      payload: { text: "User one turn" },
+      url: "/users/user-1/strategies/strategy-1/messages?wait=1",
+    });
+    const secondResponse = app.inject({
+      method: "POST",
+      payload: { text: "User two turn" },
+      url: "/users/user-2/strategies/strategy-2/messages?wait=1",
+    });
+
+    await bothBuildsStarted.promise;
+    assert.deepEqual([...buildOrder].sort(), ["user-1", "user-2"]);
+
+    releaseBuilds.resolve();
+
+    const [first, second] = await Promise.all([firstResponse, secondResponse]);
+
+    assert.equal(first.statusCode, 200);
+    assert.equal(second.statusCode, 200);
+  } finally {
+    releaseBuilds.resolve();
+    await app.close();
+  }
+});
+
+test("lock timeout returns a typed conflict error", async () => {
+  const state = createState();
+  const firstBuildStarted = createDeferred<void>();
+  const releaseFirstBuild = createDeferred<void>();
+  const app = buildServer({
+    buildSystemPrompt: async ({ strategyId }) => {
+      if (strategyId === "strategy-1") {
+        firstBuildStarted.resolve();
+        await releaseFirstBuild.promise;
+      }
+
+      return `system prompt for ${strategyId}`;
+    },
+    db: createDatabaseDouble(state),
+    getOpencodeTurnClient: async () => ({
+      async getSession() {
+        return {
+          title: "Timeout strategy",
+        };
+      },
+      async prompt() {
+        return {
+          info: {
+            cost: 0,
+            id: "assistant-timeout",
+            mode: "chat",
+            modelID: "gpt-5",
+            parentID: "run-timeout",
+            path: { cwd: "/tmp", root: "/tmp" },
+            providerID: "openai",
+            role: "assistant",
+            sessionID: "session-timeout",
+            time: { created: Date.now(), completed: Date.now() },
+            tokens: {
+              cache: { read: 0, write: 0 },
+              input: 0,
+              output: 0,
+              reasoning: 0,
+            },
+          },
+          parts: [
+            {
+              id: "text-timeout",
+              messageID: "assistant-timeout",
+              sessionID: "session-timeout",
+              text: "Timeout reply.",
+              type: "text",
+            },
+          ],
+        };
+      },
+    }),
+    getSessionId: async (strategyId) => {
+      const strategy = state.strategies.get(strategyId);
+
+      assert.ok(strategy);
+      strategy.opencodeSessionId ||= `session-${strategyId}`;
+
+      return strategy.opencodeSessionId;
+    },
+    turnLockTimeoutMs: 20,
+  });
+
+  try {
+    const firstResponse = app.inject({
+      method: "POST",
+      payload: { text: "Hold the lock" },
+      url: "/users/user-1/strategies/strategy-1/messages?wait=1",
+    });
+
+    await firstBuildStarted.promise;
+
+    const secondResponse = await app.inject({
+      method: "POST",
+      payload: { text: "This should time out" },
+      url: "/users/user-1/strategies/strategy-2/messages",
+    });
+
+    assert.equal(secondResponse.statusCode, 409);
+    assert.deepEqual(secondResponse.json(), {
+      error: {
+        code: "turn_lock_timeout",
+        message: "Timed out after 20ms waiting for the user turn lock",
+      },
+    });
+    assert.equal(state.runs.size, 1);
+
+    releaseFirstBuild.resolve();
+    await firstResponse;
+  } finally {
+    releaseFirstBuild.resolve();
     await app.close();
   }
 });
