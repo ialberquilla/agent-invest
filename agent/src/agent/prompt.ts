@@ -30,7 +30,6 @@ export const AGENT_SCRIPT_REGISTRY: readonly AgentScriptDefinition[] = [
       "--scope {user|strategy} --user <user_id> [--strategy <strategy_id>]",
     example:
       "uv run python -m agent_invest_scripts.read_memory --scope strategy --user user-123 --strategy strategy-456",
-    note: "May be unimplemented in some environments.",
   },
   {
     name: "write_memory",
