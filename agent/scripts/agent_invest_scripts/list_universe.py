@@ -215,8 +215,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             {
                 "error": str(error),
                 "dataset": error.dataset,
-                "bucket": error.bucket,
                 "key": error.key,
+                "path": error.path,
             }
         )
         raise SystemExit(1) from error

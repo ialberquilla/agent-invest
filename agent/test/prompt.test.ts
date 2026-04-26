@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -7,53 +10,42 @@ import {
   buildToolManifestSection,
   MEMORY_DISCIPLINE_GUIDANCE,
 } from "../src/agent/prompt.js";
-import { s3Layout } from "../src/storage/s3.js";
+import { storageLayout } from "../src/storage/local.js";
 
-function withS3Env(callback: () => Promise<void>): Promise<void> {
-  const previousBucket = process.env.S3_BUCKET;
-  const previousRegion = process.env.AWS_REGION;
-  const previousPrefix = process.env.S3_PREFIX;
+async function withStorageRoot(callback: () => Promise<void>): Promise<void> {
+  const previousStorageRoot = process.env.STORAGE_ROOT;
+  const storageRoot = await mkdtemp(join(tmpdir(), "agent-invest-prompt-"));
 
-  process.env.S3_BUCKET = "test-bucket";
-  process.env.AWS_REGION = "us-east-1";
-  delete process.env.S3_PREFIX;
+  process.env.STORAGE_ROOT = storageRoot;
 
-  return callback().finally(() => {
-    if (previousBucket === undefined) {
-      delete process.env.S3_BUCKET;
+  try {
+    await callback();
+  } finally {
+    if (previousStorageRoot === undefined) {
+      delete process.env.STORAGE_ROOT;
     } else {
-      process.env.S3_BUCKET = previousBucket;
+      process.env.STORAGE_ROOT = previousStorageRoot;
     }
 
-    if (previousRegion === undefined) {
-      delete process.env.AWS_REGION;
-    } else {
-      process.env.AWS_REGION = previousRegion;
-    }
-
-    if (previousPrefix === undefined) {
-      delete process.env.S3_PREFIX;
-    } else {
-      process.env.S3_PREFIX = previousPrefix;
-    }
-  });
+    await rm(storageRoot, { force: true, recursive: true });
+  }
 }
 
 test("buildSystemPrompt concatenates sections in stable order", async () => {
-  await withS3Env(async () => {
+  await withStorageRoot(async () => {
     const userId = "user-123";
     const strategyId = "strategy-456";
     const seenKeys: string[] = [];
     const values = new Map<string, string | null>([
       [
-        s3Layout.userProfileKey(userId),
+        storageLayout.userProfileKey(userId),
         "# Preferences\n- prefers weekly rebalance",
       ],
       [
-        s3Layout.strategyInstructionsKey(userId, strategyId),
+        storageLayout.strategyInstructionsKey(userId, strategyId),
         "Compare weekly and daily rebalances.",
       ],
-      [s3Layout.strategyMemoryKey(userId, strategyId), null],
+      [storageLayout.strategyMemoryKey(userId, strategyId), null],
     ]);
 
     const prompt = await buildSystemPrompt({
@@ -66,9 +58,9 @@ test("buildSystemPrompt concatenates sections in stable order", async () => {
     });
 
     assert.deepEqual(seenKeys, [
-      s3Layout.userProfileKey(userId),
-      s3Layout.strategyInstructionsKey(userId, strategyId),
-      s3Layout.strategyMemoryKey(userId, strategyId),
+      storageLayout.userProfileKey(userId),
+      storageLayout.strategyInstructionsKey(userId, strategyId),
+      storageLayout.strategyMemoryKey(userId, strategyId),
     ]);
     assert.equal(
       prompt,

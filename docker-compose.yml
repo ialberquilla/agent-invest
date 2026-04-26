@@ -10,6 +10,7 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@postgres:5432/agent_invest
       HOST: 0.0.0.0
       PORT: 8000
+      STORAGE_ROOT: /app/.data/storage
       UV_CACHE_DIR: /app/.data/uv
       XDG_CACHE_HOME: /app/.data/xdg-cache
     ports:
@@ -18,7 +19,6 @@ services:
       - ${HOME}/.opencode:/root/.opencode
       - ${HOME}/.config/opencode:/root/.config/opencode
       - ${HOME}/.local/share/opencode:/root/.local/share/opencode
-      - ${HOME}/.aws:/root/.aws
       - ./.data:/app/.data
 
   postgres:

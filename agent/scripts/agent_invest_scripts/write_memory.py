@@ -1,16 +1,17 @@
-"""CLI for updating named markdown memory sections in S3."""
+"""CLI for updating named markdown memory sections in local storage."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 from dataclasses import dataclass
+from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import Any, Sequence
 
-import boto3
-from botocore.exceptions import BotoCoreError, ClientError
-
 from agent_invest_scripts._lib.cli import fail_json, print_json
+from agent_invest_scripts._lib.storage import key_path, memory_key
 
 _ALLOWED_SCOPES = ("user", "strategy")
 _ALLOWED_SECTIONS = (
@@ -23,9 +24,6 @@ _ALLOWED_SECTIONS = (
     "spec",
 )
 _ALLOWED_MODES = ("append", "replace")
-_MARKDOWN_CONTENT_TYPE = "text/markdown; charset=utf-8"
-_MISSING_S3_ERROR_CODES = {"404", "NoSuchKey", "NotFound"}
-_CONFLICT_S3_ERROR_CODES = {"PreconditionFailed", "ConditionalRequestConflict"}
 _MAX_WRITE_ATTEMPTS = 2
 
 
@@ -39,12 +37,12 @@ class JsonArgumentParser(argparse.ArgumentParser):
 @dataclass(slots=True)
 class MemoryTarget:
     scope: str
-    bucket: str
     key: str
+    file_path: Path
 
     @property
     def path(self) -> str:
-        return f"s3://{self.bucket}/{self.key}"
+        return self.key
 
 
 @dataclass(slots=True)
@@ -53,8 +51,8 @@ class MemoryObject:
     etag: str | None
 
 
-class S3ConditionalWriteConflictError(RuntimeError):
-    """Raised when an S3 conditional put fails."""
+class ConditionalWriteConflictError(RuntimeError):
+    """Raised when a conditional filesystem write fails."""
 
 
 def _build_parser() -> JsonArgumentParser:
@@ -82,8 +80,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     except (ValueError, RuntimeError) as error:
         fail_json(str(error), error_type=type(error).__name__)
-    except (BotoCoreError, ClientError) as error:
-        fail_json(_format_s3_error(error), error_type=type(error).__name__)
 
     print_json(result)
     return 0
@@ -97,7 +93,6 @@ def write_memory(
     section: str,
     mode: str,
     content: str,
-    s3_client: Any | None = None,
 ) -> dict[str, Any]:
     normalized_scope = _validate_scope(scope)
     normalized_section = _validate_section(section)
@@ -107,11 +102,10 @@ def write_memory(
         user_id=user_id,
         strategy_id=strategy_id,
     )
-    client = s3_client or _build_s3_client()
     updated_section = ""
 
     for attempt in range(_MAX_WRITE_ATTEMPTS):
-        current = _read_memory_object(client, bucket=target.bucket, key=target.key)
+        current = _read_memory_object(target.file_path)
         updated_document, updated_section = _update_memory_document(
             current.body if current is not None else "",
             section=normalized_section,
@@ -120,12 +114,10 @@ def write_memory(
         )
 
         try:
-            etag = _put_memory_object(
-                client,
-                bucket=target.bucket,
-                key=target.key,
+            etag = _write_memory_object(
+                target.file_path,
                 body=updated_document,
-                etag=current.etag if current is not None else None,
+                expected_etag=current.etag if current is not None else None,
             )
             return {
                 "scope": normalized_scope,
@@ -135,7 +127,7 @@ def write_memory(
                 "etag": etag,
                 "content": updated_section,
             }
-        except S3ConditionalWriteConflictError as error:
+        except ConditionalWriteConflictError as error:
             if attempt == _MAX_WRITE_ATTEMPTS - 1:
                 message = (
                     "Concurrent write conflict for "
@@ -173,80 +165,58 @@ def _validate_mode(mode: str) -> str:
 def _resolve_memory_target(
     *, scope: str, user_id: str, strategy_id: str | None
 ) -> MemoryTarget:
-    bucket = _read_required_env("S3_BUCKET", "AWS_S3_BUCKET")
-    prefix = _normalize_prefix(_read_optional_env("S3_PREFIX", "AWS_S3_PREFIX"))
-    normalized_user_id = _normalize_key_segment(user_id, "user_id")
-
-    if scope == "user":
-        key = _join_key(prefix, "users", normalized_user_id, "profile.md")
-    else:
-        if strategy_id is None:
-            raise ValueError("--strategy is required when --scope=strategy")
-        normalized_strategy_id = _normalize_key_segment(strategy_id, "strategy_id")
-        key = _join_key(
-            prefix,
-            "users",
-            normalized_user_id,
-            "strategies",
-            normalized_strategy_id,
-            "memory.md",
-        )
-
-    return MemoryTarget(scope=scope, bucket=bucket, key=key)
+    key = memory_key(scope=scope, user_id=user_id, strategy_id=strategy_id)
+    return MemoryTarget(scope=scope, key=key, file_path=key_path(key))
 
 
-def _build_s3_client() -> Any:
-    region = _read_optional_env("AWS_REGION", "AWS_DEFAULT_REGION")
-    if region:
-        return boto3.client("s3", region_name=region)
-    return boto3.client("s3")
+def _read_memory_object(path: Path) -> MemoryObject | None:
+    if not path.exists():
+        return None
+
+    body = path.read_text(encoding="utf-8")
+    return MemoryObject(body=body, etag=_etag(body))
 
 
-def _read_memory_object(client: Any, *, bucket: str, key: str) -> MemoryObject | None:
-    try:
-        response = client.get_object(Bucket=bucket, Key=key)
-    except ClientError as error:
-        if _is_missing_s3_object(error):
-            return None
-        raise
-
-    raw_body = response["Body"].read()
-    if isinstance(raw_body, bytes):
-        body = raw_body.decode("utf-8")
-    else:
-        body = str(raw_body)
-
-    return MemoryObject(body=body, etag=_normalize_etag(response.get("ETag")))
-
-
-def _put_memory_object(
-    client: Any,
+def _write_memory_object(
+    path: Path,
     *,
-    bucket: str,
-    key: str,
     body: str,
-    etag: str | None,
-) -> str | None:
-    put_kwargs: dict[str, Any] = {
-        "Bucket": bucket,
-        "Key": key,
-        "Body": body,
-        "ContentType": _MARKDOWN_CONTENT_TYPE,
-    }
+    expected_etag: str | None,
+) -> str:
+    current = _read_memory_object(path)
 
-    if etag is None:
-        put_kwargs["IfNoneMatch"] = "*"
-    else:
-        put_kwargs["IfMatch"] = _quote_etag(etag)
+    if expected_etag is None:
+        if current is not None:
+            raise ConditionalWriteConflictError(str(path))
+    elif current is None or current.etag != expected_etag:
+        raise ConditionalWriteConflictError(str(path))
+
+    _write_text_atomically(path, body)
+    return _etag(body)
+
+
+def _etag(body: str) -> str:
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _write_text_atomically(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path: Path | None = None
 
     try:
-        response = client.put_object(**put_kwargs)
-    except ClientError as error:
-        if _is_conflict_s3_error(error):
-            raise S3ConditionalWriteConflictError(key) from error
-        raise
+        with NamedTemporaryFile(
+            dir=path.parent,
+            delete=False,
+            encoding="utf-8",
+            mode="w",
+        ) as handle:
+            handle.write(body)
+            temp_path = Path(handle.name)
 
-    return _normalize_etag(response.get("ETag"))
+        os.replace(temp_path, path)
+    finally:
+        if temp_path is not None and temp_path.exists():
+            temp_path.unlink()
 
 
 def _update_memory_document(
@@ -340,75 +310,6 @@ def _append_section_body(existing: str, content: str) -> str:
 
 def _normalize_section_body(content: str) -> str:
     return content.replace("\r\n", "\n").strip("\n")
-
-
-def _format_s3_error(error: ClientError | BotoCoreError) -> str:
-    if isinstance(error, ClientError):
-        details = error.response.get("Error", {})
-        code = details.get("Code")
-        message = details.get("Message")
-        if code and message:
-            return f"{code}: {message}"
-        if code:
-            return str(code)
-
-    return str(error)
-
-
-def _is_missing_s3_object(error: ClientError) -> bool:
-    code = error.response.get("Error", {}).get("Code")
-    return code in _MISSING_S3_ERROR_CODES
-
-
-def _is_conflict_s3_error(error: ClientError) -> bool:
-    code = error.response.get("Error", {}).get("Code")
-    status_code = error.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-    return code in _CONFLICT_S3_ERROR_CODES or status_code == 412
-
-
-def _normalize_etag(etag: object) -> str | None:
-    if not isinstance(etag, str) or not etag:
-        return None
-    return etag.replace('"', "")
-
-
-def _quote_etag(etag: str) -> str:
-    return etag if etag.startswith('"') and etag.endswith('"') else f'"{etag}"'
-
-
-def _read_required_env(*names: str) -> str:
-    value = _read_optional_env(*names)
-    if value is None:
-        formatted = ", ".join(names)
-        raise RuntimeError(f"Missing required environment variable: {formatted}")
-    return value
-
-
-def _read_optional_env(*names: str) -> str | None:
-    for name in names:
-        value = os.getenv(name, "").strip()
-        if value:
-            return value
-    return None
-
-
-def _normalize_prefix(prefix: str | None) -> str:
-    if not prefix:
-        return ""
-    return prefix.strip("/")
-
-
-def _normalize_key_segment(value: str, name: str) -> str:
-    normalized = value.strip()
-    if not normalized:
-        raise ValueError(f"{name} must not be empty")
-    if "/" in normalized:
-        raise ValueError(f"{name} must not contain '/'")
-    return normalized
-
-
-def _join_key(*segments: str) -> str:
-    return "/".join(segment for segment in segments if segment)
 
 
 if __name__ == "__main__":

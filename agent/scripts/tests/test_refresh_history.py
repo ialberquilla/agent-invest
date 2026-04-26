@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time, timezone
+from pathlib import Path
 
 import pandas as pd
 
@@ -16,8 +17,7 @@ def _unix_ms(day: date, *, hour: int = 0) -> int:
 class _FakeStorage:
     def __init__(self, datasets: dict[str, pd.DataFrame | None]) -> None:
         self.datasets = datasets
-        self.bucket = "test-bucket"
-        self.prefix = "dev"
+        self.root = Path("/tmp/agent-invest-test-storage")
         self.writes: dict[str, pd.DataFrame] = {}
 
     def read_dataset(self, dataset: str) -> pd.DataFrame | None:
@@ -28,10 +28,10 @@ class _FakeStorage:
 
     def write_dataset(self, dataset: str, frame: pd.DataFrame) -> str:
         self.writes[dataset] = frame.copy()
-        return f"dev/datasets/{dataset}.parquet"
+        return f"datasets/{dataset}.parquet"
 
     def dataset_uri(self, dataset: str) -> str:
-        return f"s3://test-bucket/dev/datasets/{dataset}.parquet"
+        return (self.root / "datasets" / f"{dataset}.parquet").as_uri()
 
 
 class _FakeCoinGeckoClient:
