@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import pino from "pino";
 import { fileURLToPath } from "node:url";
@@ -22,6 +23,9 @@ const NOT_IMPLEMENTED_RESPONSE = {
 
 const POLL_INTERVAL_MS = 100;
 const DEFAULT_TURN_LOCK_TIMEOUT_MS = 5_000;
+const DEFAULT_MESSAGES_RATE_LIMIT_MAX = 10;
+const DEFAULT_MESSAGES_RATE_LIMIT_WINDOW_MS = 60_000;
+const AGENT_SCRIPT_TIMEOUT_SENTINEL = "AGENT_SCRIPT_TIMEOUT:";
 
 type QueryResult<TRow extends QueryResultRow> = {
   rowCount: number | null;
@@ -124,6 +128,19 @@ type ServerDependencies = {
   getSessionId?: (strategyId: string) => Promise<string>;
   getOpencodeTurnClient?: () => Promise<OpencodeTurnClient>;
   turnLockTimeoutMs?: number;
+};
+
+type ErrorEnvelope = {
+  error: {
+    code: string;
+    message: string;
+    details?: unknown;
+  };
+};
+
+type FastifyLikeError = Error & {
+  statusCode?: number;
+  validation?: unknown;
 };
 
 class RunEventStore {
@@ -259,6 +276,7 @@ class RouteError extends Error {
     readonly statusCode: number,
     readonly code: string,
     message: string,
+    readonly details?: unknown,
   ) {
     super(message);
   }
@@ -296,12 +314,21 @@ async function notImplemented(_request: FastifyRequest, reply: FastifyReply) {
 }
 
 function errorResponse(code: string, message: string) {
+  return errorResponseWithDetails(code, message);
+}
+
+function errorResponseWithDetails(
+  code: string,
+  message: string,
+  details?: unknown,
+): ErrorEnvelope {
   return {
     error: {
       code,
       message,
+      ...(details === undefined ? {} : { details }),
     },
-  } as const;
+  };
 }
 
 function getErrorMessage(error: unknown) {
@@ -338,6 +365,49 @@ function toRouteError(error: unknown, turnLockTimeoutMs: number) {
   return error;
 }
 
+function resolvePositiveInteger(
+  value: string | undefined,
+  name: string,
+  defaultValue: number,
+) {
+  if (value === undefined) {
+    return defaultValue;
+  }
+
+  const parsed = Number.parseInt(value, 10);
+
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`Invalid ${name} value: ${value}`);
+  }
+
+  return parsed;
+}
+
+function resolveMessagesRateLimitMax(env: NodeJS.ProcessEnv = process.env) {
+  return resolvePositiveInteger(
+    env.MESSAGES_RATE_LIMIT_MAX,
+    "MESSAGES_RATE_LIMIT_MAX",
+    DEFAULT_MESSAGES_RATE_LIMIT_MAX,
+  );
+}
+
+function resolveMessagesRateLimitWindowMs(
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  return resolvePositiveInteger(
+    env.MESSAGES_RATE_LIMIT_WINDOW_MS,
+    "MESSAGES_RATE_LIMIT_WINDOW_MS",
+    DEFAULT_MESSAGES_RATE_LIMIT_WINDOW_MS,
+  );
+}
+
+function getMessagesRateLimitKey(request: FastifyRequest) {
+  const params = request.params as Partial<RouteParams> | undefined;
+  const userId = params?.user_id?.trim();
+
+  return userId ? `user:${userId}` : `ip:${request.ip}`;
+}
+
 function isAbortError(error: unknown) {
   return error instanceof Error && error.name === "AbortError";
 }
@@ -352,6 +422,39 @@ function getAssistantErrorMessage(result: OpencodePromptResult) {
   const message = error.data?.message;
 
   return typeof message === "string" && message.trim() ? message : error.name;
+}
+
+function getScriptTimeoutMessage(parts: OpencodePromptResult["parts"]) {
+  for (const part of parts) {
+    if (part.type !== "tool") {
+      continue;
+    }
+
+    const command = part.state.input.command;
+
+    if (
+      typeof command !== "string" ||
+      !command.includes("agent/scripts/run_agent_script.sh")
+    ) {
+      continue;
+    }
+
+    const output =
+      part.state.status === "completed"
+        ? part.state.output
+        : part.state.status === "error"
+          ? part.state.error
+          : undefined;
+
+    if (
+      typeof output === "string" &&
+      output.includes(AGENT_SCRIPT_TIMEOUT_SENTINEL)
+    ) {
+      return output;
+    }
+  }
+
+  return undefined;
 }
 
 function extractReplyText(parts: OpencodePromptResult["parts"]) {
@@ -959,6 +1062,55 @@ function sendRunResponse(reply: FastifyReply, run: RunState) {
   return reply.code(202).send(payload);
 }
 
+function normalizeError(error: unknown) {
+  if (error instanceof RouteError) {
+    return {
+      statusCode: error.statusCode,
+      payload: errorResponseWithDetails(
+        error.code,
+        error.message,
+        error.details,
+      ),
+    };
+  }
+
+  const fastifyError = error as FastifyLikeError;
+
+  if (fastifyError.statusCode === 429) {
+    return {
+      statusCode: 429,
+      payload: errorResponse("rate_limited", getErrorMessage(error)),
+    };
+  }
+
+  if (fastifyError.statusCode === 400) {
+    return {
+      statusCode: 400,
+      payload: errorResponseWithDetails(
+        "invalid_request",
+        getErrorMessage(error),
+        fastifyError.validation,
+      ),
+    };
+  }
+
+  if (
+    typeof fastifyError.statusCode === "number" &&
+    fastifyError.statusCode >= 400 &&
+    fastifyError.statusCode < 500
+  ) {
+    return {
+      statusCode: fastifyError.statusCode,
+      payload: errorResponse("request_error", getErrorMessage(error)),
+    };
+  }
+
+  return {
+    statusCode: 500,
+    payload: errorResponse("internal_error", "Internal server error"),
+  };
+}
+
 async function executeRun(options: {
   app: ReturnType<typeof Fastify>;
   buildSystemPrompt: typeof defaultBuildSystemPrompt;
@@ -1007,6 +1159,12 @@ async function executeRun(options: {
         system: systemPrompt,
         text,
       });
+      const scriptTimeout = getScriptTimeoutMessage(result.parts);
+
+      if (scriptTimeout) {
+        throw new Error(scriptTimeout);
+      }
+
       const assistantError = getAssistantErrorMessage(result);
 
       if (assistantError) {
@@ -1101,227 +1259,225 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   const app = Fastify({
     loggerInstance: pino(),
   });
+  const messagesRateLimit = {
+    hook: "preHandler" as const,
+    keyGenerator: getMessagesRateLimitKey,
+    max: resolveMessagesRateLimitMax(),
+    timeWindow: resolveMessagesRateLimitWindowMs(),
+  };
 
-  app.get("/health", async () => ({ ok: true }));
+  app.register(rateLimit, {
+    global: false,
+  });
 
-  app.post("/users/:user_id/strategies", notImplemented);
-  app.get("/users/:user_id/strategies", notImplemented);
-  app.get("/users/:user_id/strategies/:strategy_id", notImplemented);
-  app.post<{
-    Body: MessageBody;
-    Params: RouteParams;
-    Querystring: WaitQuery;
-  }>(
-    "/users/:user_id/strategies/:strategy_id/messages",
-    async (request, reply) => {
-      try {
-        const waitMs = parseWaitMilliseconds(request.query.wait);
-        const text = parseMessageText(request.body);
-        const { strategy_id: strategyId, user_id: userId } = request.params;
+  app.setNotFoundHandler(async (_request, reply) => {
+    return reply.code(404).send(errorResponse("not_found", "Route not found"));
+  });
 
-        await ensureStrategyExists(db, userId, strategyId);
+  app.setErrorHandler((error, request, reply) => {
+    const normalized = normalizeError(error);
 
-        const turnClient = await acquireUserTurnClient(
-          db,
-          userId,
-          turnLockTimeoutMs,
-        );
+    if (normalized.statusCode >= 500) {
+      request.log.error(error);
+    }
 
-        const runId = randomUUID();
+    return reply.code(normalized.statusCode).send(normalized.payload);
+  });
 
+  app.after(() => {
+    const limitMessages = app.rateLimit(messagesRateLimit);
+
+    app.get("/health", async () => ({ ok: true }));
+
+    app.post("/users/:user_id/strategies", notImplemented);
+    app.get("/users/:user_id/strategies", notImplemented);
+    app.get("/users/:user_id/strategies/:strategy_id", notImplemented);
+    app.route<{
+      Body: MessageBody;
+      Params: RouteParams;
+      Querystring: WaitQuery;
+    }>({
+      handler: async (request, reply) => {
         try {
-          await insertRunStart(db, runEvents, runId, strategyId);
-        } catch (error) {
+          const waitMs = parseWaitMilliseconds(request.query.wait);
+          const text = parseMessageText(request.body);
+          const { strategy_id: strategyId, user_id: userId } = request.params;
+
+          await ensureStrategyExists(db, userId, strategyId);
+
+          const turnClient = await acquireUserTurnClient(
+            db,
+            userId,
+            turnLockTimeoutMs,
+          );
+
+          const runId = randomUUID();
+
           try {
-            await turnClient.query("ROLLBACK");
-          } finally {
-            turnClient.release();
+            await insertRunStart(db, runEvents, runId, strategyId);
+          } catch (error) {
+            try {
+              await turnClient.query("ROLLBACK");
+            } finally {
+              turnClient.release();
+            }
+
+            throw error;
           }
 
-          throw error;
+          void executeRun({
+            app,
+            buildSystemPrompt,
+            db,
+            getOpencodeTurnClient,
+            getSessionId,
+            runEvents,
+            runId,
+            strategyId,
+            text,
+            turnClient,
+            userId,
+          });
+
+          if (waitMs === undefined) {
+            return reply.code(202).send({ run_id: runId });
+          }
+
+          const run = await waitForRun(db, userId, strategyId, runId, waitMs);
+
+          if (!run) {
+            throw new RouteError(404, "run_not_found", "Run not found");
+          }
+
+          return sendRunResponse(reply, run);
+        } catch (error) {
+          throw toRouteError(error, turnLockTimeoutMs);
         }
+      },
+      method: "POST",
+      preHandler: limitMessages,
+      url: "/users/:user_id/strategies/:strategy_id/messages",
+    });
+    app.get<{
+      Params: RunRouteParams;
+      Querystring: WaitQuery;
+    }>(
+      "/users/:user_id/strategies/:strategy_id/runs/:run_id",
+      async (request, reply) => {
+        try {
+          const waitMs = parseWaitMilliseconds(request.query.wait) ?? 0;
+          const {
+            run_id: runId,
+            strategy_id: strategyId,
+            user_id: userId,
+          } = request.params;
+          const run = await waitForRun(db, userId, strategyId, runId, waitMs);
 
-        void executeRun({
-          app,
-          buildSystemPrompt,
-          db,
-          getOpencodeTurnClient,
-          getSessionId,
-          runEvents,
-          runId,
-          strategyId,
-          text,
-          turnClient,
-          userId,
-        });
+          if (!run) {
+            throw new RouteError(404, "run_not_found", "Run not found");
+          }
 
-        if (waitMs === undefined) {
-          return reply.code(202).send({ run_id: runId });
+          return sendRunResponse(reply, run);
+        } catch (error) {
+          throw toRouteError(error, turnLockTimeoutMs);
         }
-
-        const run = await waitForRun(db, userId, strategyId, runId, waitMs);
-
-        if (!run) {
-          return reply
-            .code(404)
-            .send(errorResponse("run_not_found", "Run not found"));
-        }
-
-        return sendRunResponse(reply, run);
-      } catch (error) {
-        const routeError = toRouteError(error, turnLockTimeoutMs);
-
-        if (routeError instanceof RouteError) {
-          return reply
-            .code(routeError.statusCode)
-            .send(errorResponse(routeError.code, routeError.message));
-        }
-
-        request.log.error(error);
-        return reply
-          .code(500)
-          .send(errorResponse("internal_error", "Internal server error"));
-      }
-    },
-  );
-  app.get<{
-    Params: RunRouteParams;
-    Querystring: WaitQuery;
-  }>(
-    "/users/:user_id/strategies/:strategy_id/runs/:run_id",
-    async (request, reply) => {
-      try {
-        const waitMs = parseWaitMilliseconds(request.query.wait) ?? 0;
-        const {
-          run_id: runId,
-          strategy_id: strategyId,
-          user_id: userId,
-        } = request.params;
-        const run = await waitForRun(db, userId, strategyId, runId, waitMs);
-
-        if (!run) {
-          return reply
-            .code(404)
-            .send(errorResponse("run_not_found", "Run not found"));
-        }
-
-        return sendRunResponse(reply, run);
-      } catch (error) {
-        const routeError = toRouteError(error, turnLockTimeoutMs);
-
-        if (routeError instanceof RouteError) {
-          return reply
-            .code(routeError.statusCode)
-            .send(errorResponse(routeError.code, routeError.message));
-        }
-
-        request.log.error(error);
-        return reply
-          .code(500)
-          .send(errorResponse("internal_error", "Internal server error"));
-      }
-    },
-  );
-  app.get<{
-    Params: RunRouteParams;
-  }>(
-    "/users/:user_id/strategies/:strategy_id/runs/:run_id/events",
-    async (request, reply) => {
-      const disconnect = createDisconnectPromise(request);
-
-      try {
-        const lastEventId = parseLastEventId(request.headers["last-event-id"]);
-        const {
-          run_id: runId,
-          strategy_id: strategyId,
-          user_id: userId,
-        } = request.params;
-        const run = await loadRunState(db, userId, strategyId, runId);
-
-        if (!run) {
-          return reply
-            .code(404)
-            .send(errorResponse("run_not_found", "Run not found"));
-        }
-
-        const subscription = runEvents.subscribe(runId);
-
-        beginSseStream(reply);
-
-        let latestEventId = lastEventId;
-        let terminalSeen = false;
+      },
+    );
+    app.get<{
+      Params: RunRouteParams;
+    }>(
+      "/users/:user_id/strategies/:strategy_id/runs/:run_id/events",
+      async (request, reply) => {
+        const disconnect = createDisconnectPromise(request);
 
         try {
-          const replayedEvents = await loadRunEvents(db, runId, lastEventId);
+          const lastEventId = parseLastEventId(
+            request.headers["last-event-id"],
+          );
+          const {
+            run_id: runId,
+            strategy_id: strategyId,
+            user_id: userId,
+          } = request.params;
+          const run = await loadRunState(db, userId, strategyId, runId);
 
-          for (const event of replayedEvents) {
-            if (event.seq <= latestEventId) {
-              continue;
-            }
-
-            writeSseEvent(reply, event);
-            latestEventId = event.seq;
-            terminalSeen = isTerminalEventType(event.type);
+          if (!run) {
+            throw new RouteError(404, "run_not_found", "Run not found");
           }
 
-          while (!terminalSeen && !disconnect.isDisconnected()) {
-            const nextResult = await Promise.race([
-              subscription
-                .next()
-                .then((event) => ({ event, type: "event" as const })),
-              disconnect.done.then(() => ({ type: "disconnect" as const })),
-            ]);
+          const subscription = runEvents.subscribe(runId);
 
-            if (nextResult.type === "disconnect") {
-              break;
+          beginSseStream(reply);
+
+          let latestEventId = lastEventId;
+          let terminalSeen = false;
+
+          try {
+            const replayedEvents = await loadRunEvents(db, runId, lastEventId);
+
+            for (const event of replayedEvents) {
+              if (event.seq <= latestEventId) {
+                continue;
+              }
+
+              writeSseEvent(reply, event);
+              latestEventId = event.seq;
+              terminalSeen = isTerminalEventType(event.type);
             }
 
-            const event = nextResult.event;
+            while (!terminalSeen && !disconnect.isDisconnected()) {
+              const nextResult = await Promise.race([
+                subscription
+                  .next()
+                  .then((event) => ({ event, type: "event" as const })),
+                disconnect.done.then(() => ({ type: "disconnect" as const })),
+              ]);
 
-            if (!event || event.seq <= latestEventId) {
-              continue;
+              if (nextResult.type === "disconnect") {
+                break;
+              }
+
+              const event = nextResult.event;
+
+              if (!event || event.seq <= latestEventId) {
+                continue;
+              }
+
+              writeSseEvent(reply, event);
+              latestEventId = event.seq;
+              terminalSeen = isTerminalEventType(event.type);
             }
+          } finally {
+            subscription.close();
 
-            writeSseEvent(reply, event);
-            latestEventId = event.seq;
-            terminalSeen = isTerminalEventType(event.type);
+            if (!reply.raw.writableEnded) {
+              reply.raw.end();
+            }
           }
-        } finally {
-          subscription.close();
 
-          if (!reply.raw.writableEnded) {
+          return reply;
+        } catch (error) {
+          const normalized = normalizeError(
+            toRouteError(error, turnLockTimeoutMs),
+          );
+
+          if (!reply.sent) {
+            return reply.code(normalized.statusCode).send(normalized.payload);
+          }
+
+          request.log.error(error);
+
+          if (!reply.raw.destroyed && !reply.raw.writableEnded) {
             reply.raw.end();
           }
+
+          return reply;
+        } finally {
+          disconnect.cleanup();
         }
-
-        return reply;
-      } catch (error) {
-        const routeError = toRouteError(error, turnLockTimeoutMs);
-
-        if (routeError instanceof RouteError) {
-          return reply
-            .code(routeError.statusCode)
-            .send(errorResponse(routeError.code, routeError.message));
-        }
-
-        request.log.error(error);
-
-        if (!reply.sent) {
-          return reply
-            .code(500)
-            .send(errorResponse("internal_error", "Internal server error"));
-        }
-
-        if (!reply.raw.destroyed && !reply.raw.writableEnded) {
-          reply.raw.end();
-        }
-
-        return reply;
-      } finally {
-        disconnect.cleanup();
-      }
-    },
-  );
+      },
+    );
+  });
 
   return app;
 }
