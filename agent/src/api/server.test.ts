@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { Event as OpencodeEvent } from "@opencode-ai/sdk";
 import type { QueryResultRow } from "pg";
 
 import { buildServer } from "./server.js";
@@ -49,15 +50,125 @@ type LockWaiter = {
   timer?: NodeJS.Timeout;
 };
 
+function createClosedEventStream() {
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        async next(): Promise<IteratorResult<OpencodeEvent, undefined>> {
+          return { done: true, value: undefined };
+        },
+      };
+    },
+  };
+}
+
+function createAsyncEventStream() {
+  const queue: OpencodeEvent[] = [];
+  let ended = false;
+  let resolveNext:
+    | ((result: IteratorResult<OpencodeEvent, undefined>) => void)
+    | undefined;
+
+  function flush(value: IteratorResult<OpencodeEvent, undefined>) {
+    if (!resolveNext) {
+      return false;
+    }
+
+    const resolve = resolveNext;
+
+    resolveNext = undefined;
+    resolve(value);
+    return true;
+  }
+
+  return {
+    emit(event: OpencodeEvent) {
+      if (ended) {
+        throw new Error("Event stream already ended");
+      }
+
+      if (flush({ done: false, value: event })) {
+        return;
+      }
+
+      queue.push(event);
+    },
+    end() {
+      ended = true;
+      flush({ done: true, value: undefined });
+    },
+    stream(signal?: AbortSignal) {
+      return {
+        [Symbol.asyncIterator]() {
+          return this;
+        },
+        async next(): Promise<IteratorResult<OpencodeEvent, undefined>> {
+          if (queue.length > 0) {
+            return { done: false, value: queue.shift()! };
+          }
+
+          if (ended || signal?.aborted) {
+            return { done: true, value: undefined };
+          }
+
+          return new Promise((resolve) => {
+            const onAbort = () => {
+              signal?.removeEventListener("abort", onAbort);
+              flush({ done: true, value: undefined });
+            };
+
+            signal?.addEventListener("abort", onAbort, { once: true });
+            resolveNext = (result) => {
+              signal?.removeEventListener("abort", onAbort);
+              resolve(result);
+            };
+          });
+        },
+      };
+    },
+  };
+}
+
+function parseSseEvents(body: string) {
+  return body
+    .trim()
+    .split("\n\n")
+    .filter(Boolean)
+    .map((chunk) => {
+      const lines = chunk.split("\n");
+      const id = lines.find((line) => line.startsWith("id: "))?.slice(4) ?? "0";
+      const event =
+        lines.find((line) => line.startsWith("event: "))?.slice(7) ?? "message";
+      const data =
+        lines.find((line) => line.startsWith("data: "))?.slice(6) ?? "{}";
+
+      return {
+        data: JSON.parse(data) as Record<string, unknown>,
+        event,
+        id: Number(id),
+      };
+    });
+}
+
+function opencodeEvent(
+  type: OpencodeEvent["type"],
+  properties: Record<string, unknown>,
+): OpencodeEvent {
+  return {
+    properties,
+    type,
+  } as OpencodeEvent;
+}
+
 function createState() {
   return {
-    users: new Set<string>(),
-    strategies: new Map<string, StrategyState>(),
-    runs: new Map<string, RunState>(),
     events: new Map<string, EventState[]>(),
     nextClientId: 1,
+    runs: new Map<string, RunState>(),
+    strategies: new Map<string, StrategyState>(),
     userLockQueues: new Map<string, LockWaiter[]>(),
     userLocks: new Map<string, number>(),
+    users: new Set<string>(),
   };
 }
 
@@ -204,10 +315,10 @@ function createDatabaseDouble(state: ReturnType<typeof createState>) {
 
       if (!state.strategies.has(strategyId)) {
         state.strategies.set(strategyId, {
-          userId: String(values[1]),
+          lastUsedAt: new Date().toISOString(),
           opencodeSessionId: String(values[2]),
           title: String(values[3]),
-          lastUsedAt: new Date().toISOString(),
+          userId: String(values[1]),
         });
       }
 
@@ -240,11 +351,11 @@ function createDatabaseDouble(state: ReturnType<typeof createState>) {
       "INSERT INTO runs (run_id, strategy_id, status) VALUES ($1, $2, $3)"
     ) {
       state.runs.set(String(values[0]), {
-        strategyId: String(values[1]),
-        status: String(values[2]),
-        startedAt: new Date().toISOString(),
         endedAt: null,
         exitCode: null,
+        startedAt: new Date().toISOString(),
+        status: String(values[2]),
+        strategyId: String(values[1]),
       });
 
       return { rowCount: 1, rows: [] as TRow[] };
@@ -266,6 +377,21 @@ function createDatabaseDouble(state: ReturnType<typeof createState>) {
       state.events.set(runId, events);
 
       return { rowCount: 1, rows: [] as TRow[] };
+    }
+
+    if (
+      text ===
+      "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM events WHERE run_id = $1"
+    ) {
+      const runId = String(values[0]);
+      const nextSeq =
+        Math.max(0, ...(state.events.get(runId) ?? []).map(({ seq }) => seq)) +
+        1;
+
+      return {
+        rowCount: 1,
+        rows: [{ next_seq: nextSeq }] as unknown as TRow[],
+      };
     }
 
     if (
@@ -341,6 +467,20 @@ function createDatabaseDouble(state: ReturnType<typeof createState>) {
       };
     }
 
+    if (text.startsWith("SELECT seq, type, payload FROM events")) {
+      const runId = String(values[0]);
+      const lastEventId = Number(values[1]);
+      const events = [...(state.events.get(runId) ?? [])]
+        .filter(({ seq }) => seq > lastEventId)
+        .sort((left, right) => left.seq - right.seq)
+        .map(({ payload, seq, type }) => ({ payload, seq, type }));
+
+      return {
+        rowCount: events.length,
+        rows: events as unknown as TRow[],
+      };
+    }
+
     throw new Error(`Unexpected query: ${text}`);
   }
 
@@ -398,7 +538,7 @@ test("POST /messages?wait returns the completed run and auto-creates the strateg
             providerID: "openai",
             role: "assistant",
             sessionID: "session-1",
-            time: { created: Date.now(), completed: Date.now() },
+            time: { completed: Date.now(), created: Date.now() },
             tokens: {
               cache: { read: 0, write: 0 },
               input: 0,
@@ -416,6 +556,9 @@ test("POST /messages?wait returns the completed run and auto-creates the strateg
             },
           ],
         };
+      },
+      async subscribeEvents() {
+        return createClosedEventStream();
       },
     }),
     getSessionId: async (strategyId) => {
@@ -485,7 +628,7 @@ test("GET /runs/{run_id}?wait waits for async completion and returns the reply",
             providerID: "openai",
             role: "assistant",
             sessionID: "session-2",
-            time: { created: Date.now(), completed: Date.now() },
+            time: { completed: Date.now(), created: Date.now() },
             tokens: {
               cache: { read: 0, write: 0 },
               input: 0,
@@ -503,6 +646,9 @@ test("GET /runs/{run_id}?wait waits for async completion and returns the reply",
             },
           ],
         };
+      },
+      async subscribeEvents() {
+        return createClosedEventStream();
       },
     }),
     getSessionId: async (strategyId) => {
@@ -579,7 +725,7 @@ test("same-user turns serialize across strategies", async () => {
             providerID: "openai",
             role: "assistant",
             sessionID: "session-serialized",
-            time: { created: Date.now(), completed: Date.now() },
+            time: { completed: Date.now(), created: Date.now() },
             tokens: {
               cache: { read: 0, write: 0 },
               input: 0,
@@ -597,6 +743,9 @@ test("same-user turns serialize across strategies", async () => {
             },
           ],
         };
+      },
+      async subscribeEvents() {
+        return createClosedEventStream();
       },
     }),
     getSessionId: async (strategyId) => {
@@ -677,7 +826,7 @@ test("different users can build prompts in parallel", async () => {
             providerID: "openai",
             role: "assistant",
             sessionID: "session-parallel",
-            time: { created: Date.now(), completed: Date.now() },
+            time: { completed: Date.now(), created: Date.now() },
             tokens: {
               cache: { read: 0, write: 0 },
               input: 0,
@@ -695,6 +844,9 @@ test("different users can build prompts in parallel", async () => {
             },
           ],
         };
+      },
+      async subscribeEvents() {
+        return createClosedEventStream();
       },
     }),
     getSessionId: async (strategyId) => {
@@ -766,7 +918,7 @@ test("lock timeout returns a typed conflict error", async () => {
             providerID: "openai",
             role: "assistant",
             sessionID: "session-timeout",
-            time: { created: Date.now(), completed: Date.now() },
+            time: { completed: Date.now(), created: Date.now() },
             tokens: {
               cache: { read: 0, write: 0 },
               input: 0,
@@ -784,6 +936,9 @@ test("lock timeout returns a typed conflict error", async () => {
             },
           ],
         };
+      },
+      async subscribeEvents() {
+        return createClosedEventStream();
       },
     }),
     getSessionId: async (strategyId) => {
@@ -825,6 +980,330 @@ test("lock timeout returns a typed conflict error", async () => {
     await firstResponse;
   } finally {
     releaseFirstBuild.resolve();
+    await app.close();
+  }
+});
+
+test("GET /runs/{run_id}/events streams persisted and live events until completion", async () => {
+  const state = createState();
+  const eventStream = createAsyncEventStream();
+  const app = buildServer({
+    buildSystemPrompt: async () => "system prompt",
+    db: createDatabaseDouble(state),
+    getOpencodeTurnClient: async () => ({
+      async getSession() {
+        return {
+          title: "Streaming strategist",
+        };
+      },
+      async prompt({ messageId }) {
+        const promptMessageId = messageId ?? "run-stream";
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        eventStream.emit(
+          opencodeEvent("message.updated", {
+            info: {
+              agent: "main",
+              id: promptMessageId,
+              model: { modelID: "gpt-5", providerID: "openai" },
+              role: "user",
+              sessionID: "session-stream",
+              time: { created: Date.now() },
+            },
+          }),
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        eventStream.emit(
+          opencodeEvent("message.updated", {
+            info: {
+              cost: 0,
+              id: "assistant-stream",
+              mode: "chat",
+              modelID: "gpt-5",
+              parentID: promptMessageId,
+              path: { cwd: "/tmp", root: "/tmp" },
+              providerID: "openai",
+              role: "assistant",
+              sessionID: "session-stream",
+              time: { completed: Date.now(), created: Date.now() },
+              tokens: {
+                cache: { read: 0, write: 0 },
+                input: 0,
+                output: 0,
+                reasoning: 0,
+              },
+            },
+          }),
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        eventStream.emit(
+          opencodeEvent("message.part.updated", {
+            part: {
+              id: "part-stream",
+              messageID: "assistant-stream",
+              sessionID: "session-stream",
+              text: "Streaming reply.",
+              type: "text",
+            },
+          }),
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        eventStream.emit(
+          opencodeEvent("session.idle", {
+            sessionID: "session-stream",
+          }),
+        );
+        eventStream.end();
+
+        return {
+          info: {
+            cost: 0,
+            id: "assistant-stream",
+            mode: "chat",
+            modelID: "gpt-5",
+            parentID: promptMessageId,
+            path: { cwd: "/tmp", root: "/tmp" },
+            providerID: "openai",
+            role: "assistant",
+            sessionID: "session-stream",
+            time: { completed: Date.now(), created: Date.now() },
+            tokens: {
+              cache: { read: 0, write: 0 },
+              input: 0,
+              output: 0,
+              reasoning: 0,
+            },
+          },
+          parts: [
+            {
+              id: "text-stream",
+              messageID: "assistant-stream",
+              sessionID: "session-stream",
+              text: "Streaming reply.",
+              type: "text",
+            },
+          ],
+        };
+      },
+      async subscribeEvents(options) {
+        return eventStream.stream(options?.signal);
+      },
+    }),
+    getSessionId: async (strategyId) => {
+      const strategy = state.strategies.get(strategyId);
+
+      assert.ok(strategy);
+      strategy.opencodeSessionId ||= "session-stream";
+
+      return strategy.opencodeSessionId;
+    },
+  });
+
+  try {
+    const createResponse = await app.inject({
+      method: "POST",
+      payload: { text: "Start streaming" },
+      url: "/users/user-1/strategies/strategy-stream/messages",
+    });
+
+    assert.equal(createResponse.statusCode, 202);
+
+    const { run_id: runId } = createResponse.json() as { run_id: string };
+    const eventsResponse = await app.inject({
+      method: "GET",
+      url: `/users/user-1/strategies/strategy-stream/runs/${runId}/events`,
+    });
+
+    assert.equal(eventsResponse.statusCode, 200);
+    assert.match(
+      String(eventsResponse.headers["content-type"]),
+      /text\/event-stream/,
+    );
+
+    const events = parseSseEvents(eventsResponse.body);
+
+    assert.deepEqual(
+      events.map(({ event, id }) => ({ event, id })),
+      [
+        { event: "run.started", id: 1 },
+        { event: "message.updated", id: 2 },
+        { event: "message.updated", id: 3 },
+        { event: "message.part.updated", id: 4 },
+        { event: "session.idle", id: 5 },
+        { event: "run.completed", id: 6 },
+      ],
+    );
+    assert.deepEqual(events.at(-1)?.data, {
+      message_id: "assistant-stream",
+      reply: "Streaming reply.",
+      session_id: "session-stream",
+    });
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/{run_id}/events replays missed events from Last-Event-ID and resumes live streaming", async () => {
+  const state = createState();
+  const eventStream = createAsyncEventStream();
+  const app = buildServer({
+    buildSystemPrompt: async () => "system prompt",
+    db: createDatabaseDouble(state),
+    getOpencodeTurnClient: async () => ({
+      async getSession() {
+        return {
+          title: "Replay strategist",
+        };
+      },
+      async prompt({ messageId }) {
+        const promptMessageId = messageId ?? "run-replay";
+
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        eventStream.emit(
+          opencodeEvent("message.updated", {
+            info: {
+              agent: "main",
+              id: promptMessageId,
+              model: { modelID: "gpt-5", providerID: "openai" },
+              role: "user",
+              sessionID: "session-replay",
+              time: { created: Date.now() },
+            },
+          }),
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        eventStream.emit(
+          opencodeEvent("message.updated", {
+            info: {
+              cost: 0,
+              id: "assistant-replay",
+              mode: "chat",
+              modelID: "gpt-5",
+              parentID: promptMessageId,
+              path: { cwd: "/tmp", root: "/tmp" },
+              providerID: "openai",
+              role: "assistant",
+              sessionID: "session-replay",
+              time: { completed: Date.now(), created: Date.now() },
+              tokens: {
+                cache: { read: 0, write: 0 },
+                input: 0,
+                output: 0,
+                reasoning: 0,
+              },
+            },
+          }),
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        eventStream.emit(
+          opencodeEvent("message.part.updated", {
+            part: {
+              id: "part-replay",
+              messageID: "assistant-replay",
+              sessionID: "session-replay",
+              text: "Replay reply.",
+              type: "text",
+            },
+          }),
+        );
+
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        eventStream.emit(
+          opencodeEvent("session.idle", {
+            sessionID: "session-replay",
+          }),
+        );
+        eventStream.end();
+
+        return {
+          info: {
+            cost: 0,
+            id: "assistant-replay",
+            mode: "chat",
+            modelID: "gpt-5",
+            parentID: promptMessageId,
+            path: { cwd: "/tmp", root: "/tmp" },
+            providerID: "openai",
+            role: "assistant",
+            sessionID: "session-replay",
+            time: { completed: Date.now(), created: Date.now() },
+            tokens: {
+              cache: { read: 0, write: 0 },
+              input: 0,
+              output: 0,
+              reasoning: 0,
+            },
+          },
+          parts: [
+            {
+              id: "text-replay",
+              messageID: "assistant-replay",
+              sessionID: "session-replay",
+              text: "Replay reply.",
+              type: "text",
+            },
+          ],
+        };
+      },
+      async subscribeEvents(options) {
+        return eventStream.stream(options?.signal);
+      },
+    }),
+    getSessionId: async (strategyId) => {
+      const strategy = state.strategies.get(strategyId);
+
+      assert.ok(strategy);
+      strategy.opencodeSessionId ||= "session-replay";
+
+      return strategy.opencodeSessionId;
+    },
+  });
+
+  try {
+    const createResponse = await app.inject({
+      method: "POST",
+      payload: { text: "Start replayable stream" },
+      url: "/users/user-1/strategies/strategy-replay/messages",
+    });
+
+    assert.equal(createResponse.statusCode, 202);
+
+    const { run_id: runId } = createResponse.json() as { run_id: string };
+
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const eventsResponse = await app.inject({
+      headers: {
+        "last-event-id": "2",
+      },
+      method: "GET",
+      url: `/users/user-1/strategies/strategy-replay/runs/${runId}/events`,
+    });
+
+    assert.equal(eventsResponse.statusCode, 200);
+
+    const events = parseSseEvents(eventsResponse.body);
+
+    assert.deepEqual(
+      events.map(({ event, id }) => ({ event, id })),
+      [
+        { event: "message.updated", id: 3 },
+        { event: "message.part.updated", id: 4 },
+        { event: "session.idle", id: 5 },
+        { event: "run.completed", id: 6 },
+      ],
+    );
+    assert.deepEqual(events.at(-1)?.data, {
+      message_id: "assistant-replay",
+      reply: "Replay reply.",
+      session_id: "session-replay",
+    });
+  } finally {
     await app.close();
   }
 });
