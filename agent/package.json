@@ -7,12 +7,10 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/api/server.ts",
     "start": "node dist/api/server.js",
-    "test": "tsx --test src/**/*.test.ts",
-    "db:migrate": "pnpm build && node dist/db/migrate.js",
-    "s3:smoke": "tsx src/storage/smoke.ts"
+    "test": "tsx --test src/**/*.test.ts test/**/*.test.ts",
+    "db:migrate": "pnpm build && node dist/db/migrate.js"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "^3.1037.0",
     "@fastify/rate-limit": "^10.3.0",
     "@opencode-ai/sdk": "^1.14.25",
     "fastify": "^5.6.1",

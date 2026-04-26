@@ -211,7 +211,7 @@ def run(
         "date": snapshot_date.isoformat(),
         "coins": int(len(snapshot)),
         "rows": int(len(merged)),
-        "bucket": storage.bucket,
+        "storage_root": str(storage.root),
         "key": key,
         "uri": storage.dataset_uri("universe_history"),
     }

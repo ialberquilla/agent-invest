@@ -1,4 +1,4 @@
-import { getObject, s3Layout } from "../storage/s3.js";
+import { getObject, storageLayout } from "../storage/local.js";
 
 type PromptSectionReader = (key: string) => Promise<string | null>;
 
@@ -25,7 +25,7 @@ export const MEMORY_DISCIPLINE_GUIDANCE = [
 export const AGENT_SCRIPT_REGISTRY: readonly AgentScriptDefinition[] = [
   {
     name: "read_memory",
-    summary: "Read user or strategy memory from S3.",
+    summary: "Read user or strategy memory from local storage.",
     signature:
       "--scope {user|strategy} --user <user_id> [--strategy <strategy_id>]",
     example:
@@ -118,9 +118,9 @@ export async function buildSystemPrompt({
   readSection = defaultReadSection,
 }: BuildSystemPromptOptions): Promise<string> {
   const [profile, instructions, memory] = await Promise.all([
-    readSection(s3Layout.userProfileKey(userId)),
-    readSection(s3Layout.strategyInstructionsKey(userId, strategyId)),
-    readSection(s3Layout.strategyMemoryKey(userId, strategyId)),
+    readSection(storageLayout.userProfileKey(userId)),
+    readSection(storageLayout.strategyInstructionsKey(userId, strategyId)),
+    readSection(storageLayout.strategyMemoryKey(userId, strategyId)),
   ]);
 
   return [

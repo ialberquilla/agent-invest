@@ -12,4 +12,4 @@ export {
   getOrCreateSession,
   resolveOpencodeModel,
 } from "./agent/session.js";
-export * from "./storage/s3.js";
+export * from "./storage/local.js";

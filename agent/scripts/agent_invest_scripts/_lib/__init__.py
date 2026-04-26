@@ -10,6 +10,7 @@ from .data import (
     read_dataset,
     universe_history,
 )
+from .storage import storage_root
 
 __all__ = [
     "DatasetNotFoundError",
@@ -20,5 +21,6 @@ __all__ = [
     "fail",
     "print_json",
     "read_dataset",
+    "storage_root",
     "universe_history",
 ]

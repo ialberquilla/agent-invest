@@ -6,6 +6,7 @@
     "dev": "pnpm --filter @agent-invest/agent dev",
     "build": "pnpm -r --if-present build",
     "db:migrate": "pnpm --filter @agent-invest/agent db:migrate",
+    "test": "pnpm --filter @agent-invest/agent test",
     "lint": "eslint .",
     "format": "prettier --check ."
   },

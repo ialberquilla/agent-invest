@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import unittest
 from datetime import UTC, datetime
-from unittest.mock import patch
 
 from agent_invest_scripts.list_runs import (
     RunRow,
@@ -13,12 +12,11 @@ from agent_invest_scripts.list_runs import (
 
 class BuildRunOutputKeyTest(unittest.TestCase):
     def test_uses_strategy_artifacts_layout(self) -> None:
-        with patch.dict("os.environ", {"S3_PREFIX": "agent-invest/dev"}, clear=True):
-            key = build_run_output_key("user-1", "strategy-1", "run-1")
+        key = build_run_output_key("user-1", "strategy-1", "run-1")
 
         self.assertEqual(
             key,
-            "agent-invest/dev/users/user-1/strategies/strategy-1/artifacts/run-1/output.json",
+            "users/user-1/strategies/strategy-1/artifacts/run-1/output.json",
         )
 
 

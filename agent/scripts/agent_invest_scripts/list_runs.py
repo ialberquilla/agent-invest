@@ -1,4 +1,4 @@
-"""List prior runs for a strategy from Postgres with optional S3 summaries."""
+"""List prior runs for a strategy from Postgres with optional local summaries."""
 
 from __future__ import annotations
 
@@ -7,17 +7,15 @@ import json
 import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-import boto3
 import psycopg
-from botocore.exceptions import BotoCoreError, ClientError
 from psycopg.rows import dict_row
 
 from agent_invest_scripts._lib.cli import fail, print_json
-
-_MISSING_S3_ERROR_CODES = {"404", "NoSuchKey", "NotFound"}
+from agent_invest_scripts._lib.storage import key_path, normalize_identifier
 
 
 @dataclass(slots=True)
@@ -80,16 +78,16 @@ def build_run_summary(row: RunRow, *, output_payload: object | None) -> str:
 
 
 def build_run_output_key(user_id: str, strategy_id: str, run_id: str) -> str:
-    prefix = _normalize_prefix(_read_optional_env("S3_PREFIX", "AWS_S3_PREFIX"))
-    return _join_key(
-        prefix,
-        "users",
-        user_id,
-        "strategies",
-        strategy_id,
-        "artifacts",
-        run_id,
-        "output.json",
+    return "/".join(
+        [
+            "users",
+            normalize_identifier(user_id, "user_id"),
+            "strategies",
+            normalize_identifier(strategy_id, "strategy_id"),
+            "artifacts",
+            normalize_identifier(run_id, "run_id"),
+            "output.json",
+        ]
     )
 
 
@@ -128,39 +126,22 @@ def _fetch_run_rows(strategy_id: str, *, limit: int | None) -> list[RunRow]:
 def _fetch_output_payloads(
     strategy_id: str, rows: list[RunRow]
 ) -> dict[str, object | None]:
-    if not rows:
-        return {}
-
-    bucket = _read_optional_env("S3_BUCKET", "AWS_S3_BUCKET")
-    if not bucket:
-        return {}
-
-    client = _build_s3_client()
     payloads: dict[str, object | None] = {}
 
     for row in rows:
         key = build_run_output_key(row.user_id, strategy_id, row.run_id)
-        payloads[row.run_id] = _read_output_payload(client, bucket=bucket, key=key)
+        payloads[row.run_id] = _read_output_payload(key_path(key))
 
     return payloads
 
 
-def _read_output_payload(client: Any, *, bucket: str, key: str) -> object | None:
-    try:
-        response = client.get_object(Bucket=bucket, Key=key)
-    except ClientError as error:
-        if _is_missing_s3_object(error):
-            return None
-
-        return None
-    except BotoCoreError:
+def _read_output_payload(path: Path) -> object | None:
+    if not path.exists():
         return None
 
     try:
-        raw_body = response["Body"].read()
-        payload = raw_body.decode("utf-8") if isinstance(raw_body, bytes) else raw_body
-        return json.loads(payload)
-    except (AttributeError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
 
@@ -189,14 +170,6 @@ def _connect_postgres() -> psycopg.Connection[dict[str, Any]]:
             connect_kwargs[kwarg_name] = value
 
     return psycopg.connect(**connect_kwargs)
-
-
-def _build_s3_client() -> Any:
-    region = _read_optional_env("AWS_REGION", "AWS_DEFAULT_REGION")
-    if region:
-        return boto3.client("s3", region_name=region)
-
-    return boto3.client("s3")
 
 
 def _extract_output_summary(payload: object | None) -> str | None:
@@ -321,11 +294,6 @@ def _truncate_summary(value: str, *, max_length: int = 160) -> str:
     return f"{trimmed[: max_length - 3].rstrip()}..."
 
 
-def _is_missing_s3_object(error: ClientError) -> bool:
-    code = error.response.get("Error", {}).get("Code")
-    return code in _MISSING_S3_ERROR_CODES
-
-
 def _positive_int(value: str) -> int:
     try:
         parsed = int(value)
@@ -344,16 +312,6 @@ def _read_optional_env(*names: str) -> str | None:
         if value:
             return value
     return None
-
-
-def _normalize_prefix(prefix: str | None) -> str:
-    if not prefix:
-        return ""
-    return prefix.strip("/")
-
-
-def _join_key(*segments: str) -> str:
-    return "/".join(segment for segment in segments if segment)
 
 
 if __name__ == "__main__":
