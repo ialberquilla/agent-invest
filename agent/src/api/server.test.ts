@@ -187,6 +187,37 @@ function sleep(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
+async function withEnv(
+  overrides: Partial<NodeJS.ProcessEnv>,
+  callback: () => Promise<void>,
+) {
+  const previousValues = new Map<string, string | undefined>();
+
+  for (const [key, value] of Object.entries(overrides)) {
+    previousValues.set(key, process.env[key]);
+
+    if (value === undefined) {
+      delete process.env[key];
+      continue;
+    }
+
+    process.env[key] = value;
+  }
+
+  try {
+    await callback();
+  } finally {
+    for (const [key, value] of previousValues) {
+      if (value === undefined) {
+        delete process.env[key];
+        continue;
+      }
+
+      process.env[key] = value;
+    }
+  }
+}
+
 function createDatabaseDouble(state: ReturnType<typeof createState>) {
   async function acquireUserLock(client: ClientState, userId: string) {
     const currentOwner = state.userLocks.get(userId);
@@ -980,6 +1011,217 @@ test("lock timeout returns a typed conflict error", async () => {
     await firstResponse;
   } finally {
     releaseFirstBuild.resolve();
+    await app.close();
+  }
+});
+
+test("unexpected errors return the structured error envelope", async () => {
+  const app = buildServer({
+    buildSystemPrompt: async () => "system prompt",
+    db: {
+      async connect() {
+        throw new Error("connect should not be called");
+      },
+      async query() {
+        throw new Error("database offline");
+      },
+    },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: { text: "Trigger an unexpected failure" },
+      url: "/users/user-1/strategies/strategy-error/messages",
+    });
+
+    assert.equal(response.statusCode, 500);
+    assert.deepEqual(response.json(), {
+      error: {
+        code: "internal_error",
+        message: "Internal server error",
+      },
+    });
+  } finally {
+    await app.close();
+  }
+});
+
+test("POST /messages applies rate limiting and returns Retry-After", async () => {
+  await withEnv(
+    {
+      MESSAGES_RATE_LIMIT_MAX: "1",
+      MESSAGES_RATE_LIMIT_WINDOW_MS: "60000",
+    },
+    async () => {
+      const state = createState();
+      const app = buildServer({
+        buildSystemPrompt: async () => "system prompt",
+        db: createDatabaseDouble(state),
+        getOpencodeTurnClient: async () => ({
+          async getSession() {
+            return {
+              title: "Rate limited strategy",
+            };
+          },
+          async prompt() {
+            return {
+              info: {
+                cost: 0,
+                id: "assistant-rate-limit",
+                mode: "chat",
+                modelID: "gpt-5",
+                parentID: "run-rate-limit",
+                path: { cwd: "/tmp", root: "/tmp" },
+                providerID: "openai",
+                role: "assistant",
+                sessionID: "session-rate-limit",
+                time: { completed: Date.now(), created: Date.now() },
+                tokens: {
+                  cache: { read: 0, write: 0 },
+                  input: 0,
+                  output: 0,
+                  reasoning: 0,
+                },
+              },
+              parts: [
+                {
+                  id: "text-rate-limit",
+                  messageID: "assistant-rate-limit",
+                  sessionID: "session-rate-limit",
+                  text: "Rate limited reply.",
+                  type: "text",
+                },
+              ],
+            };
+          },
+          async subscribeEvents() {
+            return createClosedEventStream();
+          },
+        }),
+        getSessionId: async (strategyId) => {
+          const strategy = state.strategies.get(strategyId);
+
+          assert.ok(strategy);
+          strategy.opencodeSessionId ||= `session-${strategyId}`;
+
+          return strategy.opencodeSessionId;
+        },
+      });
+
+      try {
+        const firstResponse = await app.inject({
+          method: "POST",
+          payload: { text: "First turn" },
+          url: "/users/user-1/strategies/strategy-rate-limit/messages?wait=1",
+        });
+
+        assert.equal(firstResponse.statusCode, 200);
+
+        const secondResponse = await app.inject({
+          method: "POST",
+          payload: { text: "Second turn" },
+          url: "/users/user-1/strategies/strategy-rate-limit/messages",
+        });
+
+        assert.equal(secondResponse.statusCode, 429);
+        assert.deepEqual(secondResponse.json(), {
+          error: {
+            code: "rate_limited",
+            message: "Rate limit exceeded, retry in 1 minute",
+          },
+        });
+        assert.ok(secondResponse.headers["retry-after"]);
+      } finally {
+        await app.close();
+      }
+    },
+  );
+});
+
+test("timeout sentinel output marks the run as failed", async () => {
+  const state = createState();
+  const app = buildServer({
+    buildSystemPrompt: async () => "system prompt",
+    db: createDatabaseDouble(state),
+    getOpencodeTurnClient: async () => ({
+      async getSession() {
+        return {
+          title: "Timeout strategy",
+        };
+      },
+      async prompt() {
+        return {
+          info: {
+            cost: 0,
+            id: "assistant-script-timeout",
+            mode: "chat",
+            modelID: "gpt-5",
+            parentID: "run-script-timeout",
+            path: { cwd: "/tmp", root: "/tmp" },
+            providerID: "openai",
+            role: "assistant",
+            sessionID: "session-script-timeout",
+            time: { completed: Date.now(), created: Date.now() },
+            tokens: {
+              cache: { read: 0, write: 0 },
+              input: 0,
+              output: 0,
+              reasoning: 0,
+            },
+          },
+          parts: [
+            {
+              callID: "call-script-timeout",
+              id: "tool-script-timeout",
+              messageID: "assistant-script-timeout",
+              sessionID: "session-script-timeout",
+              state: {
+                input: {
+                  command:
+                    "bash agent/scripts/run_agent_script.sh test_fixtures.sleep --seconds 30",
+                },
+                metadata: {},
+                output:
+                  "AGENT_SCRIPT_TIMEOUT: test_fixtures.sleep exceeded 1000ms",
+                status: "completed",
+                time: { end: Date.now(), start: Date.now() },
+                title: "Run sleep fixture",
+              },
+              tool: "bash",
+              type: "tool",
+            },
+          ],
+        };
+      },
+      async subscribeEvents() {
+        return createClosedEventStream();
+      },
+    }),
+    getSessionId: async (strategyId) => {
+      const strategy = state.strategies.get(strategyId);
+
+      assert.ok(strategy);
+      strategy.opencodeSessionId ||= `session-${strategyId}`;
+
+      return strategy.opencodeSessionId;
+    },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: { text: "Run the long fixture" },
+      url: "/users/user-1/strategies/strategy-timeout/messages?wait=1",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().status, "failed");
+    assert.equal(
+      response.json().error,
+      "AGENT_SCRIPT_TIMEOUT: test_fixtures.sleep exceeded 1000ms",
+    );
+  } finally {
     await app.close();
   }
 });

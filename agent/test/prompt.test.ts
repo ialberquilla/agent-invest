@@ -95,6 +95,12 @@ test("tool manifest is registry-driven and includes memory guidance", () => {
     }
   }
 
+  assert.ok(
+    manifest.includes(
+      "Always invoke them with `bash agent/scripts/run_agent_script.sh <script> ...`.",
+    ),
+  );
+  assert.ok(manifest.includes("AGENT_SCRIPT_TIMEOUT:"));
   assert.ok(manifest.includes("## Memory discipline"));
   assert.ok(manifest.includes(MEMORY_DISCIPLINE_GUIDANCE));
 });

@@ -12,8 +12,9 @@
     "s3:smoke": "tsx src/storage/smoke.ts"
   },
   "dependencies": {
-    "@opencode-ai/sdk": "^1.14.25",
     "@aws-sdk/client-s3": "^3.1037.0",
+    "@fastify/rate-limit": "^10.3.0",
+    "@opencode-ai/sdk": "^1.14.25",
     "fastify": "^5.6.1",
     "pg": "^8.16.3",
     "pino": "^10.1.0"
