@@ -77,6 +77,30 @@ type EventRow = {
   payload: RunTerminalPayload | null;
 };
 
+type NextSeqRow = {
+  next_seq: number | string;
+};
+
+type PersistedRunEventRow = {
+  seq: number | string;
+  type: string;
+  payload: Record<string, unknown> | null;
+};
+
+type PersistedRunEvent = {
+  runId: string;
+  seq: number;
+  type: string;
+  payload: Record<string, unknown>;
+};
+
+type RunEventSubscription = {
+  next(): Promise<PersistedRunEvent | undefined>;
+  close(): void;
+};
+
+type RunEventListener = (event: PersistedRunEvent) => void;
+
 type RunTerminalPayload = {
   reply?: string;
   error?: string;
@@ -101,6 +125,134 @@ type ServerDependencies = {
   getOpencodeTurnClient?: () => Promise<OpencodeTurnClient>;
   turnLockTimeoutMs?: number;
 };
+
+class RunEventStore {
+  private readonly appendQueues = new Map<string, Promise<void>>();
+  private readonly listeners = new Map<string, Set<RunEventListener>>();
+  private readonly nextSeqByRun = new Map<string, number>();
+
+  async append(
+    db: DatabaseQueryable,
+    runId: string,
+    type: string,
+    payload: Record<string, unknown>,
+  ) {
+    let persisted: PersistedRunEvent | undefined;
+    const previous = this.appendQueues.get(runId) ?? Promise.resolve();
+    const next = previous.then(async () => {
+      const cachedNextSeq = this.nextSeqByRun.get(runId);
+      const seq =
+        cachedNextSeq ?? (await this.loadNextSequenceNumber(db, runId));
+
+      await db.query(
+        "INSERT INTO events (run_id, seq, type, payload) VALUES ($1, $2, $3, $4::jsonb)",
+        [runId, seq, type, JSON.stringify(payload)],
+      );
+
+      this.nextSeqByRun.set(runId, seq + 1);
+      persisted = {
+        payload,
+        runId,
+        seq,
+        type,
+      };
+
+      for (const listener of this.listeners.get(runId) ?? []) {
+        listener(persisted);
+      }
+
+      if (isTerminalEventType(type)) {
+        this.nextSeqByRun.delete(runId);
+      }
+    });
+
+    const queued = next.catch(() => undefined);
+
+    void queued.finally(() => {
+      if (this.appendQueues.get(runId) === queued) {
+        this.appendQueues.delete(runId);
+      }
+    });
+
+    this.appendQueues.set(runId, queued);
+
+    await next;
+
+    return persisted as PersistedRunEvent;
+  }
+
+  subscribe(runId: string): RunEventSubscription {
+    const listeners = this.listeners.get(runId) ?? new Set<RunEventListener>();
+    const queue: PersistedRunEvent[] = [];
+    let resolveNext:
+      | ((event: PersistedRunEvent | undefined) => void)
+      | undefined;
+    let closed = false;
+
+    const listener: RunEventListener = (event) => {
+      if (closed) {
+        return;
+      }
+
+      if (resolveNext) {
+        const resolve = resolveNext;
+
+        resolveNext = undefined;
+        resolve(event);
+        return;
+      }
+
+      queue.push(event);
+    };
+
+    listeners.add(listener);
+    this.listeners.set(runId, listeners);
+
+    return {
+      close: () => {
+        if (closed) {
+          return;
+        }
+
+        closed = true;
+        listeners.delete(listener);
+
+        if (listeners.size === 0) {
+          this.listeners.delete(runId);
+        }
+
+        if (resolveNext) {
+          const resolve = resolveNext;
+
+          resolveNext = undefined;
+          resolve(undefined);
+        }
+      },
+      next: async () => {
+        if (queue.length > 0) {
+          return queue.shift();
+        }
+
+        if (closed) {
+          return undefined;
+        }
+
+        return new Promise((resolve) => {
+          resolveNext = resolve;
+        });
+      },
+    };
+  }
+
+  private async loadNextSequenceNumber(db: DatabaseQueryable, runId: string) {
+    const result = await db.query<NextSeqRow>(
+      "SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq FROM events WHERE run_id = $1",
+      [runId],
+    );
+
+    return Number(result.rows[0]?.next_seq ?? 1);
+  }
+}
 
 class RouteError extends Error {
   constructor(
@@ -186,6 +338,10 @@ function toRouteError(error: unknown, turnLockTimeoutMs: number) {
   return error;
 }
 
+function isAbortError(error: unknown) {
+  return error instanceof Error && error.name === "AbortError";
+}
+
 function getAssistantErrorMessage(result: OpencodePromptResult) {
   const error = result.info.error;
 
@@ -212,6 +368,10 @@ function isTerminalStatus(status: string) {
   return status === "completed" || status === "failed";
 }
 
+function isTerminalEventType(type: string) {
+  return type === "run.completed" || type === "run.failed";
+}
+
 function serializeTimestamp(value: Date | string | null) {
   if (!value) {
     return null;
@@ -222,6 +382,316 @@ function serializeTimestamp(value: Date | string | null) {
 
 function sleep(milliseconds: number) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function readString(
+  record: Record<string, unknown> | undefined,
+  key: string,
+): string | undefined {
+  const value = record?.[key];
+
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function normalizeEventPayload(
+  payload: Record<string, unknown> | null | undefined,
+) {
+  return payload ?? {};
+}
+
+function parseLastEventId(rawLastEventId: string | string[] | undefined) {
+  if (rawLastEventId === undefined) {
+    return 0;
+  }
+
+  const lastEventId = Array.isArray(rawLastEventId)
+    ? rawLastEventId[rawLastEventId.length - 1]
+    : rawLastEventId;
+  const normalized = lastEventId.trim();
+
+  if (!/^\d+$/.test(normalized)) {
+    throw new RouteError(
+      400,
+      "invalid_last_event_id",
+      "Header 'Last-Event-ID' must be a non-negative integer",
+    );
+  }
+
+  return Number(normalized);
+}
+
+function formatSseEvent(event: PersistedRunEvent) {
+  return [
+    `id: ${event.seq}`,
+    `event: ${event.type}`,
+    `data: ${JSON.stringify(event.payload)}`,
+    "",
+  ].join("\n");
+}
+
+function writeSseEvent(reply: FastifyReply, event: PersistedRunEvent) {
+  reply.raw.write(`${formatSseEvent(event)}\n`);
+}
+
+function beginSseStream(reply: FastifyReply) {
+  reply.hijack();
+  reply.raw.statusCode = 200;
+  reply.raw.setHeader("cache-control", "no-cache, no-transform");
+  reply.raw.setHeader("connection", "keep-alive");
+  reply.raw.setHeader("content-type", "text/event-stream; charset=utf-8");
+  reply.raw.setHeader("x-accel-buffering", "no");
+  reply.raw.flushHeaders?.();
+}
+
+function createDisconnectPromise(request: FastifyRequest) {
+  let disconnected = false;
+  let resolveDisconnected: (() => void) | undefined;
+
+  const done = new Promise<void>((resolve) => {
+    resolveDisconnected = resolve;
+  });
+  const onClose = () => {
+    disconnected = true;
+    resolveDisconnected?.();
+  };
+
+  request.raw.once("close", onClose);
+
+  return {
+    cleanup() {
+      request.raw.off("close", onClose);
+    },
+    done,
+    isDisconnected() {
+      return disconnected;
+    },
+  };
+}
+
+async function loadRunEvents(
+  db: DatabaseQueryable,
+  runId: string,
+  lastEventId: number,
+): Promise<PersistedRunEvent[]> {
+  const result = await db.query<PersistedRunEventRow>(
+    [
+      "SELECT seq, type, payload",
+      "FROM events",
+      "WHERE run_id = $1 AND seq > $2",
+      "ORDER BY seq ASC",
+    ].join(" "),
+    [runId, lastEventId],
+  );
+
+  return result.rows.map((row) => ({
+    payload: normalizeEventPayload(row.payload),
+    runId,
+    seq: Number(row.seq),
+    type: row.type,
+  }));
+}
+
+function getOpencodeEventDetails(event: unknown) {
+  if (!isRecord(event)) {
+    return null;
+  }
+
+  const type = readString(event, "type");
+  const properties = isRecord(event.properties) ? event.properties : undefined;
+
+  if (!type || !properties) {
+    return null;
+  }
+
+  return { properties, type };
+}
+
+function getOpencodeEventSessionId(
+  type: string,
+  properties: Record<string, unknown>,
+) {
+  if (type === "message.updated") {
+    return readString(
+      isRecord(properties.info) ? properties.info : undefined,
+      "sessionID",
+    );
+  }
+
+  if (type === "message.part.updated") {
+    return readString(
+      isRecord(properties.part) ? properties.part : undefined,
+      "sessionID",
+    );
+  }
+
+  return readString(properties, "sessionID");
+}
+
+function getOpencodeEventMessageId(
+  type: string,
+  properties: Record<string, unknown>,
+) {
+  if (type === "message.updated") {
+    return readString(
+      isRecord(properties.info) ? properties.info : undefined,
+      "id",
+    );
+  }
+
+  if (type === "message.part.updated") {
+    return readString(
+      isRecord(properties.part) ? properties.part : undefined,
+      "messageID",
+    );
+  }
+
+  return readString(properties, "messageID");
+}
+
+function getOpencodeEventParentMessageId(
+  type: string,
+  properties: Record<string, unknown>,
+) {
+  if (type !== "message.updated") {
+    return undefined;
+  }
+
+  return readString(
+    isRecord(properties.info) ? properties.info : undefined,
+    "parentID",
+  );
+}
+
+function shouldPersistOpencodeEvent(
+  event: unknown,
+  sessionId: string,
+  relatedMessageIds: Set<string>,
+) {
+  const details = getOpencodeEventDetails(event);
+
+  if (!details) {
+    return false;
+  }
+
+  const eventSessionId = getOpencodeEventSessionId(
+    details.type,
+    details.properties,
+  );
+
+  if (eventSessionId !== sessionId) {
+    return false;
+  }
+
+  const messageId = getOpencodeEventMessageId(details.type, details.properties);
+  const parentMessageId = getOpencodeEventParentMessageId(
+    details.type,
+    details.properties,
+  );
+
+  if (!messageId) {
+    return true;
+  }
+
+  if (relatedMessageIds.has(messageId)) {
+    return true;
+  }
+
+  if (parentMessageId && relatedMessageIds.has(parentMessageId)) {
+    relatedMessageIds.add(messageId);
+    return true;
+  }
+
+  return false;
+}
+
+function extractOpencodeEventPayload(event: unknown) {
+  const details = getOpencodeEventDetails(event);
+
+  return details
+    ? { payload: details.properties, type: details.type }
+    : undefined;
+}
+
+async function streamOpencodeEvents(options: {
+  app: ReturnType<typeof Fastify>;
+  db: DatabaseQueryable;
+  getOpencodeTurnClient: () => Promise<OpencodeTurnClient>;
+  runEvents: RunEventStore;
+  runId: string;
+  sessionId: string;
+}) {
+  const { app, db, getOpencodeTurnClient, runEvents, runId, sessionId } =
+    options;
+  const relatedMessageIds = new Set<string>([runId]);
+  const abortController = new AbortController();
+  let resolveIdle: (() => void) | undefined;
+  const idlePromise = new Promise<void>((resolve) => {
+    resolveIdle = resolve;
+  });
+  const streamTask = (async () => {
+    try {
+      const opencode = await getOpencodeTurnClient();
+      const stream = await opencode.subscribeEvents({
+        signal: abortController.signal,
+      });
+
+      for await (const globalEvent of stream) {
+        const event = globalEvent;
+
+        if (!shouldPersistOpencodeEvent(event, sessionId, relatedMessageIds)) {
+          continue;
+        }
+
+        const persistedEvent = extractOpencodeEventPayload(event);
+
+        if (!persistedEvent) {
+          continue;
+        }
+
+        await runEvents.append(
+          db,
+          runId,
+          persistedEvent.type,
+          persistedEvent.payload,
+        );
+
+        if (persistedEvent.type === "session.idle") {
+          resolveIdle?.();
+        }
+      }
+    } catch (error) {
+      if (isAbortError(error)) {
+        return;
+      }
+
+      app.log.warn(
+        {
+          error: getErrorMessage(error),
+          runId,
+          sessionId,
+        },
+        "Failed to forward opencode events for run",
+      );
+    } finally {
+      resolveIdle?.();
+    }
+  })();
+
+  return {
+    async stop() {
+      abortController.abort();
+      await streamTask;
+    },
+    waitForIdle(timeoutMs: number) {
+      return Promise.race([idlePromise, sleep(timeoutMs)]).then(
+        () => undefined,
+      );
+    },
+  };
 }
 
 function parseWaitMilliseconds(rawWait: string | undefined) {
@@ -333,6 +803,7 @@ async function acquireUserTurnClient(
 
 async function insertRunStart(
   db: DatabaseQueryable,
+  runEvents: RunEventStore,
   runId: string,
   strategyId: string,
 ) {
@@ -344,14 +815,12 @@ async function insertRunStart(
     "INSERT INTO runs (run_id, strategy_id, status) VALUES ($1, $2, $3)",
     [runId, strategyId, "running"],
   );
-  await db.query(
-    "INSERT INTO events (run_id, seq, type, payload) VALUES ($1, $2, $3, $4::jsonb)",
-    [runId, 1, "run.started", JSON.stringify({})],
-  );
+  await runEvents.append(db, runId, "run.started", {});
 }
 
 async function markRunCompleted(
   db: DatabaseQueryable,
+  runEvents: RunEventStore,
   runId: string,
   sessionId: string,
   messageId: string,
@@ -361,23 +830,16 @@ async function markRunCompleted(
     "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3 WHERE run_id = $1",
     [runId, "completed", 0],
   );
-  await db.query(
-    "INSERT INTO events (run_id, seq, type, payload) VALUES ($1, $2, $3, $4::jsonb)",
-    [
-      runId,
-      2,
-      "run.completed",
-      JSON.stringify({
-        message_id: messageId,
-        reply,
-        session_id: sessionId,
-      }),
-    ],
-  );
+  await runEvents.append(db, runId, "run.completed", {
+    message_id: messageId,
+    reply,
+    session_id: sessionId,
+  });
 }
 
 async function markRunFailed(
   db: DatabaseQueryable,
+  runEvents: RunEventStore,
   runId: string,
   error: string,
 ) {
@@ -385,10 +847,7 @@ async function markRunFailed(
     "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3 WHERE run_id = $1",
     [runId, "failed", 1],
   );
-  await db.query(
-    "INSERT INTO events (run_id, seq, type, payload) VALUES ($1, $2, $3, $4::jsonb)",
-    [runId, 2, "run.failed", JSON.stringify({ error })],
-  );
+  await runEvents.append(db, runId, "run.failed", { error });
 }
 
 async function maybeUpdateStrategyTitle(
@@ -506,6 +965,7 @@ async function executeRun(options: {
   db: DatabasePool;
   getOpencodeTurnClient: () => Promise<OpencodeTurnClient>;
   getSessionId: (strategyId: string) => Promise<string>;
+  runEvents: RunEventStore;
   runId: string;
   strategyId: string;
   text: string;
@@ -518,6 +978,7 @@ async function executeRun(options: {
     db,
     getOpencodeTurnClient,
     getSessionId,
+    runEvents,
     runId,
     strategyId,
     text,
@@ -530,42 +991,58 @@ async function executeRun(options: {
     const systemPrompt = await buildSystemPrompt({ userId, strategyId });
     const sessionId = await getSessionId(strategyId);
     const opencode = await getOpencodeTurnClient();
-    const result = await opencode.prompt({
-      messageId: runId,
-      sessionId,
-      system: systemPrompt,
-      text,
-    });
-    const assistantError = getAssistantErrorMessage(result);
-
-    if (assistantError) {
-      throw new Error(assistantError);
-    }
-
-    await markRunCompleted(
-      turnClient,
+    const opencodeEvents = await streamOpencodeEvents({
+      app,
+      db,
+      getOpencodeTurnClient,
+      runEvents,
       runId,
       sessionId,
-      result.info.id,
-      extractReplyText(result.parts),
-    );
+    });
 
     try {
-      const session = await opencode.getSession(sessionId);
-      await maybeUpdateStrategyTitle(turnClient, strategyId, session.title);
-    } catch (error) {
-      app.log.warn(
-        {
-          error: getErrorMessage(error),
-          runId,
-          strategyId,
-        },
-        "Failed to refresh strategy title after run completion",
-      );
-    }
+      const result = await opencode.prompt({
+        messageId: runId,
+        sessionId,
+        system: systemPrompt,
+        text,
+      });
+      const assistantError = getAssistantErrorMessage(result);
 
-    await turnClient.query("COMMIT");
-    inTransaction = false;
+      if (assistantError) {
+        throw new Error(assistantError);
+      }
+
+      await opencodeEvents.waitForIdle(1_000);
+
+      try {
+        const session = await opencode.getSession(sessionId);
+        await maybeUpdateStrategyTitle(turnClient, strategyId, session.title);
+      } catch (error) {
+        app.log.warn(
+          {
+            error: getErrorMessage(error),
+            runId,
+            strategyId,
+          },
+          "Failed to refresh strategy title after run completion",
+        );
+      }
+
+      await turnClient.query("COMMIT");
+      inTransaction = false;
+
+      await markRunCompleted(
+        db,
+        runEvents,
+        runId,
+        sessionId,
+        result.info.id,
+        extractReplyText(result.parts),
+      );
+    } finally {
+      await opencodeEvents.stop();
+    }
   } catch (error) {
     const message = getErrorMessage(error);
 
@@ -586,7 +1063,7 @@ async function executeRun(options: {
     }
 
     try {
-      await markRunFailed(db, runId, message);
+      await markRunFailed(db, runEvents, runId, message);
     } catch (updateError) {
       app.log.error(
         {
@@ -618,6 +1095,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   const getSessionId = dependencies.getSessionId ?? getOrCreateSession;
   const getOpencodeTurnClient =
     dependencies.getOpencodeTurnClient ?? createOpencodeTurnClient;
+  const runEvents = new RunEventStore();
   const turnLockTimeoutMs =
     dependencies.turnLockTimeoutMs ?? resolveTurnLockTimeoutMs();
   const app = Fastify({
@@ -652,7 +1130,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
         const runId = randomUUID();
 
         try {
-          await insertRunStart(db, runId, strategyId);
+          await insertRunStart(db, runEvents, runId, strategyId);
         } catch (error) {
           try {
             await turnClient.query("ROLLBACK");
@@ -669,6 +1147,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
           db,
           getOpencodeTurnClient,
           getSessionId,
+          runEvents,
           runId,
           strategyId,
           text,
@@ -743,9 +1222,105 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       }
     },
   );
-  app.get(
+  app.get<{
+    Params: RunRouteParams;
+  }>(
     "/users/:user_id/strategies/:strategy_id/runs/:run_id/events",
-    notImplemented,
+    async (request, reply) => {
+      const disconnect = createDisconnectPromise(request);
+
+      try {
+        const lastEventId = parseLastEventId(request.headers["last-event-id"]);
+        const {
+          run_id: runId,
+          strategy_id: strategyId,
+          user_id: userId,
+        } = request.params;
+        const run = await loadRunState(db, userId, strategyId, runId);
+
+        if (!run) {
+          return reply
+            .code(404)
+            .send(errorResponse("run_not_found", "Run not found"));
+        }
+
+        const subscription = runEvents.subscribe(runId);
+
+        beginSseStream(reply);
+
+        let latestEventId = lastEventId;
+        let terminalSeen = false;
+
+        try {
+          const replayedEvents = await loadRunEvents(db, runId, lastEventId);
+
+          for (const event of replayedEvents) {
+            if (event.seq <= latestEventId) {
+              continue;
+            }
+
+            writeSseEvent(reply, event);
+            latestEventId = event.seq;
+            terminalSeen = isTerminalEventType(event.type);
+          }
+
+          while (!terminalSeen && !disconnect.isDisconnected()) {
+            const nextResult = await Promise.race([
+              subscription
+                .next()
+                .then((event) => ({ event, type: "event" as const })),
+              disconnect.done.then(() => ({ type: "disconnect" as const })),
+            ]);
+
+            if (nextResult.type === "disconnect") {
+              break;
+            }
+
+            const event = nextResult.event;
+
+            if (!event || event.seq <= latestEventId) {
+              continue;
+            }
+
+            writeSseEvent(reply, event);
+            latestEventId = event.seq;
+            terminalSeen = isTerminalEventType(event.type);
+          }
+        } finally {
+          subscription.close();
+
+          if (!reply.raw.writableEnded) {
+            reply.raw.end();
+          }
+        }
+
+        return reply;
+      } catch (error) {
+        const routeError = toRouteError(error, turnLockTimeoutMs);
+
+        if (routeError instanceof RouteError) {
+          return reply
+            .code(routeError.statusCode)
+            .send(errorResponse(routeError.code, routeError.message));
+        }
+
+        request.log.error(error);
+
+        if (!reply.sent) {
+          return reply
+            .code(500)
+            .send(errorResponse("internal_error", "Internal server error"));
+        }
+
+        if (!reply.raw.destroyed && !reply.raw.writableEnded) {
+          reply.raw.end();
+        }
+
+        return reply;
+      } finally {
+        disconnect.cleanup();
+      }
+    },
   );
 
   return app;

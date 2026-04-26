@@ -3,6 +3,7 @@ import {
   createOpencodeServer,
   type AssistantMessage,
   type OpencodeClient,
+  type Event as OpencodeEvent,
   type Part,
 } from "@opencode-ai/sdk";
 import type { QueryResultRow } from "pg";
@@ -44,9 +45,16 @@ export type OpencodePromptResult = {
   parts: Part[];
 };
 
+export type OpencodeStreamOptions = {
+  signal?: AbortSignal;
+};
+
 export type OpencodeTurnClient = {
   prompt(request: OpencodePromptRequest): Promise<OpencodePromptResult>;
   getSession(sessionId: string): Promise<{ title: string }>;
+  subscribeEvents(
+    options?: OpencodeStreamOptions,
+  ): Promise<AsyncIterable<OpencodeEvent>>;
 };
 
 type SessionManagerOptions = {
@@ -180,6 +188,13 @@ export async function createOpencodeTurnClient(
       });
 
       return response.data;
+    },
+    async subscribeEvents(options = {}) {
+      const response = await client.event.subscribe({
+        signal: options.signal,
+      });
+
+      return response.stream;
     },
   };
 }
