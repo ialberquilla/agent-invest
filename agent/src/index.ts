@@ -7,6 +7,7 @@ export {
 } from "./agent/prompt.js";
 export {
   DEFAULT_OPENCODE_MODEL,
+  createOpencodeTurnClient,
   createSessionManager,
   getOrCreateSession,
   resolveOpencodeModel,

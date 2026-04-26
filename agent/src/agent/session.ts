@@ -1,7 +1,9 @@
 import {
   createOpencodeClient,
   createOpencodeServer,
+  type AssistantMessage,
   type OpencodeClient,
+  type Part,
 } from "@opencode-ai/sdk";
 import type { QueryResultRow } from "pg";
 
@@ -28,6 +30,23 @@ export type DatabasePool = {
 
 export type SessionClient = {
   createSession(title: string): Promise<string>;
+};
+
+export type OpencodePromptRequest = {
+  sessionId: string;
+  text: string;
+  system: string;
+  messageId?: string;
+};
+
+export type OpencodePromptResult = {
+  info: AssistantMessage;
+  parts: Part[];
+};
+
+export type OpencodeTurnClient = {
+  prompt(request: OpencodePromptRequest): Promise<OpencodePromptResult>;
+  getSession(sessionId: string): Promise<{ title: string }>;
 };
 
 type SessionManagerOptions = {
@@ -124,12 +143,43 @@ async function createDefaultSessionClient(
 
   return {
     async createSession(title: string) {
+      const normalizedTitle = title.trim();
       const session = await client.session.create({
-        body: { title },
+        body: normalizedTitle ? { title: normalizedTitle } : undefined,
         throwOnError: true,
       });
 
       return session.data.id;
+    },
+  };
+}
+
+export async function createOpencodeTurnClient(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<OpencodeTurnClient> {
+  const { client } = await getSharedOpencode(env);
+
+  return {
+    async prompt({ sessionId, text, system, messageId }) {
+      const response = await client.session.prompt({
+        path: { id: sessionId },
+        body: {
+          messageID: messageId,
+          system,
+          parts: [{ type: "text", text }],
+        },
+        throwOnError: true,
+      });
+
+      return response.data;
+    },
+    async getSession(sessionId: string) {
+      const response = await client.session.get({
+        path: { id: sessionId },
+        throwOnError: true,
+      });
+
+      return response.data;
     },
   };
 }
