@@ -6,3 +6,4 @@ tools
 .claude
 plan.md
 task-decomposer.md
+agent/.env
