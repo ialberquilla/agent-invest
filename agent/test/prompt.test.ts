@@ -95,4 +95,11 @@ test("tool manifest is registry-driven and includes memory guidance", () => {
   assert.ok(manifest.includes("AGENT_SCRIPT_TIMEOUT:"));
   assert.ok(manifest.includes("## Memory discipline"));
   assert.ok(manifest.includes(MEMORY_DISCIPLINE_GUIDANCE));
+  assert.ok(!manifest.includes("`read_memory`"));
+  assert.ok(!manifest.includes("`write_memory`"));
+  assert.ok(
+    manifest.includes(
+      "Use opencode's built-in shell and file-edit tools for memory I/O.",
+    ),
+  );
 });

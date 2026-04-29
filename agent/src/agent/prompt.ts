@@ -17,29 +17,11 @@ export type BuildSystemPromptOptions = {
 };
 
 export const MEMORY_DISCIPLINE_GUIDANCE = [
-  '- **Delta-only writes.** System prompt instructs the agent to record distilled facts — "tried lookback=60 top_k=10, Sharpe 1.2, rejected (DD)" — never to dump conversation transcripts.',
-  '- **Confirm before writing user profile.** The agent asks before updating `profile.md` ("should I remember you prefer weekly rebalance?"). Strategy memory is scratch — writes freely.',
-  "- **Size control by prompt, not by truncation.** When a section grows past the soft cap, the agent is instructed to compress it on its next turn. No auto-truncation — destructive and surprising.",
+  "- Use opencode's built-in shell and file-edit tools for memory I/O. Read or update `users/<user_id>/profile.md` and `users/<user_id>/strategies/<strategy_id>/memory.md` under `STORAGE_ROOT` with `cat`, `tee`, or direct file edits instead of calling a dedicated memory script.",
+  "- Ask before changing `profile.md`. Strategy `memory.md` is working memory, so keep it concise and update it freely when it helps future turns.",
 ].join("\n");
 
 export const AGENT_SCRIPT_REGISTRY: readonly AgentScriptDefinition[] = [
-  {
-    name: "read_memory",
-    summary: "Read user or strategy memory from local storage.",
-    signature:
-      "--scope {user|strategy} --user <user_id> [--strategy <strategy_id>]",
-    example:
-      "bash agent/scripts/run_agent_script.sh read_memory --scope strategy --user user-123 --strategy strategy-456",
-  },
-  {
-    name: "write_memory",
-    summary: "Update a named section in a user or strategy memory file.",
-    signature:
-      '--scope {user|strategy} --user <user_id> [--strategy <strategy_id>] --section <name> --mode {append|replace} --content "<markdown>"',
-    example:
-      'bash agent/scripts/run_agent_script.sh write_memory --scope strategy --user user-123 --strategy strategy-456 --section tried --mode append --content "- 2026-04-25: lookback=90, top_k=5 -> Sharpe 0.9"',
-    note: "May be unimplemented in some environments.",
-  },
   {
     name: "list_universe",
     summary: "List the top-N coins by market cap from the dataset cache.",
