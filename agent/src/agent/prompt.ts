@@ -65,9 +65,7 @@ export const AGENT_SCRIPT_REGISTRY: readonly AgentScriptDefinition[] = [
 ] as const;
 
 async function defaultReadSection(key: string): Promise<string | null> {
-  const object = await getObject(key);
-
-  return object?.body ?? null;
+  return getObject(key);
 }
 
 function renderSection(title: string, body: string): string {

@@ -1,3 +1,4 @@
+import "../env.js";
 import { randomUUID } from "node:crypto";
 import rateLimit from "@fastify/rate-limit";
 import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
