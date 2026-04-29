@@ -23,6 +23,8 @@ type RunState = {
   startedAt: string;
   endedAt: string | null;
   exitCode: number | null;
+  reply: string | null;
+  error: string | null;
 };
 
 type EventState = {
@@ -383,7 +385,9 @@ function createDatabaseDouble(state: ReturnType<typeof createState>) {
     ) {
       state.runs.set(String(values[0]), {
         endedAt: null,
+        error: null,
         exitCode: null,
+        reply: null,
         startedAt: new Date().toISOString(),
         status: String(values[2]),
         strategyId: String(values[1]),

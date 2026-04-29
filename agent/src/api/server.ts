@@ -75,6 +75,8 @@ type RunRow = {
   started_at: Date | string;
   ended_at: Date | string | null;
   exit_code: number | null;
+  reply: string | null;
+  error: string | null;
 };
 
 type EventRow = {
@@ -119,8 +121,8 @@ type RunState = {
   startedAt: Date | string;
   endedAt: Date | string | null;
   exitCode: number | null;
-  reply?: string;
-  error?: string;
+  reply?: string | null;
+  error?: string | null;
 };
 
 type ServerDependencies = {
