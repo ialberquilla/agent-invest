@@ -223,6 +223,15 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
   app.get("/health", async () => ({ ok: true }));
 
+  app.post("/strategies", async (request) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const userId = requiredText(body, "user_id");
+    const strategyId = randomUUID();
+
+    await ensureStrategyExists(db, userId, strategyId);
+    return { strategy_id: strategyId };
+  });
+
   app.post("/messages", async (request) => {
     const body = (request.body ?? {}) as Record<string, unknown>;
     const userId = requiredText(body, "user_id");

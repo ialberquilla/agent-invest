@@ -550,6 +550,71 @@ function createDatabaseDouble(state: ReturnType<typeof createState>) {
   };
 }
 
+test("POST /strategies creates a new strategy row and returns its id", async () => {
+  const state = createState();
+  const app = buildServer({
+    db: createDatabaseDouble(state),
+  });
+
+  try {
+    const firstResponse = await app.inject({
+      method: "POST",
+      payload: { user_id: "user-1" },
+      url: "/strategies",
+    });
+
+    assert.equal(firstResponse.statusCode, 200);
+    assert.match(
+      firstResponse.json().strategy_id,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+
+    const firstStrategyId = firstResponse.json().strategy_id as string;
+    const firstStrategy = state.strategies.get(firstStrategyId);
+
+    assert.ok(firstStrategy);
+    assert.ok(state.users.has("user-1"));
+    assert.equal(firstStrategy.userId, "user-1");
+    assert.equal(firstStrategy.opencodeSessionId, "");
+    assert.equal(firstStrategy.title, "");
+
+    const secondResponse = await app.inject({
+      method: "POST",
+      payload: { user_id: "user-1" },
+      url: "/strategies",
+    });
+
+    assert.equal(secondResponse.statusCode, 200);
+    assert.notEqual(secondResponse.json().strategy_id, firstStrategyId);
+    assert.ok(state.strategies.has(secondResponse.json().strategy_id));
+  } finally {
+    await app.close();
+  }
+});
+
+test("POST /strategies rejects a missing user_id", async () => {
+  const app = buildServer({
+    db: createDatabaseDouble(createState()),
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: {},
+      url: "/strategies",
+    });
+
+    assert.equal(response.statusCode, 400);
+    assert.deepEqual(response.json(), {
+      error: "Bad Request",
+      message: "Request body must include a non-empty 'user_id' field",
+      statusCode: 400,
+    });
+  } finally {
+    await app.close();
+  }
+});
+
 test("POST /messages?wait returns the completed run and auto-creates the strategy", async () => {
   const state = createState();
   const app = buildServer({
