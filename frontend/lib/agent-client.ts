@@ -47,9 +47,21 @@ function readErrorMessage(body: string) {
   if (!text) return undefined;
 
   try {
-    const parsed = JSON.parse(text) as { message?: unknown };
+    const parsed = JSON.parse(text) as {
+      message?: unknown;
+      error?: { message?: unknown };
+    };
     if (typeof parsed.message === "string" && parsed.message.trim()) {
       return parsed.message.trim();
+    }
+
+    if (
+      parsed.error &&
+      typeof parsed.error === "object" &&
+      typeof parsed.error.message === "string" &&
+      parsed.error.message.trim()
+    ) {
+      return parsed.error.message.trim();
     }
   } catch {
     // Fall back to the plain-text body when the upstream response is not JSON.
