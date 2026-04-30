@@ -178,7 +178,6 @@ export default function Home() {
       </main>
     );
   }
-
   if (bootstrapError) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4 py-6 sm:px-6">
