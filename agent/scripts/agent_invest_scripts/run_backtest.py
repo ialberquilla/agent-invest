@@ -7,6 +7,7 @@ import json
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import polars as pl
@@ -21,7 +22,14 @@ from agent_invest_scripts._lib.backtest import (
     run_cross_sectional_momentum_backtest,
 )
 from agent_invest_scripts._lib.cli import fail_json
+from agent_invest_scripts._lib.report import write_report
 from agent_invest_scripts._lib.signals.regimes import btc_above_moving_average
+from agent_invest_scripts._lib.storage import (
+    join_key,
+    key_path,
+    normalize_identifier,
+    storage_root,
+)
 
 _DEFAULT_SIGNAL_TYPE = "cross_sectional_momentum"
 
@@ -75,56 +83,85 @@ def _run_backtest(spec: Mapping[str, Any]) -> dict[str, Any]:
         default=_DEFAULT_SIGNAL_TYPE,
         location="spec.signal_type",
     )
-    if signal_type != _DEFAULT_SIGNAL_TYPE:
-        raise ValueError(f"unsupported signal_type: {signal_type}")
+    if signal_type == _DEFAULT_SIGNAL_TYPE:
+        prices = _load_prices_frame(spec)
+        universe = _resolve_universe(spec)
+        regime_frame = _build_regime_frame(spec, prices)
+        result = run_cross_sectional_momentum_backtest(
+            prices,
+            universe=universe,
+            lookback_days=_read_int(
+                spec,
+                "lookback_days",
+                default=60,
+                minimum=1,
+                location="spec.lookback_days",
+            ),
+            top_k=_read_int(
+                spec,
+                "top_k",
+                default=10,
+                minimum=1,
+                location="spec.top_k",
+            ),
+            rebalance_frequency=_read_string(
+                spec,
+                "rebalance_frequency",
+                default="weekly",
+                location="spec.rebalance_frequency",
+            ),
+            cost_model=_build_cost_model(spec.get("costs")),
+            initial_capital_usd=_read_float(
+                spec,
+                "initial_capital_usd",
+                default=1000.0,
+                minimum=0.0,
+                location="spec.initial_capital_usd",
+            ),
+            skip_days=_read_int(
+                spec,
+                "skip_days",
+                default=0,
+                minimum=0,
+                location="spec.skip_days",
+            ),
+            regime_frame=regime_frame,
+        )
+        return write_report(result, _report_out_dir(spec), spec=dict(spec))
 
-    prices = _load_prices_frame(spec)
-    universe = _resolve_universe(spec)
-    regime_frame = _build_regime_frame(spec, prices)
-    result = run_cross_sectional_momentum_backtest(
-        prices,
-        universe=universe,
-        lookback_days=_read_int(
-            spec,
-            "lookback_days",
-            default=60,
-            minimum=1,
-            location="spec.lookback_days",
-        ),
-        top_k=_read_int(
-            spec,
-            "top_k",
-            default=10,
-            minimum=1,
-            location="spec.top_k",
-        ),
-        rebalance_frequency=_read_string(
-            spec,
-            "rebalance_frequency",
-            default="weekly",
-            location="spec.rebalance_frequency",
-        ),
-        cost_model=_build_cost_model(spec.get("costs")),
-        initial_capital_usd=_read_float(
-            spec,
-            "initial_capital_usd",
-            default=1000.0,
-            minimum=0.0,
-            location="spec.initial_capital_usd",
-        ),
-        skip_days=_read_int(
-            spec,
-            "skip_days",
-            default=0,
-            minimum=0,
-            location="spec.skip_days",
-        ),
-        regime_frame=regime_frame,
+    raise ValueError(f"unsupported signal_type: {signal_type}")
+
+
+def _report_out_dir(spec: Mapping[str, Any]) -> Path:
+    user_id = spec.get("user_id")
+    strategy_id = spec.get("strategy_id")
+    run_id = spec.get("run_id")
+
+    if user_id is None and strategy_id is None and run_id is None:
+        return storage_root() / "artifacts" / "run_backtest"
+
+    if user_id is None or strategy_id is None or run_id is None:
+        raise ValueError(
+            "spec.user_id, spec.strategy_id, and spec.run_id must be provided together"
+        )
+
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise ValueError("spec.user_id must be a non-empty string")
+    if not isinstance(strategy_id, str) or not strategy_id.strip():
+        raise ValueError("spec.strategy_id must be a non-empty string")
+    if not isinstance(run_id, str) or not run_id.strip():
+        raise ValueError("spec.run_id must be a non-empty string")
+
+    return key_path(
+        join_key(
+            "users",
+            normalize_identifier(user_id, "spec.user_id"),
+            "strategies",
+            normalize_identifier(strategy_id, "spec.strategy_id"),
+            "artifacts",
+            normalize_identifier(run_id, "spec.run_id"),
+        )
     )
-    return {
-        "metrics": result.summary,
-        "equity_curve": _equity_curve_points(result.performance),
-    }
 
 
 def _load_prices_frame(spec: Mapping[str, Any]) -> pl.DataFrame:
@@ -267,14 +304,6 @@ def _build_cost_model(raw_costs: Any) -> TradingCostModel:
             location="spec.costs.gas_usd_per_swap",
         ),
     )
-
-
-def _equity_curve_points(performance: pl.DataFrame) -> list[dict[str, Any]]:
-    return performance.select(
-        pl.col("date").dt.strftime("%Y-%m-%d").alias("date"),
-        pl.col("equity"),
-        pl.col("equity_usd"),
-    ).to_dicts()
 
 
 def _wide_prices(prices_long: pl.DataFrame) -> pl.DataFrame:
