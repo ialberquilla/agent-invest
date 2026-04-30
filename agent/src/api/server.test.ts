@@ -555,7 +555,7 @@ test("POST /messages?wait returns the completed run and auto-creates the strateg
   const app = buildServer({
     buildSystemPrompt: async () => "system prompt",
     db: createDatabaseDouble(state),
-    getOpencodeTurnClient: async () => ({
+    getOpencodeClient: async () => ({
       async getSession() {
         return {
           title: "Momentum explorer",
@@ -643,7 +643,7 @@ test("GET /runs/{run_id}?wait waits for async completion and returns the reply",
   const app = buildServer({
     buildSystemPrompt: async () => "system prompt",
     db: createDatabaseDouble(state),
-    getOpencodeTurnClient: async () => ({
+    getOpencodeClient: async () => ({
       async getSession() {
         return {
           title: "Mean reversion scout",
@@ -742,7 +742,7 @@ test("same-user turns serialize across strategies", async () => {
       return `system prompt for ${strategyId}`;
     },
     db: createDatabaseDouble(state),
-    getOpencodeTurnClient: async () => ({
+    getOpencodeClient: async () => ({
       async getSession() {
         return {
           title: "Serialized strategy",
@@ -843,7 +843,7 @@ test("different users can build prompts in parallel", async () => {
       return `system prompt for ${userId}`;
     },
     db: createDatabaseDouble(state),
-    getOpencodeTurnClient: async () => ({
+    getOpencodeClient: async () => ({
       async getSession() {
         return {
           title: "Parallel strategy",
@@ -935,7 +935,7 @@ test("lock timeout returns a typed conflict error", async () => {
       return `system prompt for ${strategyId}`;
     },
     db: createDatabaseDouble(state),
-    getOpencodeTurnClient: async () => ({
+    getOpencodeClient: async () => ({
       async getSession() {
         return {
           title: "Timeout strategy",
@@ -1062,7 +1062,7 @@ test("POST /messages applies rate limiting and returns Retry-After", async () =>
       const app = buildServer({
         buildSystemPrompt: async () => "system prompt",
         db: createDatabaseDouble(state),
-        getOpencodeTurnClient: async () => ({
+        getOpencodeClient: async () => ({
           async getSession() {
             return {
               title: "Rate limited strategy",
@@ -1148,7 +1148,7 @@ test("timeout sentinel output marks the run as failed", async () => {
   const app = buildServer({
     buildSystemPrompt: async () => "system prompt",
     db: createDatabaseDouble(state),
-    getOpencodeTurnClient: async () => ({
+    getOpencodeClient: async () => ({
       async getSession() {
         return {
           title: "Timeout strategy",
@@ -1236,7 +1236,7 @@ test("GET /runs/{run_id}/events streams persisted and live events until completi
   const app = buildServer({
     buildSystemPrompt: async () => "system prompt",
     db: createDatabaseDouble(state),
-    getOpencodeTurnClient: async () => ({
+    getOpencodeClient: async () => ({
       async getSession() {
         return {
           title: "Streaming strategist",
@@ -1398,7 +1398,7 @@ test("GET /runs/{run_id}/events replays missed events from Last-Event-ID and res
   const app = buildServer({
     buildSystemPrompt: async () => "system prompt",
     db: createDatabaseDouble(state),
-    getOpencodeTurnClient: async () => ({
+    getOpencodeClient: async () => ({
       async getSession() {
         return {
           title: "Replay strategist",
