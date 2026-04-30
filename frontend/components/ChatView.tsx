@@ -1,10 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Composer } from "@/components/Composer";
 import { IdentityBar } from "@/components/IdentityBar";
 import { MessageList } from "@/components/MessageList";
+import { RunInspector } from "@/components/RunInspector";
 import { Card } from "@/components/ui/card";
 import {
   ChatMessage,
@@ -67,6 +68,9 @@ export function ChatView({ initialStrategyId }: ChatViewProps) {
   );
   const [isSending, setIsSending] = useState(false);
   const [strategyError, setStrategyError] = useState<string | null>(null);
+  const [inspectedRunId, setInspectedRunId] = useState<string | null>(null);
+  const [isInspectorOpen, setIsInspectorOpen] = useState(false);
+  const inspectorTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     persistStrategyId(strategyId);
@@ -157,25 +161,52 @@ export function ChatView({ initialStrategyId }: ChatViewProps) {
     }
   }
 
+  function handleInspectRun(runId: string, trigger: HTMLButtonElement) {
+    inspectorTriggerRef.current = trigger;
+    setInspectedRunId(runId);
+    setIsInspectorOpen(true);
+  }
+
+  function handleInspectorOpenChange(open: boolean) {
+    setIsInspectorOpen(open);
+
+    if (!open) {
+      inspectorTriggerRef.current?.focus();
+    }
+  }
+
   return (
-    <Card className="flex h-[calc(100vh-2rem)] w-full flex-col overflow-hidden border-border/70 bg-background shadow-sm sm:h-[calc(100vh-3rem)]">
-      <IdentityBar
-        strategyId={strategyId}
-        disabled={isSending}
-        onNewStrategy={handleNewStrategy}
-      />
+    <>
+      <Card className="flex h-[calc(100vh-2rem)] w-full flex-col overflow-hidden border-border/70 bg-background shadow-sm sm:h-[calc(100vh-3rem)]">
+        <IdentityBar
+          strategyId={strategyId}
+          disabled={isSending}
+          onNewStrategy={handleNewStrategy}
+        />
 
-      {strategyError ? (
-        <div className="border-b bg-destructive/10 px-4 py-3 text-sm text-destructive sm:px-5">
-          {strategyError}
+        {strategyError ? (
+          <div className="border-b bg-destructive/10 px-4 py-3 text-sm text-destructive sm:px-5">
+            {strategyError}
+          </div>
+        ) : null}
+
+        <div className="min-h-0 flex-1 bg-muted/10">
+          <MessageList
+            messages={messages}
+            isThinking={isSending}
+            onInspectRun={handleInspectRun}
+          />
         </div>
-      ) : null}
 
-      <div className="min-h-0 flex-1 bg-muted/10">
-        <MessageList messages={messages} isThinking={isSending} />
-      </div>
+        <Composer disabled={isSending} onSubmit={handleSend} />
+      </Card>
 
-      <Composer disabled={isSending} onSubmit={handleSend} />
-    </Card>
+      <RunInspector
+        key={inspectedRunId ?? "empty"}
+        open={isInspectorOpen}
+        runId={inspectedRunId}
+        onOpenChange={handleInspectorOpenChange}
+      />
+    </>
   );
 }
