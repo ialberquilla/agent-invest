@@ -1,12 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { startTransition, useEffect, useState } from "react";
 
 import { ChatView } from "@/components/ChatView";
+import { StrategySidebar } from "@/components/StrategySidebar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   clearStrategyId,
+  ensureKnownStrategy,
+  getKnownStrategies,
   getStrategyId,
   setStrategyId as persistStrategyId,
 } from "@/lib/local-store";
@@ -56,18 +59,32 @@ async function requestStrategy() {
 
 export default function Home() {
   const [strategyId, setStrategyId] = useState<string | null>(null);
+  const [knownStrategies, setKnownStrategies] = useState(() =>
+    getKnownStrategies(),
+  );
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
+  const [strategyError, setStrategyError] = useState<string | null>(null);
   const [bootstrapKey, setBootstrapKey] = useState(0);
+  const [isCreatingStrategy, setIsCreatingStrategy] = useState(false);
+  const [isChatBusy, setIsChatBusy] = useState(false);
+
+  function refreshKnownStrategies() {
+    setKnownStrategies(getKnownStrategies());
+  }
 
   useEffect(() => {
     let isActive = true;
 
     async function bootstrap() {
       setBootstrapError(null);
+      setStrategyError(null);
 
       const cachedStrategyId = getStrategyId();
       if (cachedStrategyId) {
+        ensureKnownStrategy(cachedStrategyId);
+
         if (isActive) {
+          refreshKnownStrategies();
           setStrategyId(cachedStrategyId);
         }
         return;
@@ -80,7 +97,9 @@ export default function Home() {
           return;
         }
 
+        ensureKnownStrategy(next.strategy_id);
         persistStrategyId(next.strategy_id);
+        refreshKnownStrategies();
         setStrategyId(next.strategy_id);
       } catch (error) {
         if (!isActive) {
@@ -103,6 +122,46 @@ export default function Home() {
     };
   }, [bootstrapKey]);
 
+  async function handleNewStrategy() {
+    if (isCreatingStrategy || isChatBusy) {
+      return;
+    }
+
+    setStrategyError(null);
+    setIsCreatingStrategy(true);
+
+    try {
+      const next = await requestStrategy();
+
+      ensureKnownStrategy(next.strategy_id);
+      persistStrategyId(next.strategy_id);
+      refreshKnownStrategies();
+      startTransition(() => {
+        setStrategyId(next.strategy_id);
+      });
+    } catch (error) {
+      setStrategyError(
+        error instanceof Error
+          ? error.message
+          : "Unable to create a new strategy",
+      );
+    } finally {
+      setIsCreatingStrategy(false);
+    }
+  }
+
+  function handleSelectStrategy(nextStrategyId: string) {
+    if (isCreatingStrategy || isChatBusy || nextStrategyId === strategyId) {
+      return;
+    }
+
+    setStrategyError(null);
+    persistStrategyId(nextStrategyId);
+    startTransition(() => {
+      setStrategyId(nextStrategyId);
+    });
+  }
+
   if (!strategyId && !bootstrapError) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4 py-6 sm:px-6">
@@ -119,7 +178,6 @@ export default function Home() {
       </main>
     );
   }
-
   if (bootstrapError) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4 py-6 sm:px-6">
@@ -143,8 +201,26 @@ export default function Home() {
 
   return (
     <main className="min-h-screen bg-muted/30 px-4 py-4 sm:px-6 sm:py-6">
-      <div className="mx-auto max-w-5xl">
-        <ChatView initialStrategyId={strategyId} />
+      <div className="mx-auto grid max-w-6xl gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+        <StrategySidebar
+          strategies={knownStrategies}
+          activeStrategyId={strategyId}
+          disabled={isCreatingStrategy || isChatBusy}
+          onSelectStrategy={handleSelectStrategy}
+          onNewStrategy={handleNewStrategy}
+        />
+
+        <div className="min-w-0">
+          <ChatView
+            key={strategyId}
+            strategyId={strategyId}
+            disabled={isCreatingStrategy}
+            strategyError={strategyError}
+            onBusyChange={setIsChatBusy}
+            onKnownStrategiesChange={refreshKnownStrategies}
+            onNewStrategy={handleNewStrategy}
+          />
+        </div>
       </div>
     </main>
   );

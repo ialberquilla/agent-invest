@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useEffectEvent, useRef, useState } from "react";
 
 import { Composer } from "@/components/Composer";
 import { IdentityBar } from "@/components/IdentityBar";
@@ -9,14 +9,22 @@ import { RunInspector } from "@/components/RunInspector";
 import { Card } from "@/components/ui/card";
 import {
   ChatMessage,
+  deriveStrategyLabel,
+  ensureKnownStrategy,
   getMessages,
   setMessages as persistMessages,
   setStrategyId as persistStrategyId,
+  upsertKnownStrategy,
 } from "@/lib/local-store";
-import { Run, StrategyCreateResponse } from "@/lib/types";
+import { Run } from "@/lib/types";
 
 type ChatViewProps = {
-  initialStrategyId: string;
+  strategyId: string;
+  disabled?: boolean;
+  strategyError?: string | null;
+  onBusyChange?: (isBusy: boolean) => void;
+  onKnownStrategiesChange?: () => void;
+  onNewStrategy: () => void | Promise<void>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -43,46 +51,58 @@ function getErrorMessage(payload: unknown) {
   return "Request failed";
 }
 
-async function createStrategy() {
-  const response = await fetch("/api/strategies", {
-    method: "POST",
-    cache: "no-store",
-  });
-  const payload = await readJson(response);
-
-  if (!response.ok) {
-    throw new Error(getErrorMessage(payload));
-  }
-
-  if (!isRecord(payload) || typeof payload.strategy_id !== "string") {
-    throw new Error("Strategy creation returned an invalid response");
-  }
-
-  return payload as StrategyCreateResponse;
-}
-
-export function ChatView({ initialStrategyId }: ChatViewProps) {
-  const [strategyId, setStrategyId] = useState(initialStrategyId);
+export function ChatView({
+  strategyId,
+  disabled = false,
+  strategyError = null,
+  onBusyChange,
+  onKnownStrategiesChange,
+  onNewStrategy,
+}: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
-    getMessages(initialStrategyId),
+    getMessages(strategyId),
   );
   const [isSending, setIsSending] = useState(false);
-  const [strategyError, setStrategyError] = useState<string | null>(null);
   const [inspectedRunId, setInspectedRunId] = useState<string | null>(null);
   const [isInspectorOpen, setIsInspectorOpen] = useState(false);
   const inspectorTriggerRef = useRef<HTMLButtonElement | null>(null);
 
+  const reportBusyChange = useEffectEvent((isBusy: boolean) => {
+    onBusyChange?.(isBusy);
+  });
+
+  const notifyKnownStrategiesChange = useEffectEvent(() => {
+    onKnownStrategiesChange?.();
+  });
+
+  useEffect(() => {
+    reportBusyChange(isSending);
+  }, [isSending]);
+
   useEffect(() => {
     persistStrategyId(strategyId);
     persistMessages(strategyId, messages);
+
+    const firstUserMessage = messages.find(
+      (message) => message.role === "user",
+    );
+    if (firstUserMessage) {
+      upsertKnownStrategy({
+        strategy_id: strategyId,
+        label: deriveStrategyLabel(firstUserMessage.text),
+      });
+    } else {
+      ensureKnownStrategy(strategyId);
+    }
+
+    notifyKnownStrategiesChange();
   }, [messages, strategyId]);
 
   async function handleSend(text: string) {
-    if (isSending) {
+    if (disabled || isSending) {
       return;
     }
 
-    setStrategyError(null);
     setMessages((current) => [...current, { role: "user", text }]);
     setIsSending(true);
 
@@ -138,29 +158,6 @@ export function ChatView({ initialStrategyId }: ChatViewProps) {
     }
   }
 
-  async function handleNewStrategy() {
-    if (isSending) {
-      return;
-    }
-
-    setStrategyError(null);
-
-    try {
-      const next = await createStrategy();
-
-      persistMessages(strategyId, []);
-      persistStrategyId(next.strategy_id);
-      setStrategyId(next.strategy_id);
-      setMessages([]);
-    } catch (error) {
-      setStrategyError(
-        error instanceof Error
-          ? error.message
-          : "Unable to create a new strategy",
-      );
-    }
-  }
-
   function handleInspectRun(runId: string, trigger: HTMLButtonElement) {
     inspectorTriggerRef.current = trigger;
     setInspectedRunId(runId);
@@ -175,13 +172,15 @@ export function ChatView({ initialStrategyId }: ChatViewProps) {
     }
   }
 
+  const isDisabled = disabled || isSending;
+
   return (
     <>
-      <Card className="flex h-[calc(100vh-2rem)] w-full flex-col overflow-hidden border-border/70 bg-background shadow-sm sm:h-[calc(100vh-3rem)]">
+      <Card className="flex h-[calc(100vh-22rem)] min-h-[30rem] w-full flex-col overflow-hidden border-border/70 bg-background shadow-sm lg:h-[calc(100vh-3rem)]">
         <IdentityBar
           strategyId={strategyId}
-          disabled={isSending}
-          onNewStrategy={handleNewStrategy}
+          disabled={isDisabled}
+          onNewStrategy={onNewStrategy}
         />
 
         {strategyError ? (
@@ -198,7 +197,7 @@ export function ChatView({ initialStrategyId }: ChatViewProps) {
           />
         </div>
 
-        <Composer disabled={isSending} onSubmit={handleSend} />
+        <Composer disabled={isDisabled} onSubmit={handleSend} />
       </Card>
 
       <RunInspector
