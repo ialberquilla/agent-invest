@@ -1,10 +1,10 @@
-import "../env.js";
+import "../env";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import pino from "pino";
 
-import { buildSystemPrompt as defaultBuildSystemPrompt } from "../agent/prompt.js";
+import { buildSystemPrompt as defaultBuildSystemPrompt } from "../agent/prompt";
 import {
   createOpencodeClient,
   getOrCreateSession,
@@ -12,8 +12,8 @@ import {
   type DatabasePool,
   type OpencodePromptResult,
   type OpencodeTurnClient,
-} from "../agent/session.js";
-import { pg } from "../db/client.js";
+} from "../agent/session";
+import { pg } from "../db/client";
 
 const DEFAULT_TURN_LOCK_TIMEOUT_MS = 5_000;
 

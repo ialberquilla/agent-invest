@@ -1,11 +1,11 @@
-import "../env.js";
+import "../env";
 import { access, readFile, readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { PoolClient } from "pg";
 
-import { describePostgresTarget, pg } from "./client.js";
+import { describePostgresTarget, pg } from "./client";
 
 type Migration = {
   name: string;

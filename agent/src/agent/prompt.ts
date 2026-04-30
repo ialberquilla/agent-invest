@@ -1,4 +1,4 @@
-import { getObject, storageLayout } from "../storage/local.js";
+import { getObject, storageLayout } from "../storage/local";
 
 type PromptSectionReader = (key: string) => Promise<string | null>;
 

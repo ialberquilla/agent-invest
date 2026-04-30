@@ -9,7 +9,7 @@ import {
   type DatabaseClient,
   type DatabasePool,
   type SessionClient,
-} from "./session.js";
+} from "./session";
 
 type StrategyState = {
   opencode_session_id: string | null;

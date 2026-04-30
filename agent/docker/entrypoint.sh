@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -eq 0 ]; then
-  set -- node agent/dist/api/server.js
+  set -- node agent/dist/server.js
 fi
 
 max_attempts="${MIGRATION_MAX_ATTEMPTS:-30}"
@@ -10,7 +10,7 @@ retry_delay="${MIGRATION_RETRY_DELAY_SECONDS:-2}"
 attempt=1
 
 while true; do
-  if node agent/dist/db/migrate.js; then
+  if node agent/dist/migrate.js; then
     break
   fi
 
