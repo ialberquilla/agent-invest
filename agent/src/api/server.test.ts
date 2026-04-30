@@ -3,7 +3,7 @@ import test from "node:test";
 import type { Event as OpencodeEvent } from "@opencode-ai/sdk";
 import type { QueryResultRow } from "pg";
 
-import { buildServer } from "./server.js";
+import { buildServer } from "./server";
 
 type QueryResult<TRow extends QueryResultRow> = {
   rowCount: number | null;

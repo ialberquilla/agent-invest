@@ -44,4 +44,4 @@ COPY agent agent
 RUN pnpm build
 
 ENTRYPOINT ["./agent/docker/entrypoint.sh"]
-CMD ["node", "agent/dist/api/server.js"]
+CMD ["node", "agent/dist/server.js"]

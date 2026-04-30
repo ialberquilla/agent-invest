@@ -8,7 +8,7 @@ import {
 } from "@opencode-ai/sdk";
 import type { QueryResultRow } from "pg";
 
-import { pg } from "../db/client.js";
+import { pg } from "../db/client";
 
 export const DEFAULT_OPENCODE_MODEL = "openai/gpt-5";
 

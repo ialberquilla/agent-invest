@@ -1,18 +1,17 @@
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "lib": ["ES2022"],
     "rootDir": "src",
-    "outDir": "dist",
-    "declaration": true,
-    "sourceMap": true,
+    "noEmit": true,
+    "declaration": false,
     "strict": true,
     "skipLibCheck": true,
-    "noEmitOnError": true,
     "types": ["node"],
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true
   },
   "include": ["src/**/*.ts"]
 }
