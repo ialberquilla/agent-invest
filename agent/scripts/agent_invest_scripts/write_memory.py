@@ -10,7 +10,13 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, Sequence
 
-from agent_invest_scripts._lib.cli import fail_json, print_json
+from agent_invest_scripts._lib.cli import (
+    add_timeout_argument,
+    fail_json,
+    print_json,
+    resolve_timeout_seconds,
+    script_timeout,
+)
 from agent_invest_scripts._lib.storage import key_path, memory_key
 
 _ALLOWED_SCOPES = ("user", "strategy")
@@ -63,6 +69,7 @@ def _build_parser() -> JsonArgumentParser:
     parser.add_argument("--section", required=True)
     parser.add_argument("--mode", required=True)
     parser.add_argument("--content", required=True)
+    add_timeout_argument(parser)
     return parser
 
 
@@ -70,15 +77,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     try:
-        result = write_memory(
-            scope=args.scope,
-            user_id=args.user,
-            strategy_id=args.strategy,
-            section=args.section,
-            mode=args.mode,
-            content=args.content,
-        )
-    except (ValueError, RuntimeError) as error:
+        with script_timeout(resolve_timeout_seconds(args.timeout_seconds)):
+            result = write_memory(
+                scope=args.scope,
+                user_id=args.user,
+                strategy_id=args.strategy,
+                section=args.section,
+                mode=args.mode,
+                content=args.content,
+            )
+    except (TimeoutError, ValueError, RuntimeError) as error:
         fail_json(str(error), error_type=type(error).__name__)
 
     print_json(result)

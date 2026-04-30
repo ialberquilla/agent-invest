@@ -6,7 +6,13 @@ import argparse
 import sys
 from collections.abc import Sequence
 
-from agent_invest_scripts._lib.cli import fail_json, print_json
+from agent_invest_scripts._lib.cli import (
+    add_timeout_argument,
+    fail_json,
+    print_json,
+    resolve_timeout_seconds,
+    script_timeout,
+)
 from agent_invest_scripts._lib.storage import key_path, memory_key
 
 
@@ -25,6 +31,7 @@ def build_parser() -> JsonArgumentParser:
     parser.add_argument("--scope", required=True, choices=("user", "strategy"))
     parser.add_argument("--user", required=True)
     parser.add_argument("--strategy")
+    add_timeout_argument(parser)
     return parser
 
 
@@ -42,11 +49,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
 
     try:
-        payload = read_memory(
-            scope=args.scope,
-            user_id=args.user,
-            strategy_id=args.strategy,
-        )
+        with script_timeout(resolve_timeout_seconds(args.timeout_seconds)):
+            payload = read_memory(
+                scope=args.scope,
+                user_id=args.user,
+                strategy_id=args.strategy,
+            )
     except Exception as error:
         fail_json(str(error), error_type=type(error).__name__)
 

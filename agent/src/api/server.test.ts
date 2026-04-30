@@ -1143,7 +1143,7 @@ test("POST /messages applies rate limiting and returns Retry-After", async () =>
   );
 });
 
-test("timeout sentinel output marks the run as failed", async () => {
+test("assistant tool error marks the run as failed", async () => {
   const state = createState();
   const app = buildServer({
     buildSystemPrompt: async () => "system prompt",
@@ -1158,6 +1158,12 @@ test("timeout sentinel output marks the run as failed", async () => {
         return {
           info: {
             cost: 0,
+            error: {
+              data: {
+                message: "Script timed out after 1s",
+              },
+              name: "ToolError",
+            },
             id: "assistant-script-timeout",
             mode: "chat",
             modelID: "gpt-5",
@@ -1183,11 +1189,10 @@ test("timeout sentinel output marks the run as failed", async () => {
               state: {
                 input: {
                   command:
-                    "bash agent/scripts/run_agent_script.sh test_fixtures.sleep --seconds 30",
+                    "uv run --project agent/scripts python -m agent_invest_scripts.test_fixtures.sleep --seconds 30",
                 },
                 metadata: {},
-                output:
-                  "AGENT_SCRIPT_TIMEOUT: test_fixtures.sleep exceeded 1000ms",
+                error: "Script timed out after 1s",
                 status: "completed",
                 time: { end: Date.now(), start: Date.now() },
                 title: "Run sleep fixture",
@@ -1221,10 +1226,7 @@ test("timeout sentinel output marks the run as failed", async () => {
 
     assert.equal(response.statusCode, 200);
     assert.equal(response.json().status, "failed");
-    assert.equal(
-      response.json().error,
-      "AGENT_SCRIPT_TIMEOUT: test_fixtures.sleep exceeded 1000ms",
-    );
+    assert.equal(response.json().error, "Script timed out after 1s");
   } finally {
     await app.close();
   }
