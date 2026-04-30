@@ -8,7 +8,7 @@ import type { QueryResultRow } from "pg";
 
 import { buildSystemPrompt as defaultBuildSystemPrompt } from "../agent/prompt.js";
 import {
-  createOpencodeTurnClient,
+  createOpencodeClient,
   getOrCreateSession,
   type OpencodePromptResult,
   type OpencodeTurnClient,
@@ -128,7 +128,7 @@ type ServerDependencies = {
   db?: DatabasePool;
   buildSystemPrompt?: typeof defaultBuildSystemPrompt;
   getSessionId?: (strategyId: string) => Promise<string>;
-  getOpencodeTurnClient?: () => Promise<OpencodeTurnClient>;
+  getOpencodeClient?: () => Promise<OpencodeTurnClient>;
   turnLockTimeoutMs?: number;
 };
 
@@ -691,13 +691,12 @@ function extractOpencodeEventPayload(event: unknown) {
 async function streamOpencodeEvents(options: {
   app: ReturnType<typeof Fastify>;
   db: DatabaseQueryable;
-  getOpencodeTurnClient: () => Promise<OpencodeTurnClient>;
+  getOpencodeClient: () => Promise<OpencodeTurnClient>;
   runEvents: RunEventStore;
   runId: string;
   sessionId: string;
 }) {
-  const { app, db, getOpencodeTurnClient, runEvents, runId, sessionId } =
-    options;
+  const { app, db, getOpencodeClient, runEvents, runId, sessionId } = options;
   const relatedMessageIds = new Set<string>([runId]);
   const abortController = new AbortController();
   let resolveIdle: (() => void) | undefined;
@@ -706,7 +705,7 @@ async function streamOpencodeEvents(options: {
   });
   const streamTask = (async () => {
     try {
-      const opencode = await getOpencodeTurnClient();
+      const opencode = await getOpencodeClient();
       const stream = await opencode.subscribeEvents({
         signal: abortController.signal,
       });
@@ -1084,7 +1083,7 @@ async function executeRun(options: {
   app: ReturnType<typeof Fastify>;
   buildSystemPrompt: typeof defaultBuildSystemPrompt;
   db: DatabasePool;
-  getOpencodeTurnClient: () => Promise<OpencodeTurnClient>;
+  getOpencodeClient: () => Promise<OpencodeTurnClient>;
   getSessionId: (strategyId: string) => Promise<string>;
   runEvents: RunEventStore;
   runId: string;
@@ -1097,7 +1096,7 @@ async function executeRun(options: {
     app,
     buildSystemPrompt,
     db,
-    getOpencodeTurnClient,
+    getOpencodeClient,
     getSessionId,
     runEvents,
     runId,
@@ -1111,11 +1110,11 @@ async function executeRun(options: {
   try {
     const systemPrompt = await buildSystemPrompt({ userId, strategyId });
     const sessionId = await getSessionId(strategyId);
-    const opencode = await getOpencodeTurnClient();
+    const opencode = await getOpencodeClient();
     const opencodeEvents = await streamOpencodeEvents({
       app,
       db,
-      getOpencodeTurnClient,
+      getOpencodeClient,
       runEvents,
       runId,
       sessionId,
@@ -1214,8 +1213,8 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   const buildSystemPrompt =
     dependencies.buildSystemPrompt ?? defaultBuildSystemPrompt;
   const getSessionId = dependencies.getSessionId ?? getOrCreateSession;
-  const getOpencodeTurnClient =
-    dependencies.getOpencodeTurnClient ?? createOpencodeTurnClient;
+  const getOpencodeClient =
+    dependencies.getOpencodeClient ?? createOpencodeClient;
   const runEvents = new RunEventStore();
   const turnLockTimeoutMs =
     dependencies.turnLockTimeoutMs ?? resolveTurnLockTimeoutMs();
@@ -1292,7 +1291,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
             app,
             buildSystemPrompt,
             db,
-            getOpencodeTurnClient,
+            getOpencodeClient,
             getSessionId,
             runEvents,
             runId,

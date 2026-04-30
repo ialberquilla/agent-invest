@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import signal
 import sys
+import time
 from contextlib import contextmanager
 from types import FrameType
 from typing import Any, Iterator, Mapping, NoReturn, TextIO
@@ -76,6 +78,7 @@ def script_timeout(timeout_seconds: int) -> Iterator[None]:
 
     previous_handler = signal.getsignal(signal.SIGALRM)
     previous_alarm = signal.alarm(0)
+    started_at = time.monotonic()
     signal.signal(signal.SIGALRM, handle_timeout)
     signal.alarm(timeout_seconds)
 
@@ -85,7 +88,10 @@ def script_timeout(timeout_seconds: int) -> Iterator[None]:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_handler)
         if previous_alarm > 0:
-            signal.alarm(previous_alarm)
+            elapsed = time.monotonic() - started_at
+            remaining = max(0, math.ceil(previous_alarm - elapsed))
+            if remaining > 0:
+                signal.alarm(remaining)
 
 
 def fail_json(
