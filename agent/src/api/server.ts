@@ -6,7 +6,7 @@ import pino from "pino";
 
 import { buildSystemPrompt as defaultBuildSystemPrompt } from "../agent/prompt.js";
 import {
-  createOpencodeTurnClient,
+  createOpencodeClient,
   getOrCreateSession,
   type DatabaseClient,
   type DatabasePool,
@@ -16,14 +16,13 @@ import {
 import { pg } from "../db/client.js";
 
 const DEFAULT_TURN_LOCK_TIMEOUT_MS = 5_000;
-const AGENT_SCRIPT_TIMEOUT_SENTINEL = "AGENT_SCRIPT_TIMEOUT:";
 
 type DatabaseQueryable = Pick<DatabaseClient, "query">;
 type ServerDependencies = {
   db?: DatabasePool & DatabaseQueryable;
   buildSystemPrompt?: typeof defaultBuildSystemPrompt;
   getSessionId?: (strategyId: string) => Promise<string>;
-  getOpencodeTurnClient?: () => Promise<OpencodeTurnClient>;
+  getOpencodeClient?: () => Promise<OpencodeTurnClient>;
   turnLockTimeoutMs?: number;
 };
 type StrategyOwnershipRow = { user_id: string };
@@ -96,25 +95,9 @@ function replyText(parts: OpencodePromptResult["parts"]) {
 
 function promptFailure(result: OpencodePromptResult) {
   for (const part of result.parts) {
-    if (part.type !== "tool") continue;
-    const command = part.state.input.command;
-    if (
-      typeof command !== "string" ||
-      !command.includes("agent/scripts/run_agent_script.sh")
-    ) {
-      continue;
-    }
-    const output =
-      part.state.status === "completed"
-        ? part.state.output
-        : part.state.status === "error"
-          ? part.state.error
-          : undefined;
-    if (
-      typeof output === "string" &&
-      output.includes(AGENT_SCRIPT_TIMEOUT_SENTINEL)
-    ) {
-      return output;
+    if (part.type !== "tool" || part.state.status !== "error") continue;
+    if (typeof part.state.error === "string" && part.state.error.trim()) {
+      return part.state.error;
     }
   }
 
@@ -232,8 +215,8 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   const buildSystemPrompt =
     dependencies.buildSystemPrompt ?? defaultBuildSystemPrompt;
   const getSessionId = dependencies.getSessionId ?? getOrCreateSession;
-  const getOpencodeTurnClient =
-    dependencies.getOpencodeTurnClient ?? createOpencodeTurnClient;
+  const getOpencodeClient =
+    dependencies.getOpencodeClient ?? createOpencodeClient;
   const turnLockTimeoutMs =
     dependencies.turnLockTimeoutMs ?? resolveTurnLockTimeoutMs();
   const app = Fastify({ loggerInstance: pino() });
@@ -264,7 +247,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
         try {
           const system = await buildSystemPrompt({ userId, strategyId });
           const sessionId = await getSessionId(strategyId);
-          const opencode = await getOpencodeTurnClient();
+          const opencode = await getOpencodeClient();
           const result = await opencode.prompt({
             messageId: runId,
             sessionId,

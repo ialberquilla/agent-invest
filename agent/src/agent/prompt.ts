@@ -27,7 +27,7 @@ export const AGENT_SCRIPT_REGISTRY: readonly AgentScriptDefinition[] = [
     summary: "List the top-N coins by market cap from the dataset cache.",
     signature: "--top-n <count> [--as-of YYYY-MM-DD]",
     example:
-      "bash agent/scripts/run_agent_script.sh list_universe --top-n 50 --as-of 2026-04-25",
+      "uv run --project agent/scripts python -m agent_invest_scripts.list_universe --top-n 50 --as-of 2026-04-25",
   },
   {
     name: "run_backtest",
@@ -35,14 +35,14 @@ export const AGENT_SCRIPT_REGISTRY: readonly AgentScriptDefinition[] = [
       "Run a JSON-specified backtest and return metrics plus equity curve.",
     signature: "--spec '<json>'",
     example:
-      'bash agent/scripts/run_agent_script.sh run_backtest --spec \'{"signal_type":"cross_sectional_momentum","lookback_days":90,"top_k":5,"rebalance_frequency":"weekly"}\'',
+      'uv run --project agent/scripts python -m agent_invest_scripts.run_backtest --spec \'{"signal_type":"cross_sectional_momentum","lookback_days":90,"top_k":5,"rebalance_frequency":"weekly"}\'',
   },
   {
     name: "list_runs",
     summary: "List prior runs for a strategy with one-line summaries.",
     signature: "--strategy-id <strategy_id> [--limit <count>]",
     example:
-      "bash agent/scripts/run_agent_script.sh list_runs --strategy-id 11111111-1111-1111-1111-111111111111 --limit 10",
+      "uv run --project agent/scripts python -m agent_invest_scripts.list_runs --strategy-id 11111111-1111-1111-1111-111111111111 --limit 10",
   },
 ] as const;
 
@@ -78,8 +78,8 @@ export function buildToolManifestSection(): string {
     "Tool Manifest",
     [
       "All agent-facing Python scripts live under `agent/scripts/agent_invest_scripts/`.",
-      "Always invoke them with `bash agent/scripts/run_agent_script.sh <script> ...`.",
-      "The wrapper applies the per-call timeout, kills hung scripts, and emits `AGENT_SCRIPT_TIMEOUT:` when a script times out.",
+      "Always invoke them with `uv run --project agent/scripts python -m agent_invest_scripts.<script> ...`.",
+      "Each script enforces its own per-call timeout and exits non-zero when it times out.",
       "Each script prints structured JSON to stdout, logs to stderr only, and exits non-zero on error.",
       "If a script times out, stop and surface that failure instead of retrying the same command.",
       "",

@@ -68,7 +68,7 @@ test("getOrCreateSession creates and persists a session on first use", async () 
     },
   };
   const manager = createSessionManager({
-    getSessionClient: async () => sessionClient,
+    getOpencodeClient: async () => sessionClient,
     pool: createPoolDouble(state),
   });
 
@@ -92,7 +92,7 @@ test("getOrCreateSession reuses the persisted session id", async () => {
     },
   };
   const manager = createSessionManager({
-    getSessionClient: async () => sessionClient,
+    getOpencodeClient: async () => sessionClient,
     pool: createPoolDouble(state),
   });
 
