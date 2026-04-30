@@ -26,7 +26,6 @@ const POLL_INTERVAL_MS = 100;
 const DEFAULT_TURN_LOCK_TIMEOUT_MS = 5_000;
 const DEFAULT_MESSAGES_RATE_LIMIT_MAX = 10;
 const DEFAULT_MESSAGES_RATE_LIMIT_WINDOW_MS = 60_000;
-const AGENT_SCRIPT_TIMEOUT_SENTINEL = "AGENT_SCRIPT_TIMEOUT:";
 
 type QueryResult<TRow extends QueryResultRow> = {
   rowCount: number | null;
@@ -427,39 +426,6 @@ function getAssistantErrorMessage(result: OpencodePromptResult) {
   return typeof message === "string" && message.trim() ? message : error.name;
 }
 
-function getScriptTimeoutMessage(parts: OpencodePromptResult["parts"]) {
-  for (const part of parts) {
-    if (part.type !== "tool") {
-      continue;
-    }
-
-    const command = part.state.input.command;
-
-    if (
-      typeof command !== "string" ||
-      !command.includes("agent/scripts/run_agent_script.sh")
-    ) {
-      continue;
-    }
-
-    const output =
-      part.state.status === "completed"
-        ? part.state.output
-        : part.state.status === "error"
-          ? part.state.error
-          : undefined;
-
-    if (
-      typeof output === "string" &&
-      output.includes(AGENT_SCRIPT_TIMEOUT_SENTINEL)
-    ) {
-      return output;
-    }
-  }
-
-  return undefined;
-}
-
 function extractReplyText(parts: OpencodePromptResult["parts"]) {
   return parts.reduce((reply, part) => {
     if (part.type !== "text" || part.ignored) {
@@ -730,8 +696,7 @@ async function streamOpencodeEvents(options: {
   runId: string;
   sessionId: string;
 }) {
-  const { app, db, getOpencodeClient, runEvents, runId, sessionId } =
-    options;
+  const { app, db, getOpencodeClient, runEvents, runId, sessionId } = options;
   const relatedMessageIds = new Set<string>([runId]);
   const abortController = new AbortController();
   let resolveIdle: (() => void) | undefined;
@@ -1162,12 +1127,6 @@ async function executeRun(options: {
         system: systemPrompt,
         text,
       });
-      const scriptTimeout = getScriptTimeoutMessage(result.parts);
-
-      if (scriptTimeout) {
-        throw new Error(scriptTimeout);
-      }
-
       const assistantError = getAssistantErrorMessage(result);
 
       if (assistantError) {

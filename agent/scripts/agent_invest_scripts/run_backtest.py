@@ -21,7 +21,12 @@ from agent_invest_scripts._lib.backtest import (
     TradingCostModel,
     run_cross_sectional_momentum_backtest,
 )
-from agent_invest_scripts._lib.cli import fail_json
+from agent_invest_scripts._lib.cli import (
+    add_timeout_argument,
+    fail_json,
+    resolve_timeout_seconds,
+    script_timeout,
+)
 from agent_invest_scripts._lib.report import write_report
 from agent_invest_scripts._lib.signals.regimes import btc_above_moving_average
 from agent_invest_scripts._lib.storage import (
@@ -49,19 +54,22 @@ def build_parser() -> JsonArgumentParser:
         required=True,
         help="JSON strategy spec for the backtest run",
     )
+    add_timeout_argument(parser)
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
     try:
-        spec = _parse_spec(args.spec)
-        payload = _run_backtest(spec)
+        with script_timeout(resolve_timeout_seconds(args.timeout_seconds)):
+            spec = _parse_spec(args.spec)
+            payload = _run_backtest(spec)
     except Exception as error:
         fail_json(str(error), error_type=type(error).__name__)
 
     print_json(payload)
+    return 0
 
 
 def _parse_spec(raw_spec: str) -> dict[str, Any]:
@@ -398,4 +406,4 @@ def _read_optional_date(
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

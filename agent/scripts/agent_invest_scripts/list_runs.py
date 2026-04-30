@@ -14,7 +14,13 @@ from uuid import UUID
 import psycopg
 from psycopg.rows import dict_row
 
-from agent_invest_scripts._lib.cli import fail, print_json
+from agent_invest_scripts._lib.cli import (
+    add_timeout_argument,
+    fail,
+    print_json,
+    resolve_timeout_seconds,
+    script_timeout,
+)
 from agent_invest_scripts._lib.storage import key_path, normalize_identifier
 
 
@@ -34,6 +40,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--strategy-id", required=True)
     parser.add_argument("--limit", type=_positive_int)
+    add_timeout_argument(parser)
     return parser.parse_args(argv)
 
 
@@ -42,8 +49,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         strategy_id = str(UUID(args.strategy_id))
-        print_json(list_runs(strategy_id, limit=args.limit))
-    except (ValueError, RuntimeError, psycopg.Error) as error:
+        with script_timeout(resolve_timeout_seconds(args.timeout_seconds)):
+            print_json(list_runs(strategy_id, limit=args.limit))
+    except (TimeoutError, ValueError, RuntimeError, psycopg.Error) as error:
         fail(str(error))
 
     return 0

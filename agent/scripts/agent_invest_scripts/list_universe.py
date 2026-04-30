@@ -16,6 +16,11 @@ from agent_invest_scripts._lib import (
     print_json,
     universe_history,
 )
+from agent_invest_scripts._lib.cli import (
+    add_timeout_argument,
+    resolve_timeout_seconds,
+    script_timeout,
+)
 
 _OUTPUT_COLUMNS = ("coin_id", "symbol", "name", "market_cap")
 
@@ -64,6 +69,7 @@ def _build_parser() -> JsonArgumentParser:
     parser = JsonArgumentParser(prog="python -m agent_invest_scripts.list_universe")
     parser.add_argument("--top-n", required=True, type=_positive_int)
     parser.add_argument("--as-of", type=_iso_date)
+    add_timeout_argument(parser)
     return parser
 
 
@@ -206,7 +212,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
     try:
-        payload = run(top_n=args.top_n, as_of=args.as_of)
+        with script_timeout(resolve_timeout_seconds(args.timeout_seconds)):
+            payload = run(top_n=args.top_n, as_of=args.as_of)
     except SnapshotNotFoundError as error:
         _print_error({"error": str(error), "as_of": error.as_of.isoformat()})
         raise SystemExit(1) from error
