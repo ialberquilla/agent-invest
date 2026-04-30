@@ -1,5 +1,5 @@
 import {
-  createOpencodeClient,
+  createOpencodeClient as createSdkOpencodeClient,
   createOpencodeServer,
   type AssistantMessage,
   type OpencodeClient,
@@ -58,7 +58,7 @@ export type OpencodeTurnClient = {
 };
 
 type SessionManagerOptions = {
-  getSessionClient?: () => Promise<SessionClient>;
+  getOpencodeClient?: () => Promise<SessionClient>;
   pool?: DatabasePool;
 };
 
@@ -106,7 +106,7 @@ async function createManagedOpencode(
 
   if (baseUrl) {
     return {
-      client: createOpencodeClient({
+      client: createSdkOpencodeClient({
         baseUrl,
         directory,
       }),
@@ -121,7 +121,7 @@ async function createManagedOpencode(
   });
 
   return {
-    client: createOpencodeClient({
+    client: createSdkOpencodeClient({
       baseUrl: server.url,
       directory,
     }),
@@ -131,7 +131,7 @@ async function createManagedOpencode(
   };
 }
 
-async function getSharedOpencode(
+async function getOrCreateManagedOpencode(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ManagedOpencode> {
   if (!sharedOpencode) {
@@ -144,10 +144,10 @@ async function getSharedOpencode(
   return sharedOpencode;
 }
 
-async function createDefaultSessionClient(
+export async function createOpencodeClient(
   env: NodeJS.ProcessEnv = process.env,
-): Promise<SessionClient> {
-  const { client } = await getSharedOpencode(env);
+): Promise<SessionClient & OpencodeTurnClient> {
+  const { client } = await getOrCreateManagedOpencode(env);
 
   return {
     async createSession(title: string) {
@@ -159,15 +159,6 @@ async function createDefaultSessionClient(
 
       return session.data.id;
     },
-  };
-}
-
-export async function createOpencodeTurnClient(
-  env: NodeJS.ProcessEnv = process.env,
-): Promise<OpencodeTurnClient> {
-  const { client } = await getSharedOpencode(env);
-
-  return {
     async prompt({ sessionId, text, system, messageId }) {
       const response = await client.session.prompt({
         path: { id: sessionId },
@@ -201,8 +192,7 @@ export async function createOpencodeTurnClient(
 
 export function createSessionManager(options: SessionManagerOptions = {}) {
   const pool = options.pool ?? (pg as unknown as DatabasePool);
-  const getSessionClient =
-    options.getSessionClient ?? createDefaultSessionClient;
+  const getOpencodeClient = options.getOpencodeClient ?? createOpencodeClient;
 
   return {
     async getOrCreateSession(strategyId: string) {
@@ -239,8 +229,8 @@ export function createSessionManager(options: SessionManagerOptions = {}) {
           return existingSessionId;
         }
 
-        const sessionClient = await getSessionClient();
-        const sessionId = await sessionClient.createSession(strategy.title);
+        const opencode = await getOpencodeClient();
+        const sessionId = await opencode.createSession(strategy.title);
         const updateResult = await client.query(
           [
             "UPDATE strategies",
