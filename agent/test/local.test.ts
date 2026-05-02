@@ -4,7 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { deleteObject, getObject, putObject, storageLayout } from "./local";
+import {
+  deleteObject,
+  getObject,
+  putObject,
+  storageLayout,
+} from "../src/storage/local";
 
 async function withStorageRoot(
   callback: (storageRoot: string) => Promise<void>,

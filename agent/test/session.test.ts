@@ -9,7 +9,7 @@ import {
   type DatabaseClient,
   type DatabasePool,
   type SessionClient,
-} from "./session";
+} from "../src/agent/session";
 
 type StrategyState = {
   opencode_session_id: string | null;

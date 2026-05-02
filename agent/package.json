@@ -8,7 +8,7 @@
     "build": "pnpm typecheck && tsup",
     "dev": "tsx watch src/api/server.ts",
     "start": "node dist/server.js",
-    "test": "tsx --test src/**/*.test.ts test/**/*.test.ts",
+    "test": "tsx --test test/**/*.test.ts",
     "db:migrate": "pnpm build && node dist/migrate.js"
   },
   "dependencies": {
