@@ -80,6 +80,19 @@ export function resolveOpencodeModel(env: NodeJS.ProcessEnv = process.env) {
   return model ? model : DEFAULT_OPENCODE_MODEL;
 }
 
+export function parseOpencodeModel(modelString: string) {
+  const slash = modelString.indexOf("/");
+  if (slash <= 0 || slash === modelString.length - 1) {
+    throw new Error(
+      `OPENCODE_MODEL must be in the form '<providerID>/<modelID>': ${modelString}`,
+    );
+  }
+  return {
+    providerID: modelString.slice(0, slash),
+    modelID: modelString.slice(slash + 1),
+  };
+}
+
 function resolveOpencodeBaseUrl(env: NodeJS.ProcessEnv = process.env) {
   const baseUrl = env.OPENCODE_BASE_URL?.trim();
 
@@ -115,6 +128,8 @@ async function createManagedOpencode(
   }
 
   const server = await createOpencodeServer({
+    hostname: "127.0.0.1",
+    port: 0,
     config: {
       model: resolveOpencodeModel(env),
     },
@@ -160,10 +175,13 @@ export async function createOpencodeClient(
       return session.data.id;
     },
     async prompt({ sessionId, text, system, messageId }) {
+      const model = parseOpencodeModel(resolveOpencodeModel(env));
       const response = await client.session.prompt({
         path: { id: sessionId },
         body: {
           messageID: messageId,
+          model,
+          tools: { question: false },
           system,
           parts: [{ type: "text", text }],
         },
@@ -194,67 +212,73 @@ export function createSessionManager(options: SessionManagerOptions = {}) {
   const pool = options.pool ?? (pg as unknown as DatabasePool);
   const getOpencodeClient = options.getOpencodeClient ?? createOpencodeClient;
 
+  async function resolveWithClient(
+    client: DatabaseClient,
+    strategyId: string,
+    lockRow: boolean,
+  ) {
+    const result = await client.query<StrategySessionRow>(
+      [
+        "SELECT title, opencode_session_id",
+        "FROM strategies",
+        "WHERE strategy_id = $1",
+        lockRow ? "FOR UPDATE" : "",
+      ]
+        .join(" ")
+        .trim(),
+      [strategyId],
+    );
+
+    const strategy = result.rows[0];
+    if (!strategy) {
+      throw new Error(`Strategy not found: ${strategyId}`);
+    }
+
+    const existingSessionId = normalizeSessionId(strategy.opencode_session_id);
+    if (existingSessionId) return existingSessionId;
+
+    const opencode = await getOpencodeClient();
+    const sessionId = await opencode.createSession(strategy.title);
+    const updateResult = await client.query(
+      [
+        "UPDATE strategies",
+        "SET opencode_session_id = $2",
+        "WHERE strategy_id = $1",
+      ].join(" "),
+      [strategyId, sessionId],
+    );
+
+    if (updateResult.rowCount !== 1) {
+      throw new Error(
+        `Failed to persist opencode session for strategy: ${strategyId}`,
+      );
+    }
+
+    return sessionId;
+  }
+
   return {
-    async getOrCreateSession(strategyId: string) {
+    async getOrCreateSession(strategyId: string, existingClient?: DatabaseClient) {
+      // When called inside an existing turn transaction, reuse its client to
+      // avoid a self-deadlock between the turn's row lock and a fresh
+      // SELECT FOR UPDATE on the same row from a separate pool connection.
+      if (existingClient) {
+        return resolveWithClient(existingClient, strategyId, false);
+      }
+
       const client = await pool.connect();
       let inTransaction = false;
-
       try {
         await client.query("BEGIN");
         inTransaction = true;
-
-        const result = await client.query<StrategySessionRow>(
-          [
-            "SELECT title, opencode_session_id",
-            "FROM strategies",
-            "WHERE strategy_id = $1",
-            "FOR UPDATE",
-          ].join(" "),
-          [strategyId],
-        );
-
-        const strategy = result.rows[0];
-
-        if (!strategy) {
-          throw new Error(`Strategy not found: ${strategyId}`);
-        }
-
-        const existingSessionId = normalizeSessionId(
-          strategy.opencode_session_id,
-        );
-
-        if (existingSessionId) {
-          await client.query("COMMIT");
-          inTransaction = false;
-          return existingSessionId;
-        }
-
-        const opencode = await getOpencodeClient();
-        const sessionId = await opencode.createSession(strategy.title);
-        const updateResult = await client.query(
-          [
-            "UPDATE strategies",
-            "SET opencode_session_id = $2",
-            "WHERE strategy_id = $1",
-          ].join(" "),
-          [strategyId, sessionId],
-        );
-
-        if (updateResult.rowCount !== 1) {
-          throw new Error(
-            `Failed to persist opencode session for strategy: ${strategyId}`,
-          );
-        }
-
+        const sessionId = await resolveWithClient(client, strategyId, true);
         await client.query("COMMIT");
         inTransaction = false;
-
         return sessionId;
       } catch (error) {
         if (inTransaction) {
           await client.query("ROLLBACK");
         }
-
         throw error;
       } finally {
         client.release();

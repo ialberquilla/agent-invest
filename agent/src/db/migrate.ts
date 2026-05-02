@@ -18,6 +18,7 @@ async function resolveMigrationsDirectory(): Promise<string> {
   const currentDirectory = dirname(fileURLToPath(import.meta.url));
   const candidates = [
     resolve(currentDirectory, "migrations"),
+    resolve(currentDirectory, "../src/db/migrations"),
     resolve(currentDirectory, "../../src/db/migrations"),
   ];
 

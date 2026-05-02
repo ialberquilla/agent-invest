@@ -16,6 +16,12 @@ export type BuildSystemPromptOptions = {
   readSection?: PromptSectionReader;
 };
 
+export const RESPONSE_POLICY = [
+  "- Do not call the `question` tool or otherwise ask the user clarifying questions. The runtime is non-interactive and cannot answer them — the prompt loop will hang.",
+  "- When the request is ambiguous, pick reasonable defaults, state your assumptions in the final reply, and proceed.",
+  "- Always finish each turn with a `text` reply (the user-visible answer). Tool calls and reasoning alone are not a complete turn.",
+].join("\n");
+
 export const MEMORY_DISCIPLINE_GUIDANCE = [
   "- Use opencode's built-in shell and file-edit tools for memory I/O. Read or update `users/<user_id>/profile.md` and `users/<user_id>/strategies/<strategy_id>/memory.md` under `STORAGE_ROOT` with `cat`, `tee`, or direct file edits instead of calling a dedicated memory script.",
   "- Ask before changing `profile.md`. Strategy `memory.md` is working memory, so keep it concise and update it freely when it helps future turns.",
@@ -104,6 +110,7 @@ export async function buildSystemPrompt({
   ]);
 
   return [
+    renderSection("Response Policy", RESPONSE_POLICY),
     renderSection("User Profile", profile ?? ""),
     renderSection("Strategy Instructions", instructions ?? ""),
     renderSection("Strategy Memory", memory ?? ""),

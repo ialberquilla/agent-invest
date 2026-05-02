@@ -74,12 +74,12 @@ def _build_parser() -> JsonArgumentParser:
 
 
 def _date_column(frame: pd.DataFrame) -> str:
-    for column in ("date", "as_of"):
+    for column in ("date", "as_of", "snapshot_date"):
         if column in frame.columns:
             return column
 
     raise ValueError(
-        'universe_history dataset must contain either a "date" or "as_of" column'
+        'universe_history dataset must contain a "date", "as_of", or "snapshot_date" column'
     )
 
 
