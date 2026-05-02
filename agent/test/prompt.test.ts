@@ -9,6 +9,7 @@ import {
   buildSystemPrompt,
   buildToolManifestSection,
   MEMORY_DISCIPLINE_GUIDANCE,
+  RESPONSE_POLICY,
 } from "../src/agent/prompt.js";
 import { storageLayout } from "../src/storage/local.js";
 
@@ -65,6 +66,7 @@ test("buildSystemPrompt concatenates sections in stable order", async () => {
     assert.equal(
       prompt,
       [
+        "# Response Policy\n" + RESPONSE_POLICY,
         "# User Profile\n# Preferences\n- prefers weekly rebalance",
         "# Strategy Instructions\nCompare weekly and daily rebalances.",
         "# Strategy Memory\n",
