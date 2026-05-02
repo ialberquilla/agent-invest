@@ -52,13 +52,16 @@ def test_write_report_writes_png_and_json_and_returns_paths(tmp_path: Path) -> N
     )
 
     equity_curve_png = out_dir / "equity_curve.png"
+    drawdown_png = out_dir / "drawdown.png"
     report_json = out_dir / "report.json"
 
     assert equity_curve_png.is_file()
+    assert drawdown_png.is_file()
     assert report_json.is_file()
     assert report == {
         "kpis": result.summary,
         "equity_curve_png": str(equity_curve_png),
+        "drawdown_png": str(drawdown_png),
         "report_json": str(report_json),
     }
 

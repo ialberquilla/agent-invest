@@ -23,16 +23,18 @@ def write_report(
 ) -> dict[str, Any]:
     """Write equity_curve.png + report.json into out_dir.
 
-    Returns {kpis, equity_curve_png, report_json}.
+    Returns {kpis, equity_curve_png, drawdown_png, report_json}.
     """
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
     equity_curve_png = out_dir / "equity_curve.png"
+    drawdown_png = out_dir / "drawdown.png"
     report_json = out_dir / "report.json"
     equity_curve = _equity_curve_points(result.performance)
 
     _write_equity_curve_png(result.performance, equity_curve_png)
+    _write_drawdown_png(result.performance, drawdown_png)
     report_payload = {
         "kpis": result.summary,
         "equity_curve": equity_curve,
@@ -46,6 +48,7 @@ def write_report(
     return {
         "kpis": result.summary,
         "equity_curve_png": str(equity_curve_png),
+        "drawdown_png": str(drawdown_png),
         "report_json": str(report_json),
     }
 
@@ -100,9 +103,30 @@ def _write_equity_curve_png(performance: pl.DataFrame, path: Path) -> None:
     drawdown_axis.plot(dates, drawdowns, color="#d62728", linewidth=1)
     drawdown_axis.set_ylabel("Drawdown")
     drawdown_axis.set_xlabel("Date")
-    drawdown_axis.set_ylim(min(drawdowns + [0.0]), 0.0)
+    drawdown_min = min(drawdowns + [0.0])
+    drawdown_axis.set_ylim(drawdown_min if drawdown_min < 0 else -0.01, 0.0)
     drawdown_axis.grid(True, alpha=0.3)
 
+    figure.tight_layout()
+    figure.savefig(path, dpi=150)
+    plt.close(figure)
+
+
+def _write_drawdown_png(performance: pl.DataFrame, path: Path) -> None:
+    dates = performance.get_column("date").to_list()
+    equity_curve = [
+        float(value) for value in performance.get_column("equity").to_list()
+    ]
+    drawdowns = _drawdown_series(equity_curve)
+
+    figure, axis = plt.subplots(figsize=(10, 3))
+    axis.fill_between(dates, drawdowns, 0.0, color="#d62728", alpha=0.25)
+    axis.plot(dates, drawdowns, color="#d62728", linewidth=1.5)
+    axis.set_ylabel("Drawdown")
+    axis.set_xlabel("Date")
+    drawdown_min = min(drawdowns + [0.0])
+    axis.set_ylim(drawdown_min if drawdown_min < 0 else -0.01, 0.0)
+    axis.grid(True, alpha=0.3)
     figure.tight_layout()
     figure.savefig(path, dpi=150)
     plt.close(figure)
