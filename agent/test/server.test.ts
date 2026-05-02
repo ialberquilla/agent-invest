@@ -646,78 +646,6 @@ test("GET /runs/:id returns 404 for unknown runs", async () => {
   }
 });
 
-test("same-user turns serialize across strategies", async () => {
-  const state = createState();
-  const firstBuildStarted = createDeferred<void>();
-  const releaseFirstBuild = createDeferred<void>();
-  const buildOrder: string[] = [];
-  const app = buildServer({
-    buildSystemPrompt: async ({ strategyId, userId }) => {
-      buildOrder.push(`${userId}/${strategyId}`);
-
-      if (strategyId === "strategy-1") {
-        firstBuildStarted.resolve();
-        await releaseFirstBuild.promise;
-      }
-
-      return `system prompt for ${strategyId}`;
-    },
-    db: createDatabaseDouble(state),
-    getOpencodeClient: async () =>
-      createOpencodeClientDouble(
-        "Serialized strategy",
-        completedPromptResult("Serialized reply.", "session-serialized"),
-      ),
-    getSessionId: async (strategyId) => {
-      const strategy = state.strategies.get(strategyId);
-
-      assert.ok(strategy);
-      strategy.opencodeSessionId ||= `session-${strategyId}`;
-
-      return strategy.opencodeSessionId;
-    },
-    turnLockTimeoutMs: 200,
-  });
-
-  try {
-    const firstResponse = app.inject({
-      method: "POST",
-      payload: {
-        strategy_id: "strategy-1",
-        text: "Run the first turn",
-        user_id: "user-1",
-      },
-      url: "/messages",
-    });
-
-    await firstBuildStarted.promise;
-
-    const secondResponse = app.inject({
-      method: "POST",
-      payload: {
-        strategy_id: "strategy-2",
-        text: "Run the second turn",
-        user_id: "user-1",
-      },
-      url: "/messages",
-    });
-
-    await sleep(25);
-    assert.deepEqual(buildOrder, ["user-1/strategy-1"]);
-
-    releaseFirstBuild.resolve();
-
-    const [first, second] = await Promise.all([firstResponse, secondResponse]);
-
-    assert.equal(first.statusCode, 200);
-    assert.equal(second.statusCode, 200);
-    assert.deepEqual(buildOrder, ["user-1/strategy-1", "user-1/strategy-2"]);
-  } finally {
-    releaseFirstBuild.resolve();
-    await app.close();
-  }
-});
-
 test("different users can build prompts in parallel", async () => {
   const state = createState();
   const bothBuildsStarted = createDeferred<void>();
@@ -786,82 +714,10 @@ test("different users can build prompts in parallel", async () => {
   }
 });
 
-test("lock timeout returns a conflict error", async () => {
-  const state = createState();
-  const firstBuildStarted = createDeferred<void>();
-  const releaseFirstBuild = createDeferred<void>();
-  const app = buildServer({
-    buildSystemPrompt: async ({ strategyId }) => {
-      if (strategyId === "strategy-1") {
-        firstBuildStarted.resolve();
-        await releaseFirstBuild.promise;
-      }
-
-      return `system prompt for ${strategyId}`;
-    },
-    db: createDatabaseDouble(state),
-    getOpencodeClient: async () =>
-      createOpencodeClientDouble(
-        "Timeout strategy",
-        completedPromptResult("Timeout reply.", "session-timeout"),
-      ),
-    getSessionId: async (strategyId) => {
-      const strategy = state.strategies.get(strategyId);
-
-      assert.ok(strategy);
-      strategy.opencodeSessionId ||= `session-${strategyId}`;
-
-      return strategy.opencodeSessionId;
-    },
-    turnLockTimeoutMs: 20,
-  });
-
-  try {
-    const firstResponse = app.inject({
-      method: "POST",
-      payload: {
-        strategy_id: "strategy-1",
-        text: "Hold the lock",
-        user_id: "user-1",
-      },
-      url: "/messages",
-    });
-
-    await firstBuildStarted.promise;
-
-    const secondResponse = await app.inject({
-      method: "POST",
-      payload: {
-        strategy_id: "strategy-2",
-        text: "This should time out",
-        user_id: "user-1",
-      },
-      url: "/messages",
-    });
-
-    assert.equal(secondResponse.statusCode, 409);
-    assert.deepEqual(secondResponse.json(), {
-      error: "Conflict",
-      message: "Timed out after 20ms waiting for the user turn lock",
-      statusCode: 409,
-    });
-    assert.equal(state.runs.size, 1);
-
-    releaseFirstBuild.resolve();
-    await firstResponse;
-  } finally {
-    releaseFirstBuild.resolve();
-    await app.close();
-  }
-});
-
 test("unexpected errors return a 500 response", async () => {
   const app = buildServer({
     buildSystemPrompt: async () => "system prompt",
     db: {
-      async connect() {
-        throw new Error("database offline");
-      },
       async query() {
         throw new Error("database offline");
       },

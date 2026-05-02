@@ -9,24 +9,20 @@ import {
   createOpencodeClient,
   getOrCreateSession,
   type DatabaseClient,
-  type DatabasePool,
   type OpencodePromptResult,
   type OpencodeTurnClient,
 } from "../agent/session";
 import { pg } from "../db/client";
 
-const DEFAULT_TURN_LOCK_TIMEOUT_MS = 5_000;
-
 type DatabaseQueryable = Pick<DatabaseClient, "query">;
 type ServerDependencies = {
-  db?: DatabasePool & DatabaseQueryable;
+  db?: DatabaseQueryable;
   buildSystemPrompt?: typeof defaultBuildSystemPrompt;
   getSessionId?: (
     strategyId: string,
     client?: DatabaseClient,
   ) => Promise<string>;
   getOpencodeClient?: () => Promise<OpencodeTurnClient>;
-  turnLockTimeoutMs?: number;
 };
 type StrategyOwnershipRow = { user_id: string };
 type RunRow = {
@@ -47,30 +43,12 @@ function getPort() {
   return port;
 }
 
-function resolveTurnLockTimeoutMs(env: NodeJS.ProcessEnv = process.env) {
-  const raw = env.TURN_LOCK_TIMEOUT_MS?.trim();
-  if (!raw) return DEFAULT_TURN_LOCK_TIMEOUT_MS;
-  const timeoutMs = Number.parseInt(raw, 10);
-  if (!Number.isInteger(timeoutMs) || timeoutMs <= 0) {
-    throw new Error(`Invalid TURN_LOCK_TIMEOUT_MS value: ${raw}`);
-  }
-  return timeoutMs;
-}
-
 function httpError(statusCode: number, message: string) {
   return Object.assign(new Error(message), { statusCode });
 }
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error);
-}
-
-function postgresCode(error: unknown) {
-  return typeof error === "object" &&
-    error !== null &&
-    typeof (error as { code?: unknown }).code === "string"
-    ? (error as { code: string }).code
-    : undefined;
 }
 
 function requiredText(body: Record<string, unknown>, key: string) {
@@ -139,44 +117,6 @@ async function ensureStrategyExists(
     throw httpError(404, "Strategy not found");
 }
 
-async function withUserTurnLock<T>(
-  db: DatabasePool,
-  userId: string,
-  turnLockTimeoutMs: number,
-  callback: (client: DatabaseClient) => Promise<T>,
-) {
-  const client = await db.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query("SELECT set_config('lock_timeout', $1, true)", [
-      `${turnLockTimeoutMs}ms`,
-    ]);
-    // `hashtext` is int4, so birthday collisions become plausible around 65k users;
-    // the leading 0 reserves the first advisory-lock key for a wider future namespace.
-    await client.query("SELECT pg_advisory_xact_lock(0, hashtext($1))", [
-      userId,
-    ]);
-    const result = await callback(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {
-      // Prefer the original transaction error.
-    }
-    if (postgresCode(error) === "55P03") {
-      throw httpError(
-        409,
-        `Timed out after ${turnLockTimeoutMs}ms waiting for the user turn lock`,
-      );
-    }
-    throw error;
-  } finally {
-    client.release();
-  }
-}
-
 async function maybeUpdateStrategyTitle(
   db: DatabaseQueryable,
   strategyId: string,
@@ -213,15 +153,12 @@ function runResponse(run: RunRow) {
 }
 
 export function buildServer(dependencies: ServerDependencies = {}) {
-  const db =
-    dependencies.db ?? (pg as unknown as DatabasePool & DatabaseQueryable);
+  const db = dependencies.db ?? (pg as unknown as DatabaseQueryable);
   const buildSystemPrompt =
     dependencies.buildSystemPrompt ?? defaultBuildSystemPrompt;
   const getSessionId = dependencies.getSessionId ?? getOrCreateSession;
   const getOpencodeClient =
     dependencies.getOpencodeClient ?? createOpencodeClient;
-  const turnLockTimeoutMs =
-    dependencies.turnLockTimeoutMs ?? resolveTurnLockTimeoutMs();
   const app = Fastify({ loggerInstance: pino() });
 
   app.get("/health", async () => ({ ok: true }));
@@ -241,103 +178,82 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const strategyId = requiredText(body, "strategy_id");
     const text = requiredText(body, "text");
     const runId = randomUUID();
-    const outcome = await withUserTurnLock(
-      db,
-      userId,
-      turnLockTimeoutMs,
-      async (turnClient) => {
-        await ensureStrategyExists(turnClient, userId, strategyId);
-        await turnClient.query(
-          "UPDATE strategies SET last_used_at = NOW() WHERE strategy_id = $1",
-          [strategyId],
-        );
-        await turnClient.query(
-          "INSERT INTO runs (run_id, strategy_id, status) VALUES ($1, $2, $3)",
-          [runId, strategyId, "running"],
-        );
 
-        try {
-          const system = await buildSystemPrompt({ userId, strategyId });
-          request.log.info({ runId, strategyId }, "resolving opencode session");
-          const sessionId = await getSessionId(strategyId, turnClient);
-          request.log.info(
-            { runId, strategyId, sessionId },
-            "opencode session resolved",
-          );
-          const opencode = await getOpencodeClient();
-          request.log.info(
-            { runId, sessionId, textLength: text.length },
-            "calling opencode prompt",
-          );
-          const promptStart = Date.now();
-          const result = await opencode.prompt({
-            messageId: `msg_${runId.replace(/-/g, "")}`,
-            sessionId,
-            system,
-            text,
-          });
-          request.log.info(
-            {
-              runId,
-              sessionId,
-              durationMs: Date.now() - promptStart,
-              parts: result.parts?.length,
-              hasInfo: Boolean(result.info),
-              resultKeys: Object.keys(result ?? {}),
-              partShapes: result.parts?.map((p) => ({
-                type: p.type,
-                ignored: (p as { ignored?: boolean }).ignored,
-                textLen:
-                  p.type === "text"
-                    ? (p as { text?: string }).text?.length
-                    : undefined,
-              })),
-            },
-            "opencode prompt returned",
-          );
-          if (!result.parts) {
-            request.log.error(
-              { runId, sessionId, result },
-              "opencode prompt returned no parts",
-            );
-            throw new Error("opencode prompt returned no parts");
-          }
-          const failure = promptFailure(result);
-          if (failure) throw new Error(failure);
-
-          try {
-            const session = await opencode.getSession(sessionId);
-            await maybeUpdateStrategyTitle(
-              turnClient,
-              strategyId,
-              session.title,
-            );
-          } catch (error) {
-            request.log.warn(
-              { error: errorMessage(error), runId, strategyId },
-              "Failed to refresh strategy title after run completion",
-            );
-          }
-
-          await turnClient.query(
-            "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3, reply = $4, error = NULL WHERE run_id = $1",
-            [runId, "completed", 0, replyText(result.parts)],
-          );
-          request.log.info({ runId }, "run committed");
-          return { error: undefined, run: await readRun(turnClient, runId) };
-        } catch (error) {
-          await turnClient.query(
-            "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3, reply = NULL, error = $4 WHERE run_id = $1",
-            [runId, "failed", 1, errorMessage(error)],
-          );
-          return { error, run: await readRun(turnClient, runId) };
-        }
-      },
+    await ensureStrategyExists(db, userId, strategyId);
+    await db.query(
+      "UPDATE strategies SET last_used_at = NOW() WHERE strategy_id = $1",
+      [strategyId],
+    );
+    await db.query(
+      "INSERT INTO runs (run_id, strategy_id, status) VALUES ($1, $2, $3)",
+      [runId, strategyId, "running"],
     );
 
-    if (!outcome.run) throw new Error(`Run missing after execution: ${runId}`);
-    if (outcome.error) throw outcome.error;
-    return runResponse(outcome.run);
+    request.log.info({ runId, strategyId }, "resolving opencode session");
+    const sessionId = await getSessionId(strategyId);
+    request.log.info(
+      { runId, strategyId, sessionId },
+      "opencode session resolved",
+    );
+
+    let promptError: unknown;
+    let result: OpencodePromptResult | undefined;
+    try {
+      const system = await buildSystemPrompt({ userId, strategyId });
+      const opencode = await getOpencodeClient();
+      request.log.info(
+        { runId, sessionId, textLength: text.length },
+        "calling opencode prompt",
+      );
+      const promptStart = Date.now();
+      result = await opencode.prompt({
+        messageId: `msg_${runId.replace(/-/g, "")}`,
+        sessionId,
+        system,
+        text,
+      });
+      request.log.info(
+        {
+          runId,
+          sessionId,
+          durationMs: Date.now() - promptStart,
+          parts: result.parts?.length,
+        },
+        "opencode prompt returned",
+      );
+      if (!result.parts) throw new Error("opencode prompt returned no parts");
+      const failure = promptFailure(result);
+      if (failure) throw new Error(failure);
+
+      try {
+        const session = await opencode.getSession(sessionId);
+        await maybeUpdateStrategyTitle(db, strategyId, session.title);
+      } catch (error) {
+        request.log.warn(
+          { error: errorMessage(error), runId, strategyId },
+          "Failed to refresh strategy title after run completion",
+        );
+      }
+    } catch (error) {
+      promptError = error;
+    }
+
+    if (promptError) {
+      await db.query(
+        "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3, reply = NULL, error = $4 WHERE run_id = $1",
+        [runId, "failed", 1, errorMessage(promptError)],
+      );
+    } else {
+      await db.query(
+        "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3, reply = $4, error = NULL WHERE run_id = $1",
+        [runId, "completed", 0, replyText(result!.parts)],
+      );
+    }
+
+    const run = await readRun(db, runId);
+    if (!run) throw new Error(`Run missing after execution: ${runId}`);
+    if (promptError) throw promptError;
+    return runResponse(run);
   });
 
   app.get<{ Params: { id: string } }>("/runs/:id", async (request) => {
