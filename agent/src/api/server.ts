@@ -21,7 +21,10 @@ type DatabaseQueryable = Pick<DatabaseClient, "query">;
 type ServerDependencies = {
   db?: DatabasePool & DatabaseQueryable;
   buildSystemPrompt?: typeof defaultBuildSystemPrompt;
-  getSessionId?: (strategyId: string) => Promise<string>;
+  getSessionId?: (
+    strategyId: string,
+    client?: DatabaseClient,
+  ) => Promise<string>;
   getOpencodeClient?: () => Promise<OpencodeTurnClient>;
   turnLockTimeoutMs?: number;
 };
@@ -255,14 +258,50 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
         try {
           const system = await buildSystemPrompt({ userId, strategyId });
-          const sessionId = await getSessionId(strategyId);
+          request.log.info({ runId, strategyId }, "resolving opencode session");
+          const sessionId = await getSessionId(strategyId, turnClient);
+          request.log.info(
+            { runId, strategyId, sessionId },
+            "opencode session resolved",
+          );
           const opencode = await getOpencodeClient();
+          request.log.info(
+            { runId, sessionId, textLength: text.length },
+            "calling opencode prompt",
+          );
+          const promptStart = Date.now();
           const result = await opencode.prompt({
-            messageId: runId,
+            messageId: `msg_${runId.replace(/-/g, "")}`,
             sessionId,
             system,
             text,
           });
+          request.log.info(
+            {
+              runId,
+              sessionId,
+              durationMs: Date.now() - promptStart,
+              parts: result.parts?.length,
+              hasInfo: Boolean(result.info),
+              resultKeys: Object.keys(result ?? {}),
+              partShapes: result.parts?.map((p) => ({
+                type: p.type,
+                ignored: (p as { ignored?: boolean }).ignored,
+                textLen:
+                  p.type === "text"
+                    ? (p as { text?: string }).text?.length
+                    : undefined,
+              })),
+            },
+            "opencode prompt returned",
+          );
+          if (!result.parts) {
+            request.log.error(
+              { runId, sessionId, result },
+              "opencode prompt returned no parts",
+            );
+            throw new Error("opencode prompt returned no parts");
+          }
           const failure = promptFailure(result);
           if (failure) throw new Error(failure);
 
@@ -284,6 +323,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
             "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3, reply = $4, error = NULL WHERE run_id = $1",
             [runId, "completed", 0, replyText(result.parts)],
           );
+          request.log.info({ runId }, "run committed");
           return { error: undefined, run: await readRun(turnClient, runId) };
         } catch (error) {
           await turnClient.query(
