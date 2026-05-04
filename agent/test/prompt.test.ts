@@ -109,3 +109,17 @@ test("tool manifest is registry-driven and includes memory guidance", () => {
     ),
   );
 });
+
+test("response policy requires structured strategy output", () => {
+  assert.ok(RESPONSE_POLICY.includes("`finalize_strategy_result`"));
+  assert.ok(
+    RESPONSE_POLICY.includes("This tool is the structured response contract"),
+  );
+  assert.ok(
+    RESPONSE_POLICY.includes("Use decimal numbers for all allocation weights"),
+  );
+  assert.ok(RESPONSE_POLICY.includes("Do not invent KPIs"));
+  assert.ok(
+    RESPONSE_POLICY.includes("do not put JSON in the final text reply"),
+  );
+});

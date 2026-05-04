@@ -1,7 +1,7 @@
 import "../env";
 import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
@@ -15,6 +15,7 @@ import {
   type OpencodePromptResult,
   type OpencodeTurnClient,
 } from "../agent/session";
+import { parseStrategyResultBlock } from "../agent/strategy-result";
 import {
   createRun as defaultCreateRun,
   markRunCompleted as defaultMarkRunCompleted,
@@ -101,8 +102,8 @@ function promptFailure(result: OpencodePromptResult) {
     : error.name;
 }
 
-function runResponse(run: RunRow) {
-  return {
+function runResponse(run: RunRow, structuredResult: unknown = null) {
+  const response = {
     run_id: run.runId,
     status: run.status,
     started_at: toIso(run.startedAt),
@@ -111,6 +112,10 @@ function runResponse(run: RunRow) {
     reply: run.reply,
     error: run.error,
   };
+
+  return structuredResult === null
+    ? response
+    : { ...response, structured_result: structuredResult };
 }
 
 type ArtifactRef = { kind: string; path: string };
@@ -139,9 +144,21 @@ const ARTIFACT_CONTENT_TYPES: Record<string, string> = {
 
 const KNOWN_ARTIFACT_KINDS: Record<string, string> = {
   "equity_curve.png": "equity_curve_png",
+  "equity_curve.json": "equity_curve_json",
   "drawdown.png": "drawdown_png",
+  "drawdown.json": "drawdown_json",
+  "allocation.json": "allocation_json",
   "report.json": "report_json",
+  "strategy_result.json": "strategy_result_json",
 };
+
+const JSON_ARTIFACT_FILENAMES = new Set([
+  "report.json",
+  "equity_curve.json",
+  "drawdown.json",
+  "allocation.json",
+  "strategy_result.json",
+]);
 
 function resolveStorageRoot() {
   const explicit = process.env.STORAGE_ROOT?.trim();
@@ -258,6 +275,191 @@ function mergeArtifacts(...sources: ArtifactRef[][]): ArtifactRef[] {
     }
   }
   return merged;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function toNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function normalizeEquityPoint(value: unknown) {
+  if (!isRecord(value) || typeof value.date !== "string") return null;
+  const strategyEquity = toNumber(value.equity_usd) ?? toNumber(value.equity);
+  if (strategyEquity === null) return null;
+
+  return {
+    date: value.date,
+    strategy_equity: strategyEquity,
+    benchmark_equity:
+      toNumber(value.bitcoin_equity_usd) ?? toNumber(value.bitcoin_equity),
+  };
+}
+
+function normalizeDrawdownPoint(value: unknown) {
+  if (!isRecord(value) || typeof value.date !== "string") return null;
+  const strategyDrawdown = toNumber(value.drawdown);
+  if (strategyDrawdown === null) return null;
+
+  return {
+    date: value.date,
+    strategy_drawdown: strategyDrawdown,
+    benchmark_drawdown: toNumber(value.bitcoin_drawdown),
+  };
+}
+
+function normalizeAllocationPoint(value: unknown) {
+  if (!isRecord(value)) return null;
+  const weight = toNumber(value.weight);
+  if (weight === null) return null;
+  const asset =
+    typeof value.asset === "string"
+      ? value.asset
+      : typeof value.coin_id === "string"
+        ? value.coin_id
+        : null;
+  if (!asset) return null;
+
+  return { asset, weight };
+}
+
+function normalizeArray<T>(
+  value: unknown,
+  normalize: (item: unknown) => T | null,
+): T[] | null {
+  if (!Array.isArray(value)) return null;
+  const normalized = value.flatMap((item) => {
+    const next = normalize(item);
+    return next ? [next] : [];
+  });
+
+  return normalized.length > 0 ? normalized : null;
+}
+
+function mergeArtifactPayload(
+  structuredResult: unknown,
+  filename: string,
+  payload: unknown,
+): unknown {
+  if (!isRecord(structuredResult)) return structuredResult;
+  const enriched: Record<string, unknown> = { ...structuredResult };
+
+  if (filename === "report.json" && isRecord(payload)) {
+    if (isRecord(payload.kpis)) {
+      enriched.kpis = {
+        ...(isRecord(enriched.kpis) ? enriched.kpis : {}),
+        ...payload.kpis,
+      };
+    }
+    if (isRecord(payload.summary)) {
+      enriched.backtest = {
+        ...(isRecord(enriched.backtest) ? enriched.backtest : {}),
+        ...payload.summary,
+      };
+    }
+  }
+
+  const charts = isRecord(enriched.charts) ? { ...enriched.charts } : {};
+
+  if (filename === "equity_curve.json") {
+    const equity = normalizeArray(payload, normalizeEquityPoint);
+    if (equity) charts.equity_curve = equity;
+  }
+
+  if (filename === "drawdown.json") {
+    const drawdown = normalizeArray(payload, normalizeDrawdownPoint);
+    if (drawdown) charts.drawdown = drawdown;
+  }
+
+  if (filename === "allocation.json") {
+    const allocation = normalizeArray(payload, normalizeAllocationPoint);
+    if (allocation) charts.allocation = allocation;
+  }
+
+  if (Object.keys(charts).length > 0) enriched.charts = charts;
+  return enriched;
+}
+
+async function enrichStructuredResultFromArtifacts(
+  structuredResult: unknown,
+  artifacts: ArtifactRef[],
+): Promise<unknown> {
+  if (!isRecord(structuredResult)) return structuredResult;
+  const dir = artifactsDir();
+  if (!dir) return structuredResult;
+
+  let enriched: unknown = structuredResult;
+  for (const artifact of artifacts) {
+    const filename = artifact.path.split("/").pop() ?? artifact.path;
+    if (!JSON_ARTIFACT_FILENAMES.has(filename)) continue;
+
+    try {
+      const absolutePath = path.resolve(dir, artifact.path);
+      const dirWithSeparator = dir.endsWith(path.sep)
+        ? dir
+        : `${dir}${path.sep}`;
+      if (!absolutePath.startsWith(dirWithSeparator)) continue;
+      const payload: unknown = JSON.parse(
+        await readFile(absolutePath, "utf-8"),
+      );
+      enriched = mergeArtifactPayload(enriched, filename, payload);
+    } catch {
+      continue;
+    }
+  }
+
+  return enriched;
+}
+
+async function readFinalizedStructuredResult(
+  artifacts: ArtifactRef[],
+): Promise<unknown> {
+  const dir = artifactsDir();
+  if (!dir) return null;
+
+  const finalized = artifacts.find(
+    (artifact) =>
+      (artifact.path.split("/").pop() ?? artifact.path) ===
+      "strategy_result.json",
+  );
+  if (!finalized) return null;
+
+  try {
+    const absolutePath = path.resolve(dir, finalized.path);
+    const dirWithSeparator = dir.endsWith(path.sep) ? dir : `${dir}${path.sep}`;
+    if (!absolutePath.startsWith(dirWithSeparator)) return null;
+    return JSON.parse(await readFile(absolutePath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+async function structuredResultFromArtifacts(
+  reply: string,
+  artifacts: ArtifactRef[],
+): Promise<unknown> {
+  const hasStructuredArtifact = artifacts.some((artifact) =>
+    JSON_ARTIFACT_FILENAMES.has(
+      artifact.path.split("/").pop() ?? artifact.path,
+    ),
+  );
+  if (!hasStructuredArtifact) return null;
+
+  const summary = reply.trim().split("\n").find(Boolean) ?? "Strategy result";
+  const base = {
+    title: "Strategy result",
+    summary,
+    reasoning: summary,
+    allocation: [],
+    kpis: {},
+    assumptions: [],
+    risks: [],
+    next_steps: [],
+  };
+
+  return enrichStructuredResultFromArtifacts(base, artifacts);
 }
 
 function extractArtifactsFromParts(
@@ -591,6 +793,11 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       await repositories.markRunCompleted(runId, replyText(result!.parts));
     }
 
+    send("run.finalizing", {
+      message: "Creating structured report and charts",
+      run_id: runId,
+    });
+
     const afterSnapshot = await snapshotArtifacts().catch((error) => {
       request.log.warn(
         { error: errorMessage(error), runId },
@@ -622,7 +829,13 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
     const run = await repositories.readRun(runId);
     if (run) {
-      finalize(runResponse(run), artifacts);
+      const structuredResult =
+        (await readFinalizedStructuredResult(artifacts)) ??
+        parseStrategyResultBlock(run.reply ?? "") ??
+        (await structuredResultFromArtifacts(run.reply ?? "", artifacts));
+      const enrichedStructuredResult =
+        await enrichStructuredResultFromArtifacts(structuredResult, artifacts);
+      finalize(runResponse(run, enrichedStructuredResult), artifacts);
     } else {
       finalize(
         {

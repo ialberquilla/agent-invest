@@ -72,6 +72,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "label": args.label,
                     "target_dates": target_dates,
                 },
+                benchmark_prices=prices,
             )
             payload = {"label": args.label, "target_dates": target_dates, **payload}
     except Exception as error:

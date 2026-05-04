@@ -53,15 +53,24 @@ def test_write_report_writes_png_and_json_and_returns_paths(tmp_path: Path) -> N
 
     equity_curve_png = out_dir / "equity_curve.png"
     drawdown_png = out_dir / "drawdown.png"
+    equity_curve_json = out_dir / "equity_curve.json"
+    drawdown_json = out_dir / "drawdown.json"
+    allocation_json = out_dir / "allocation.json"
     report_json = out_dir / "report.json"
 
     assert equity_curve_png.is_file()
     assert drawdown_png.is_file()
+    assert equity_curve_json.is_file()
+    assert drawdown_json.is_file()
+    assert allocation_json.is_file()
     assert report_json.is_file()
     assert report == {
         "kpis": result.summary,
         "equity_curve_png": str(equity_curve_png),
         "drawdown_png": str(drawdown_png),
+        "equity_curve_json": str(equity_curve_json),
+        "drawdown_json": str(drawdown_json),
+        "allocation_json": str(allocation_json),
         "report_json": str(report_json),
     }
 
@@ -99,3 +108,37 @@ def test_write_report_json_contains_required_kpis(tmp_path: Path) -> None:
     ]
     assert payload["spec"] == spec
     assert isinstance(payload["generated_at"], str)
+
+
+def test_write_report_chart_json_contains_benchmark_and_allocation(
+    tmp_path: Path,
+) -> None:
+    result = _build_result()
+    out_dir = tmp_path / "artifacts"
+    benchmark_prices = pl.DataFrame(
+        [
+            {"date": row["date"], "coin_id": "bitcoin", "price": 100.0 + index}
+            for index, row in enumerate(result.performance.select("date").to_dicts())
+        ]
+    )
+
+    write_report(result, out_dir, benchmark_prices=benchmark_prices)
+
+    equity_curve = json.loads((out_dir / "equity_curve.json").read_text())
+    drawdown = json.loads((out_dir / "drawdown.json").read_text())
+    allocation = json.loads((out_dir / "allocation.json").read_text())
+
+    assert equity_curve[0].keys() >= {
+        "date",
+        "equity",
+        "equity_usd",
+        "bitcoin_equity",
+        "bitcoin_equity_usd",
+    }
+    assert equity_curve[0]["bitcoin_equity"] == 1.0
+    assert (
+        equity_curve[0]["bitcoin_equity_usd"] == result.summary["initial_capital_usd"]
+    )
+    assert drawdown[0].keys() >= {"date", "drawdown", "bitcoin_drawdown"}
+    assert allocation
+    assert allocation[0].keys() == {"date", "coin_id", "weight"}

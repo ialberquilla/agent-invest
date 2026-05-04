@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import test from "node:test";
 
 import type {
@@ -122,6 +125,24 @@ function toolErrorPromptResult(
       },
     ],
   } as unknown as OpencodePromptResult;
+}
+
+function parseSseEvents(body: string) {
+  return body
+    .trim()
+    .split("\n\n")
+    .filter(Boolean)
+    .map((chunk) => {
+      const lines = chunk.split("\n");
+      const event = lines
+        .find((line) => line.startsWith("event: "))
+        ?.slice("event: ".length);
+      const data = lines
+        .find((line) => line.startsWith("data: "))
+        ?.slice("data: ".length);
+
+      return { data: data ? JSON.parse(data) : null, event };
+    });
 }
 
 function createOpencodeClientDouble(
@@ -548,6 +569,273 @@ test("assistant tool error persists a failed run", async () => {
     assert.equal(run.exitCode, 1);
     assert.equal(run.error, "Script timed out after 1s");
     assert.equal(run.reply, null);
+  } finally {
+    await app.close();
+  }
+});
+
+test("POST /messages/stream includes parsed structured_result on completion", async () => {
+  const state = createState();
+  const structuredResult = {
+    allocation: [{ asset: "Bitcoin", weight: 1 }],
+    assumptions: ["Liquidity remains stable"],
+    kpis: { sharpe_ratio: 1.4 },
+    next_steps: ["Monitor drawdown"],
+    reasoning: "Trend following fits the requested universe.",
+    risks: ["Whipsaw risk"],
+    summary: "A BTC trend strategy.",
+    title: "BTC Trend",
+  };
+  const reply = `Here is the strategy.\n\n\`\`\`strategy_result\n${JSON.stringify(
+    structuredResult,
+  )}\n\`\`\``;
+  const app = buildServer({
+    buildSystemPrompt: async () => "system prompt",
+    repositories: createRepositoryDouble(state),
+    getOpencodeClient: async () =>
+      createOpencodeClientDouble(
+        "BTC trend strategy",
+        completedPromptResult(reply, "session-stream"),
+      ),
+    getSessionId: async (strategyId) => {
+      const strategy = state.strategies.get(strategyId);
+
+      assert.ok(strategy);
+      strategy.opencodeSessionId ||= "session-stream";
+
+      return strategy.opencodeSessionId;
+    },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        strategy_id: "strategy-stream",
+        text: "Build a BTC trend strategy",
+        user_id: "user-1",
+      },
+      url: "/messages/stream",
+    });
+
+    assert.equal(response.statusCode, 200);
+
+    const events = parseSseEvents(response.body);
+    const finalizing = events.find((event) => event.event === "run.finalizing");
+    const completed = events.find((event) => event.event === "run.completed");
+
+    assert.ok(finalizing);
+    assert.equal(
+      finalizing.data.message,
+      "Creating structured report and charts",
+    );
+    assert.ok(completed);
+    assert.deepEqual(completed.data.structured_result, structuredResult);
+
+    const [run] = state.runs.values();
+
+    assert.ok(run);
+    assert.equal(run.reply, reply);
+    assert.equal(
+      Object.hasOwn(
+        run as unknown as Record<string, unknown>,
+        "structured_result",
+      ),
+      false,
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("POST /messages/stream enriches structured_result from JSON artifacts", async () => {
+  const state = createState();
+  const storageRoot = await mkdtemp(
+    path.join(tmpdir(), "agent-invest-storage-"),
+  );
+  const previousStorageRoot = process.env.STORAGE_ROOT;
+  process.env.STORAGE_ROOT = storageRoot;
+
+  const structuredResult = {
+    allocation: [{ asset: "Bitcoin", rationale: "Model", weight: 1 }],
+    assumptions: ["Liquidity remains stable"],
+    charts: {
+      equity_curve: [{ date: "2024-01-01", strategy_equity: 999 }],
+    },
+    kpis: { cagr: 0.1, sharpe_ratio: 0.5 },
+    next_steps: ["Monitor drawdown"],
+    reasoning: "Trend following fits the requested universe.",
+    risks: ["Whipsaw risk"],
+    summary: "A BTC trend strategy.",
+    title: "BTC Trend",
+  };
+  const reply = `Here is the strategy.\n\n\`\`\`strategy_result\n${JSON.stringify(
+    structuredResult,
+  )}\n\`\`\``;
+
+  const app = buildServer({
+    buildSystemPrompt: async () => "system prompt",
+    repositories: createRepositoryDouble(state),
+    getOpencodeClient: async () => ({
+      ...createOpencodeClientDouble(
+        "BTC trend strategy",
+        completedPromptResult(reply, "session-stream-artifacts"),
+      ),
+      async prompt() {
+        const artifactDir = path.join(
+          storageRoot,
+          "artifacts",
+          "run_backtest",
+          "btc-trend",
+        );
+        await mkdir(artifactDir, { recursive: true });
+        await writeFile(
+          path.join(artifactDir, "report.json"),
+          JSON.stringify({ kpis: { cagr: 0.25, sharpe_ratio: 1.7 } }),
+        );
+        await writeFile(
+          path.join(artifactDir, "equity_curve.json"),
+          JSON.stringify([
+            {
+              bitcoin_equity_usd: 1100,
+              date: "2024-01-01",
+              equity_usd: 1200,
+            },
+          ]),
+        );
+        await writeFile(
+          path.join(artifactDir, "drawdown.json"),
+          JSON.stringify([
+            {
+              bitcoin_drawdown: -0.2,
+              date: "2024-01-01",
+              drawdown: -0.1,
+            },
+          ]),
+        );
+        await writeFile(
+          path.join(artifactDir, "allocation.json"),
+          JSON.stringify([
+            { coin_id: "bitcoin", date: "2024-01-01", weight: 1 },
+          ]),
+        );
+        return completedPromptResult(reply, "session-stream-artifacts");
+      },
+    }),
+    getSessionId: async (strategyId) => {
+      const strategy = state.strategies.get(strategyId);
+
+      assert.ok(strategy);
+      strategy.opencodeSessionId ||= "session-stream-artifacts";
+
+      return strategy.opencodeSessionId;
+    },
+  });
+
+  try {
+    await mkdir(path.join(storageRoot, "artifacts"), { recursive: true });
+    await writeFile(path.join(storageRoot, "artifacts", ".keep"), "", {
+      flag: "wx",
+    });
+  } catch {
+    // The artifacts directory may be created by another setup path.
+  }
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        strategy_id: "strategy-stream-artifacts",
+        text: "Build a BTC trend strategy",
+        user_id: "user-1",
+      },
+      url: "/messages/stream",
+    });
+
+    assert.equal(response.statusCode, 200);
+
+    const events = parseSseEvents(response.body);
+    const completed = events.find((event) => event.event === "run.completed");
+
+    assert.ok(completed);
+    assert.deepEqual(completed.data.structured_result, {
+      ...structuredResult,
+      charts: {
+        allocation: [{ asset: "bitcoin", weight: 1 }],
+        drawdown: [
+          {
+            benchmark_drawdown: -0.2,
+            date: "2024-01-01",
+            strategy_drawdown: -0.1,
+          },
+        ],
+        equity_curve: [
+          {
+            benchmark_equity: 1100,
+            date: "2024-01-01",
+            strategy_equity: 1200,
+          },
+        ],
+      },
+      kpis: { cagr: 0.25, sharpe_ratio: 1.7 },
+    });
+
+    const [run] = state.runs.values();
+    assert.ok(run);
+    assert.equal(run.reply, reply);
+  } finally {
+    await app.close();
+    if (previousStorageRoot === undefined) delete process.env.STORAGE_ROOT;
+    else process.env.STORAGE_ROOT = previousStorageRoot;
+    await rm(storageRoot, { force: true, recursive: true });
+  }
+});
+
+test("POST /messages/stream omits structured_result for plain text completion", async () => {
+  const state = createState();
+  const reply = "Plain text strategy reply.";
+  const app = buildServer({
+    buildSystemPrompt: async () => "system prompt",
+    repositories: createRepositoryDouble(state),
+    getOpencodeClient: async () =>
+      createOpencodeClientDouble(
+        "Plain text strategy",
+        completedPromptResult(reply, "session-stream-plain"),
+      ),
+    getSessionId: async (strategyId) => {
+      const strategy = state.strategies.get(strategyId);
+
+      assert.ok(strategy);
+      strategy.opencodeSessionId ||= "session-stream-plain";
+
+      return strategy.opencodeSessionId;
+    },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        strategy_id: "strategy-stream-plain",
+        text: "Build a plain text strategy",
+        user_id: "user-1",
+      },
+      url: "/messages/stream",
+    });
+
+    assert.equal(response.statusCode, 200);
+
+    const events = parseSseEvents(response.body);
+    const completed = events.find((event) => event.event === "run.completed");
+
+    assert.ok(completed);
+    assert.equal(Object.hasOwn(completed.data, "structured_result"), false);
+    assert.equal(completed.data.reply, reply);
+
+    const [run] = state.runs.values();
+
+    assert.ok(run);
+    assert.equal(run.reply, reply);
   } finally {
     await app.close();
   }

@@ -15,11 +15,13 @@ def _seed_prices(storage_root: Path) -> None:
     rows: list[dict[str, object]] = []
     coin_a_price = 100.0
     coin_b_price = 100.0
+    bitcoin_price = 100.0
 
     for offset in range(30):
         current_date = start_date + timedelta(days=offset)
         coin_a_price *= 1.01
         coin_b_price *= 1.001
+        bitcoin_price *= 1.005
         rows.append(
             {
                 "date": current_date.isoformat(),
@@ -32,6 +34,13 @@ def _seed_prices(storage_root: Path) -> None:
                 "date": current_date.isoformat(),
                 "coin_id": "coin-b",
                 "price": coin_b_price,
+            }
+        )
+        rows.append(
+            {
+                "date": current_date.isoformat(),
+                "coin_id": "bitcoin",
+                "price": bitcoin_price,
             }
         )
 
@@ -74,7 +83,14 @@ def test_run_backtest_static_allocation(
     assert kpis["final_equity_usd"] > 1000.0
     assert Path(payload["equity_curve_png"]).is_file()
     assert Path(payload["drawdown_png"]).is_file()
+    assert Path(payload["equity_curve_json"]).is_file()
+    assert Path(payload["drawdown_json"]).is_file()
+    assert Path(payload["allocation_json"]).is_file()
     assert Path(payload["report_json"]).is_file()
+    equity_curve = json.loads(Path(payload["equity_curve_json"]).read_text())
+    drawdown = json.loads(Path(payload["drawdown_json"]).read_text())
+    assert equity_curve[0].keys() >= {"date", "equity", "bitcoin_equity"}
+    assert drawdown[0].keys() >= {"date", "drawdown", "bitcoin_drawdown"}
 
 
 def test_run_backtest_explicit_weights(
