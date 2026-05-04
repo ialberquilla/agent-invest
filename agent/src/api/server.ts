@@ -15,27 +15,36 @@ import {
   type OpencodePromptResult,
   type OpencodeTurnClient,
 } from "../agent/session";
-import { pg } from "../db/client";
+import {
+  createRun as defaultCreateRun,
+  markRunCompleted as defaultMarkRunCompleted,
+  markRunFailed as defaultMarkRunFailed,
+  readRun as defaultReadRun,
+  type RunRow,
+} from "../db/repositories/runs";
+import {
+  ensureStrategy as defaultEnsureStrategy,
+  touchStrategy as defaultTouchStrategy,
+  updateStrategyTitleIfBlank as defaultUpdateStrategyTitleIfBlank,
+} from "../db/repositories/strategies";
 
-type DatabaseQueryable = Pick<DatabaseClient, "query">;
+type Repositories = {
+  createRun: typeof defaultCreateRun;
+  ensureStrategy: typeof defaultEnsureStrategy;
+  markRunCompleted: typeof defaultMarkRunCompleted;
+  markRunFailed: typeof defaultMarkRunFailed;
+  readRun: typeof defaultReadRun;
+  touchStrategy: typeof defaultTouchStrategy;
+  updateStrategyTitleIfBlank: typeof defaultUpdateStrategyTitleIfBlank;
+};
 type ServerDependencies = {
-  db?: DatabaseQueryable;
   buildSystemPrompt?: typeof defaultBuildSystemPrompt;
   getSessionId?: (
     strategyId: string,
     client?: DatabaseClient,
   ) => Promise<string>;
   getOpencodeClient?: () => Promise<OpencodeTurnClient>;
-};
-type StrategyOwnershipRow = { user_id: string };
-type RunRow = {
-  run_id: string;
-  status: string;
-  started_at: Date | string;
-  ended_at: Date | string | null;
-  exit_code: number | null;
-  reply: string | null;
-  error: string | null;
+  repositories?: Partial<Repositories>;
 };
 
 function getPort() {
@@ -92,64 +101,13 @@ function promptFailure(result: OpencodePromptResult) {
     : error.name;
 }
 
-async function ensureStrategyExists(
-  db: DatabaseQueryable,
-  userId: string,
-  strategyId: string,
-) {
-  await db.query(
-    "INSERT INTO users (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING",
-    [userId],
-  );
-  await db.query(
-    [
-      "INSERT INTO strategies (strategy_id, user_id, opencode_session_id, title)",
-      "VALUES ($1, $2, $3, $4)",
-      "ON CONFLICT (strategy_id) DO NOTHING",
-    ].join(" "),
-    [strategyId, userId, "", ""],
-  );
-
-  const strategy = (
-    await db.query<StrategyOwnershipRow>(
-      "SELECT user_id FROM strategies WHERE strategy_id = $1",
-      [strategyId],
-    )
-  ).rows[0];
-  if (!strategy || strategy.user_id !== userId)
-    throw httpError(404, "Strategy not found");
-}
-
-async function maybeUpdateStrategyTitle(
-  db: DatabaseQueryable,
-  strategyId: string,
-  title: string,
-) {
-  if (!title.trim()) return;
-  await db.query(
-    "UPDATE strategies SET title = $2 WHERE strategy_id = $1 AND btrim(title) = ''",
-    [strategyId, title.trim()],
-  );
-}
-
-async function readRun(db: DatabaseQueryable, runId: string) {
-  return (
-    (
-      await db.query<RunRow>(
-        "SELECT run_id, status, started_at, ended_at, exit_code, reply, error FROM runs WHERE run_id = $1",
-        [runId],
-      )
-    ).rows[0] ?? null
-  );
-}
-
 function runResponse(run: RunRow) {
   return {
-    run_id: run.run_id,
+    run_id: run.runId,
     status: run.status,
-    started_at: toIso(run.started_at),
-    ended_at: toIso(run.ended_at),
-    exit_code: run.exit_code,
+    started_at: toIso(run.startedAt),
+    ended_at: toIso(run.endedAt),
+    exit_code: run.exitCode,
     reply: run.reply,
     error: run.error,
   };
@@ -157,7 +115,16 @@ function runResponse(run: RunRow) {
 
 type ArtifactRef = { kind: string; path: string };
 
-const ARTIFACT_EXTENSIONS = ["png", "jpg", "jpeg", "svg", "gif", "webp", "json", "csv"];
+const ARTIFACT_EXTENSIONS = [
+  "png",
+  "jpg",
+  "jpeg",
+  "svg",
+  "gif",
+  "webp",
+  "json",
+  "csv",
+];
 
 const ARTIFACT_CONTENT_TYPES: Record<string, string> = {
   ".png": "image/png",
@@ -336,12 +303,21 @@ function extractArtifactsFromParts(
 }
 
 export function buildServer(dependencies: ServerDependencies = {}) {
-  const db = dependencies.db ?? (pg as unknown as DatabaseQueryable);
   const buildSystemPrompt =
     dependencies.buildSystemPrompt ?? defaultBuildSystemPrompt;
   const getSessionId = dependencies.getSessionId ?? getOrCreateSession;
   const getOpencodeClient =
     dependencies.getOpencodeClient ?? createOpencodeClient;
+  const repositories: Repositories = {
+    createRun: defaultCreateRun,
+    ensureStrategy: defaultEnsureStrategy,
+    markRunCompleted: defaultMarkRunCompleted,
+    markRunFailed: defaultMarkRunFailed,
+    readRun: defaultReadRun,
+    touchStrategy: defaultTouchStrategy,
+    updateStrategyTitleIfBlank: defaultUpdateStrategyTitleIfBlank,
+    ...dependencies.repositories,
+  };
   const app = Fastify({ loggerInstance: pino() });
 
   app.get("/health", async () => ({ ok: true }));
@@ -351,7 +327,9 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const userId = requiredText(body, "user_id");
     const strategyId = randomUUID();
 
-    await ensureStrategyExists(db, userId, strategyId);
+    const strategy = await repositories.ensureStrategy(userId, strategyId);
+    if (!strategy || strategy.userId !== userId)
+      throw httpError(404, "Strategy not found");
     return { strategy_id: strategyId };
   });
 
@@ -362,15 +340,11 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const text = requiredText(body, "text");
     const runId = randomUUID();
 
-    await ensureStrategyExists(db, userId, strategyId);
-    await db.query(
-      "UPDATE strategies SET last_used_at = NOW() WHERE strategy_id = $1",
-      [strategyId],
-    );
-    await db.query(
-      "INSERT INTO runs (run_id, strategy_id, status) VALUES ($1, $2, $3)",
-      [runId, strategyId, "running"],
-    );
+    const strategy = await repositories.ensureStrategy(userId, strategyId);
+    if (!strategy || strategy.userId !== userId)
+      throw httpError(404, "Strategy not found");
+    await repositories.touchStrategy(strategyId);
+    await repositories.createRun(runId, strategyId);
 
     request.log.info({ runId, strategyId }, "resolving opencode session");
     const sessionId = await getSessionId(strategyId);
@@ -410,7 +384,10 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
       try {
         const session = await opencode.getSession(sessionId);
-        await maybeUpdateStrategyTitle(db, strategyId, session.title);
+        await repositories.updateStrategyTitleIfBlank(
+          strategyId,
+          session.title,
+        );
       } catch (error) {
         request.log.warn(
           { error: errorMessage(error), runId, strategyId },
@@ -422,52 +399,51 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     }
 
     if (promptError) {
-      await db.query(
-        "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3, reply = NULL, error = $4 WHERE run_id = $1",
-        [runId, "failed", 1, errorMessage(promptError)],
-      );
+      await repositories.markRunFailed(runId, errorMessage(promptError));
     } else {
-      await db.query(
-        "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3, reply = $4, error = NULL WHERE run_id = $1",
-        [runId, "completed", 0, replyText(result!.parts)],
-      );
+      await repositories.markRunCompleted(runId, replyText(result!.parts));
     }
 
-    const run = await readRun(db, runId);
+    const run = await repositories.readRun(runId);
     if (!run) throw new Error(`Run missing after execution: ${runId}`);
     if (promptError) throw promptError;
     return runResponse(run);
   });
 
   app.get<{ Params: { id: string } }>("/runs/:id", async (request) => {
-    const run = await readRun(db, request.params.id);
+    const run = await repositories.readRun(request.params.id);
     if (!run) throw httpError(404, "Run not found");
     return runResponse(run);
   });
 
-  app.get<{ Params: { "*": string } }>("/artifacts/*", async (request, reply) => {
-    const dir = artifactsDir();
-    if (!dir) throw httpError(500, "STORAGE_ROOT is not configured");
+  app.get<{ Params: { "*": string } }>(
+    "/artifacts/*",
+    async (request, reply) => {
+      const dir = artifactsDir();
+      if (!dir) throw httpError(500, "STORAGE_ROOT is not configured");
 
-    const requested = request.params["*"] ?? "";
-    if (!requested) throw httpError(404, "Artifact not found");
+      const requested = request.params["*"] ?? "";
+      if (!requested) throw httpError(404, "Artifact not found");
 
-    const resolved = path.resolve(dir, requested);
-    const dirWithSeparator = dir.endsWith(path.sep) ? dir : `${dir}${path.sep}`;
-    if (!resolved.startsWith(dirWithSeparator)) {
-      throw httpError(403, "Forbidden");
-    }
+      const resolved = path.resolve(dir, requested);
+      const dirWithSeparator = dir.endsWith(path.sep)
+        ? dir
+        : `${dir}${path.sep}`;
+      if (!resolved.startsWith(dirWithSeparator)) {
+        throw httpError(403, "Forbidden");
+      }
 
-    const info = await stat(resolved).catch(() => null);
-    if (!info || !info.isFile()) throw httpError(404, "Artifact not found");
+      const info = await stat(resolved).catch(() => null);
+      if (!info || !info.isFile()) throw httpError(404, "Artifact not found");
 
-    const extension = path.extname(resolved).toLowerCase();
-    const contentType =
-      ARTIFACT_CONTENT_TYPES[extension] ?? "application/octet-stream";
-    reply.header("Cache-Control", "private, max-age=300");
-    reply.type(contentType);
-    return reply.send(createReadStream(resolved));
-  });
+      const extension = path.extname(resolved).toLowerCase();
+      const contentType =
+        ARTIFACT_CONTENT_TYPES[extension] ?? "application/octet-stream";
+      reply.header("Cache-Control", "private, max-age=300");
+      reply.type(contentType);
+      return reply.send(createReadStream(resolved));
+    },
+  );
 
   app.post("/messages/stream", async (request, reply) => {
     const body = (request.body ?? {}) as Record<string, unknown>;
@@ -476,17 +452,16 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const text = requiredText(body, "text");
     const runId = randomUUID();
 
-    await ensureStrategyExists(db, userId, strategyId);
-    await db.query(
-      "UPDATE strategies SET last_used_at = NOW() WHERE strategy_id = $1",
-      [strategyId],
-    );
-    await db.query(
-      "INSERT INTO runs (run_id, strategy_id, status) VALUES ($1, $2, $3)",
-      [runId, strategyId, "running"],
-    );
+    const strategy = await repositories.ensureStrategy(userId, strategyId);
+    if (!strategy || strategy.userId !== userId)
+      throw httpError(404, "Strategy not found");
+    await repositories.touchStrategy(strategyId);
+    await repositories.createRun(runId, strategyId);
 
-    request.log.info({ runId, strategyId }, "stream: resolving opencode session");
+    request.log.info(
+      { runId, strategyId },
+      "stream: resolving opencode session",
+    );
     const sessionId = await getSessionId(strategyId);
     request.log.info(
       { runId, strategyId, sessionId },
@@ -589,7 +564,10 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
       try {
         const session = await opencode.getSession(sessionId);
-        await maybeUpdateStrategyTitle(db, strategyId, session.title);
+        await repositories.updateStrategyTitleIfBlank(
+          strategyId,
+          session.title,
+        );
       } catch (error) {
         request.log.warn(
           { error: errorMessage(error), runId, strategyId },
@@ -608,15 +586,9 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     await eventLoopWithTimeout.catch(() => undefined);
 
     if (promptError) {
-      await db.query(
-        "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3, reply = NULL, error = $4 WHERE run_id = $1",
-        [runId, "failed", 1, errorMessage(promptError)],
-      );
+      await repositories.markRunFailed(runId, errorMessage(promptError));
     } else {
-      await db.query(
-        "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3, reply = $4, error = NULL WHERE run_id = $1",
-        [runId, "completed", 0, replyText(result!.parts)],
-      );
+      await repositories.markRunCompleted(runId, replyText(result!.parts));
     }
 
     const afterSnapshot = await snapshotArtifacts().catch((error) => {
@@ -630,7 +602,8 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       beforeSnapshot,
       afterSnapshot,
     );
-    const filesystemArtifacts = artifactsFromAbsolutePaths(changedAbsolutePaths);
+    const filesystemArtifacts =
+      artifactsFromAbsolutePaths(changedAbsolutePaths);
     const textArtifacts = result?.parts
       ? extractArtifactsFromParts(result.parts)
       : [];
@@ -647,7 +620,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       "stream: extracted artifacts",
     );
 
-    const run = await readRun(db, runId);
+    const run = await repositories.readRun(runId);
     if (run) {
       finalize(runResponse(run), artifacts);
     } else {

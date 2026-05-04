@@ -1,17 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { QueryResultRow } from "pg";
 
 import type {
   OpencodePromptResult,
   OpencodeTurnClient,
 } from "../src/agent/session";
 import { buildServer } from "../src/api/server";
-
-type QueryResult<TRow extends QueryResultRow> = {
-  rowCount: number | null;
-  rows: TRow[];
-};
 
 type StrategyState = {
   userId: string;
@@ -36,26 +30,10 @@ type Deferred<T> = {
   reject(reason?: unknown): void;
 };
 
-type ClientState = {
-  id: number;
-  lockTimeoutMs: number;
-  lockedUserIds: Set<string>;
-};
-
-type LockWaiter = {
-  client: ClientState;
-  reject(reason?: unknown): void;
-  resolve(): void;
-  timer?: NodeJS.Timeout;
-};
-
 function createState() {
   return {
-    nextClientId: 1,
     runs: new Map<string, RunState>(),
     strategies: new Map<string, StrategyState>(),
-    userLockQueues: new Map<string, LockWaiter[]>(),
-    userLocks: new Map<string, number>(),
     users: new Set<string>(),
   };
 }
@@ -69,10 +47,6 @@ function createDeferred<T = void>(): Deferred<T> {
   });
 
   return { promise, reject, resolve };
-}
-
-function sleep(milliseconds: number) {
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function completedPromptResult(
@@ -175,275 +149,65 @@ function createOpencodeClientDouble(
   };
 }
 
-function createDatabaseDouble(state: ReturnType<typeof createState>) {
-  async function acquireUserLock(client: ClientState, userId: string) {
-    const currentOwner = state.userLocks.get(userId);
-
-    if (currentOwner === undefined || currentOwner === client.id) {
-      state.userLocks.set(userId, client.id);
-      client.lockedUserIds.add(userId);
-      return;
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      const waiter: LockWaiter = {
-        client,
-        reject,
-        resolve: () => {
-          if (waiter.timer) {
-            clearTimeout(waiter.timer);
-          }
-
-          state.userLocks.set(userId, client.id);
-          client.lockedUserIds.add(userId);
-          resolve();
-        },
-      };
-      const queue = state.userLockQueues.get(userId) ?? [];
-
-      if (client.lockTimeoutMs > 0) {
-        waiter.timer = setTimeout(() => {
-          state.userLockQueues.set(
-            userId,
-            (state.userLockQueues.get(userId) ?? []).filter(
-              (queuedWaiter) => queuedWaiter !== waiter,
-            ),
-          );
-
-          reject(
-            Object.assign(
-              new Error("canceling statement due to lock timeout"),
-              {
-                code: "55P03",
-              },
-            ),
-          );
-        }, client.lockTimeoutMs);
-      }
-
-      queue.push(waiter);
-      state.userLockQueues.set(userId, queue);
-    });
-  }
-
-  function releaseUserLocks(client: ClientState) {
-    for (const userId of client.lockedUserIds) {
-      if (state.userLocks.get(userId) !== client.id) {
-        continue;
-      }
-
-      const queue = state.userLockQueues.get(userId) ?? [];
-      const nextWaiter = queue.shift();
-
-      if (queue.length > 0) {
-        state.userLockQueues.set(userId, queue);
-      } else {
-        state.userLockQueues.delete(userId);
-      }
-
-      if (!nextWaiter) {
-        state.userLocks.delete(userId);
-        continue;
-      }
-
-      nextWaiter.resolve();
-    }
-
-    client.lockedUserIds.clear();
-  }
-
-  async function executeQuery<TRow extends QueryResultRow = QueryResultRow>(
-    text: string,
-    values: unknown[] = [],
-    client?: ClientState,
-  ): Promise<QueryResult<TRow>> {
-    if (text === "BEGIN") {
-      return { rowCount: null, rows: [] as TRow[] };
-    }
-
-    if (text === "COMMIT" || text === "ROLLBACK") {
-      if (client) {
-        releaseUserLocks(client);
-      }
-
-      return { rowCount: null, rows: [] as TRow[] };
-    }
-
-    if (text === "SELECT set_config('lock_timeout', $1, true)") {
-      if (client) {
-        const rawTimeout = String(values[0]);
-        client.lockTimeoutMs = Number.parseInt(
-          rawTimeout.replace(/ms$/, ""),
-          10,
-        );
-      }
-
-      return { rowCount: 1, rows: [] as TRow[] };
-    }
-
-    if (text === "SELECT pg_advisory_xact_lock(0, hashtext($1))") {
-      assert.ok(client);
-      await acquireUserLock(client, String(values[0]));
-      return { rowCount: 1, rows: [] as TRow[] };
-    }
-
-    if (text.startsWith("INSERT INTO users")) {
-      state.users.add(String(values[0]));
-      return { rowCount: 1, rows: [] as TRow[] };
-    }
-
-    if (text.startsWith("INSERT INTO strategies")) {
-      const strategyId = String(values[0]);
-
-      if (!state.strategies.has(strategyId)) {
-        state.strategies.set(strategyId, {
-          lastUsedAt: new Date().toISOString(),
-          opencodeSessionId: String(values[2]),
-          title: String(values[3]),
-          userId: String(values[1]),
-        });
-      }
-
-      return { rowCount: 1, rows: [] as TRow[] };
-    }
-
-    if (text === "SELECT user_id FROM strategies WHERE strategy_id = $1") {
-      const strategy = state.strategies.get(String(values[0]));
-
-      return {
-        rowCount: strategy ? 1 : 0,
-        rows: strategy
-          ? ([{ user_id: strategy.userId }] as unknown as TRow[])
-          : ([] as TRow[]),
-      };
-    }
-
-    if (text.startsWith("UPDATE strategies SET last_used_at = NOW()")) {
-      const strategy = state.strategies.get(String(values[0]));
-
-      if (strategy) {
-        strategy.lastUsedAt = new Date().toISOString();
-      }
-
-      return { rowCount: strategy ? 1 : 0, rows: [] as TRow[] };
-    }
-
-    if (
-      text ===
-      "INSERT INTO runs (run_id, strategy_id, status) VALUES ($1, $2, $3)"
-    ) {
-      state.runs.set(String(values[0]), {
+function createRepositoryDouble(state: ReturnType<typeof createState>) {
+  return {
+    async createRun(runId: string, strategyId: string) {
+      state.runs.set(runId, {
         endedAt: null,
         error: null,
         exitCode: null,
         reply: null,
         startedAt: new Date().toISOString(),
-        status: String(values[2]),
-        strategyId: String(values[1]),
+        status: "running",
+        strategyId,
       });
-
-      return { rowCount: 1, rows: [] as TRow[] };
-    }
-
-    if (
-      text ===
-      "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3, reply = $4, error = NULL WHERE run_id = $1"
-    ) {
-      const run = state.runs.get(String(values[0]));
-
-      if (run) {
-        run.status = String(values[1]);
-        run.endedAt = new Date().toISOString();
-        run.exitCode = Number(values[2]);
-        run.reply = String(values[3]);
-        run.error = null;
-      }
-
-      return { rowCount: run ? 1 : 0, rows: [] as TRow[] };
-    }
-
-    if (
-      text ===
-      "UPDATE runs SET status = $2, ended_at = NOW(), exit_code = $3, reply = NULL, error = $4 WHERE run_id = $1"
-    ) {
-      const run = state.runs.get(String(values[0]));
-
-      if (run) {
-        run.status = String(values[1]);
-        run.endedAt = new Date().toISOString();
-        run.exitCode = Number(values[2]);
-        run.reply = null;
-        run.error = String(values[3]);
-      }
-
-      return { rowCount: run ? 1 : 0, rows: [] as TRow[] };
-    }
-
-    if (text.startsWith("UPDATE strategies SET title = $2")) {
-      const strategy = state.strategies.get(String(values[0]));
-
-      if (strategy && !strategy.title.trim()) {
-        strategy.title = String(values[1]);
-      }
-
-      return { rowCount: strategy ? 1 : 0, rows: [] as TRow[] };
-    }
-
-    if (
-      text ===
-      "SELECT run_id, status, started_at, ended_at, exit_code, reply, error FROM runs WHERE run_id = $1"
-    ) {
-      const runId = String(values[0]);
-      const run = state.runs.get(runId);
-
-      return {
-        rowCount: run ? 1 : 0,
-        rows: run
-          ? ([
-              {
-                ended_at: run.endedAt,
-                error: run.error,
-                exit_code: run.exitCode,
-                reply: run.reply,
-                run_id: runId,
-                started_at: run.startedAt,
-                status: run.status,
-              },
-            ] as unknown as TRow[])
-          : ([] as TRow[]),
-      };
-    }
-
-    throw new Error(`Unexpected query: ${text}`);
-  }
-
-  return {
-    async connect() {
-      const clientState: ClientState = {
-        id: state.nextClientId,
-        lockedUserIds: new Set<string>(),
-        lockTimeoutMs: 0,
-      };
-
-      state.nextClientId += 1;
-
-      return {
-        async query<TRow extends QueryResultRow = QueryResultRow>(
-          text: string,
-          values: unknown[] = [],
-        ) {
-          return executeQuery<TRow>(text, values, clientState);
-        },
-        release() {
-          releaseUserLocks(clientState);
-        },
-      };
     },
-    async query<TRow extends QueryResultRow = QueryResultRow>(
-      text: string,
-      values: unknown[] = [],
-    ) {
-      return executeQuery<TRow>(text, values);
+    async ensureStrategy(userId: string, strategyId: string) {
+      state.users.add(userId);
+      if (!state.strategies.has(strategyId)) {
+        state.strategies.set(strategyId, {
+          lastUsedAt: new Date().toISOString(),
+          opencodeSessionId: "",
+          title: "",
+          userId,
+        });
+      }
+
+      const strategy = state.strategies.get(strategyId);
+      return strategy ? { userId: strategy.userId } : null;
+    },
+    async markRunCompleted(runId: string, reply: string) {
+      const run = state.runs.get(runId);
+      if (!run) return;
+      run.status = "completed";
+      run.endedAt = new Date().toISOString();
+      run.exitCode = 0;
+      run.reply = reply;
+      run.error = null;
+    },
+    async markRunFailed(runId: string, error: string) {
+      const run = state.runs.get(runId);
+      if (!run) return;
+      run.status = "failed";
+      run.endedAt = new Date().toISOString();
+      run.exitCode = 1;
+      run.reply = null;
+      run.error = error;
+    },
+    async readRun(runId: string) {
+      const run = state.runs.get(runId);
+      return run ? { ...run, runId } : null;
+    },
+    async touchStrategy(strategyId: string) {
+      const strategy = state.strategies.get(strategyId);
+      if (strategy) strategy.lastUsedAt = new Date().toISOString();
+    },
+    async updateStrategyTitleIfBlank(strategyId: string, title: string) {
+      const strategy = state.strategies.get(strategyId);
+      const normalizedTitle = title.trim();
+      if (strategy && normalizedTitle && !strategy.title.trim()) {
+        strategy.title = normalizedTitle;
+      }
     },
   };
 }
@@ -451,7 +215,7 @@ function createDatabaseDouble(state: ReturnType<typeof createState>) {
 test("POST /strategies creates a new strategy row and returns its id", async () => {
   const state = createState();
   const app = buildServer({
-    db: createDatabaseDouble(state),
+    repositories: createRepositoryDouble(state),
   });
 
   try {
@@ -492,7 +256,7 @@ test("POST /strategies creates a new strategy row and returns its id", async () 
 
 test("POST /strategies rejects a missing user_id", async () => {
   const app = buildServer({
-    db: createDatabaseDouble(createState()),
+    repositories: createRepositoryDouble(createState()),
   });
 
   try {
@@ -517,7 +281,7 @@ test("POST /messages returns the completed run and auto-creates the strategy", a
   const state = createState();
   const app = buildServer({
     buildSystemPrompt: async () => "system prompt",
-    db: createDatabaseDouble(state),
+    repositories: createRepositoryDouble(state),
     getOpencodeClient: async () =>
       createOpencodeClientDouble(
         "Momentum explorer",
@@ -574,7 +338,7 @@ test("GET /runs/:id returns the persisted run", async () => {
   const state = createState();
   const app = buildServer({
     buildSystemPrompt: async () => "system prompt",
-    db: createDatabaseDouble(state),
+    repositories: createRepositoryDouble(state),
     getOpencodeClient: async () =>
       createOpencodeClientDouble(
         "Mean reversion scout",
@@ -626,7 +390,7 @@ test("GET /runs/:id returns the persisted run", async () => {
 
 test("GET /runs/:id returns 404 for unknown runs", async () => {
   const app = buildServer({
-    db: createDatabaseDouble(createState()),
+    repositories: createRepositoryDouble(createState()),
   });
 
   try {
@@ -663,7 +427,7 @@ test("different users can build prompts in parallel", async () => {
 
       return `system prompt for ${userId}`;
     },
-    db: createDatabaseDouble(state),
+    repositories: createRepositoryDouble(state),
     getOpencodeClient: async () =>
       createOpencodeClientDouble(
         "Parallel strategy",
@@ -717,8 +481,8 @@ test("different users can build prompts in parallel", async () => {
 test("unexpected errors return a 500 response", async () => {
   const app = buildServer({
     buildSystemPrompt: async () => "system prompt",
-    db: {
-      async query() {
+    repositories: {
+      async ensureStrategy() {
         throw new Error("database offline");
       },
     },
@@ -746,7 +510,7 @@ test("assistant tool error persists a failed run", async () => {
   const state = createState();
   const app = buildServer({
     buildSystemPrompt: async () => "system prompt",
-    db: createDatabaseDouble(state),
+    repositories: createRepositoryDouble(state),
     getOpencodeClient: async () =>
       createOpencodeClientDouble(
         "Timeout strategy",

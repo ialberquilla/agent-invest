@@ -6,28 +6,18 @@ import {
   type Event as OpencodeEvent,
   type Part,
 } from "@opencode-ai/sdk";
-import type { QueryResultRow } from "pg";
 
-import { pg } from "../db/client";
+import { db as defaultDb } from "../db/client";
+import {
+  readStrategySession,
+  updateStrategySession,
+} from "../db/repositories/strategies";
 
 export const DEFAULT_OPENCODE_MODEL = "azure/gpt-5.4";
 
-type QueryResult<TRow extends QueryResultRow> = {
-  rowCount: number | null;
-  rows: TRow[];
-};
+type SessionDb = Parameters<typeof readStrategySession>[2];
 
-export type DatabaseClient = {
-  query<TRow extends QueryResultRow = QueryResultRow>(
-    text: string,
-    values?: unknown[],
-  ): Promise<QueryResult<TRow>>;
-  release(): void;
-};
-
-export type DatabasePool = {
-  connect(): Promise<DatabaseClient>;
-};
+export type DatabaseClient = NonNullable<SessionDb>;
 
 export type SessionClient = {
   createSession(title: string): Promise<string>;
@@ -58,13 +48,10 @@ export type OpencodeTurnClient = {
 };
 
 type SessionManagerOptions = {
+  db?: DatabaseClient;
   getOpencodeClient?: () => Promise<SessionClient>;
-  pool?: DatabasePool;
-};
-
-type StrategySessionRow = {
-  opencode_session_id: string | null;
-  title: string;
+  readStrategySession?: typeof readStrategySession;
+  updateStrategySession?: typeof updateStrategySession;
 };
 
 type ManagedOpencode = {
@@ -209,46 +196,33 @@ export async function createOpencodeClient(
 }
 
 export function createSessionManager(options: SessionManagerOptions = {}) {
-  const pool = options.pool ?? (pg as unknown as DatabasePool);
+  const db = options.db ?? defaultDb;
   const getOpencodeClient = options.getOpencodeClient ?? createOpencodeClient;
+  const readSession = options.readStrategySession ?? readStrategySession;
+  const updateSession = options.updateStrategySession ?? updateStrategySession;
 
-  async function resolveWithClient(
-    client: DatabaseClient,
+  async function resolveWithDb(
+    tx: DatabaseClient,
     strategyId: string,
     lockRow: boolean,
   ) {
-    const result = await client.query<StrategySessionRow>(
-      [
-        "SELECT title, opencode_session_id",
-        "FROM strategies",
-        "WHERE strategy_id = $1",
-        lockRow ? "FOR UPDATE" : "",
-      ]
-        .join(" ")
-        .trim(),
-      [strategyId],
+    const strategy = await readSession(
+      strategyId,
+      { lockForUpdate: lockRow },
+      tx,
     );
-
-    const strategy = result.rows[0];
     if (!strategy) {
       throw new Error(`Strategy not found: ${strategyId}`);
     }
 
-    const existingSessionId = normalizeSessionId(strategy.opencode_session_id);
+    const existingSessionId = normalizeSessionId(strategy.opencodeSessionId);
     if (existingSessionId) return existingSessionId;
 
     const opencode = await getOpencodeClient();
     const sessionId = await opencode.createSession(strategy.title);
-    const updateResult = await client.query(
-      [
-        "UPDATE strategies",
-        "SET opencode_session_id = $2",
-        "WHERE strategy_id = $1",
-      ].join(" "),
-      [strategyId, sessionId],
-    );
+    const updatedRows = await updateSession(strategyId, sessionId, tx);
 
-    if (updateResult.rowCount !== 1) {
+    if (updatedRows !== 1) {
       throw new Error(
         `Failed to persist opencode session for strategy: ${strategyId}`,
       );
@@ -258,31 +232,14 @@ export function createSessionManager(options: SessionManagerOptions = {}) {
   }
 
   return {
-    async getOrCreateSession(strategyId: string, existingClient?: DatabaseClient) {
-      // When called inside an existing turn transaction, reuse its client to
-      // avoid a self-deadlock between the turn's row lock and a fresh
-      // SELECT FOR UPDATE on the same row from a separate pool connection.
-      if (existingClient) {
-        return resolveWithClient(existingClient, strategyId, false);
+    async getOrCreateSession(strategyId: string, existingDb?: DatabaseClient) {
+      // When called inside an existing transaction, reuse it to avoid a
+      // self-deadlock between the caller's row lock and another FOR UPDATE.
+      if (existingDb) {
+        return resolveWithDb(existingDb, strategyId, false);
       }
 
-      const client = await pool.connect();
-      let inTransaction = false;
-      try {
-        await client.query("BEGIN");
-        inTransaction = true;
-        const sessionId = await resolveWithClient(client, strategyId, true);
-        await client.query("COMMIT");
-        inTransaction = false;
-        return sessionId;
-      } catch (error) {
-        if (inTransaction) {
-          await client.query("ROLLBACK");
-        }
-        throw error;
-      } finally {
-        client.release();
-      }
+      return db.transaction((tx) => resolveWithDb(tx, strategyId, true));
     },
   };
 }

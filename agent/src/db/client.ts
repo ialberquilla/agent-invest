@@ -1,4 +1,7 @@
+import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool, type PoolConfig } from "pg";
+
+import * as schema from "./schema";
 
 function getPoolConfigFromEnv(): PoolConfig {
   if (process.env.DATABASE_URL) {
@@ -42,4 +45,5 @@ export function describePostgresTarget(): string {
   return `${host}:${port}/${database}`;
 }
 
-export const pg = new Pool(getPoolConfigFromEnv());
+export const pgPool = new Pool(getPoolConfigFromEnv());
+export const db = drizzle(pgPool, { schema });
