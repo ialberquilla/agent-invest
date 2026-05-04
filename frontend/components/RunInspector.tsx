@@ -86,15 +86,19 @@ export function RunInspector({ open, runId, onOpenChange }: RunInspectorProps) {
       return;
     }
 
+    const activeRunId = runId;
     const abortController = new AbortController();
     setState({ status: "loading" });
 
     async function loadRun() {
       try {
-        const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`, {
-          cache: "no-store",
-          signal: abortController.signal,
-        });
+        const response = await fetch(
+          `/api/runs/${encodeURIComponent(activeRunId)}`,
+          {
+            cache: "no-store",
+            signal: abortController.signal,
+          },
+        );
         const payload = await readJson(response);
 
         if (response.status === 404) {

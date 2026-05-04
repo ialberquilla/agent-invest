@@ -10,7 +10,7 @@ import type { QueryResultRow } from "pg";
 
 import { pg } from "../db/client";
 
-export const DEFAULT_OPENCODE_MODEL = "openai/gpt-5";
+export const DEFAULT_OPENCODE_MODEL = "azure/gpt-5.4";
 
 type QueryResult<TRow extends QueryResultRow> = {
   rowCount: number | null;

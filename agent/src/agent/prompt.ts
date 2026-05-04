@@ -20,6 +20,7 @@ export const RESPONSE_POLICY = [
   "- Do not call the `question` tool or otherwise ask the user clarifying questions. The runtime is non-interactive and cannot answer them — the prompt loop will hang.",
   "- When the request is ambiguous, pick reasonable defaults, state your assumptions in the final reply, and proceed.",
   "- Always finish each turn with a `text` reply (the user-visible answer). Tool calls and reasoning alone are not a complete turn.",
+  "- Whenever the user asks you to design, evaluate, compare, recommend, refine, or simulate a portfolio allocation or strategy, you MUST call `run_backtest` at least once to ground your answer. Treat this as mandatory — never report performance metrics or recommend an allocation without running a backtest first. Your final reply must reference the resulting KPIs and the equity_curve.png path produced by the run.",
 ].join("\n");
 
 export const MEMORY_DISCIPLINE_GUIDANCE = [
@@ -38,10 +39,12 @@ export const AGENT_SCRIPT_REGISTRY: readonly AgentScriptDefinition[] = [
   {
     name: "run_backtest",
     summary:
-      "Run a JSON-specified backtest and return metrics plus equity curve.",
-    signature: "--spec '<json>'",
+      "Score a portfolio allocation against historical prices. Returns standardized KPIs (cagr, sharpe_ratio, sortino_ratio, max_drawdown, calmar_ratio, monthly_hit_rate, final_equity_usd, total_trading_cost_usd, total_num_swaps) and writes equity_curve.png + drawdown.png + report.json under <STORAGE_ROOT>/artifacts/run_backtest/<label>/.",
+    signature:
+      "--allocation '<json>' [--rebalance none|daily|weekly|monthly] [--costs '<json>'] [--initial-capital-usd <usd>] [--label <name>]",
     example:
-      'uv run --project agent/scripts python -m agent_invest_scripts.run_backtest --spec \'{"signal_type":"cross_sectional_momentum","lookback_days":90,"top_k":5,"rebalance_frequency":"weekly"}\'',
+      'uv run --project agent/scripts python -m agent_invest_scripts.run_backtest --allocation \'{"type":"static","weights":{"bitcoin":0.6,"ethereum":0.4},"start":"2024-01-01","end":"2024-12-31"}\' --rebalance monthly --label sixty_forty',
+    note: 'Allocation forms: {"type":"static","weights":{coin_id:weight,...},"start":"YYYY-MM-DD","end":"YYYY-MM-DD"} for buy-and-hold or periodic-rebalance to constant weights, OR {"type":"weights","rows":[{"date":"YYYY-MM-DD","coin_id":...,"weight":...},...]} for time-varying allocations. Weights must sum to <= 1.0; the remainder is treated as cash. Use --rebalance none for true buy-and-hold (single rebalance at start). Use list_universe first to discover valid coin_ids.',
   },
   {
     name: "list_runs",

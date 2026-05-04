@@ -8,6 +8,11 @@ import { MessageList } from "@/components/MessageList";
 import { RunInspector } from "@/components/RunInspector";
 import { Card } from "@/components/ui/card";
 import {
+  initialTimeline,
+  reduceTimeline,
+  type TimelineState,
+} from "@/lib/agent-events";
+import {
   ChatMessage,
   deriveStrategyLabel,
   ensureKnownStrategy,
@@ -16,7 +21,7 @@ import {
   setStrategyId as persistStrategyId,
   upsertKnownStrategy,
 } from "@/lib/local-store";
-import { Run } from "@/lib/types";
+import { readSse } from "@/lib/sse";
 
 type ChatViewProps = {
   strategyId: string;
@@ -63,6 +68,8 @@ export function ChatView({
     getMessages(strategyId),
   );
   const [isSending, setIsSending] = useState(false);
+  const [liveTimeline, setLiveTimeline] =
+    useState<TimelineState>(initialTimeline);
   const [inspectedRunId, setInspectedRunId] = useState<string | null>(null);
   const [isInspectorOpen, setIsInspectorOpen] = useState(false);
   const inspectorTriggerRef = useRef<HTMLButtonElement | null>(null);
@@ -105,9 +112,10 @@ export function ChatView({
 
     setMessages((current) => [...current, { role: "user", text }]);
     setIsSending(true);
+    setLiveTimeline(initialTimeline);
 
     try {
-      const response = await fetch("/api/messages", {
+      const response = await fetch("/api/messages/stream", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -116,9 +124,8 @@ export function ChatView({
         body: JSON.stringify({ strategy_id: strategyId, text }),
       });
 
-      const payload = await readJson(response);
-
       if (!response.ok) {
+        const payload = await readJson(response);
         setMessages((current) => [
           ...current,
           {
@@ -131,7 +138,39 @@ export function ChatView({
         return;
       }
 
-      const run = payload as Run;
+      if (!response.body) {
+        setMessages((current) => [
+          ...current,
+          {
+            role: "agent",
+            text: "",
+            status: "error",
+            error: "Stream returned no body",
+          },
+        ]);
+        return;
+      }
+
+      let timeline: TimelineState = initialTimeline;
+      for await (const sseMessage of readSse(response.body)) {
+        timeline = reduceTimeline(timeline, sseMessage);
+        setLiveTimeline(timeline);
+        if (timeline.done) break;
+      }
+
+      const run = timeline.finalRun;
+      if (!run) {
+        setMessages((current) => [
+          ...current,
+          {
+            role: "agent",
+            text: "",
+            status: "error",
+            error: "Stream ended without a completed run",
+          },
+        ]);
+        return;
+      }
 
       setMessages((current) => [
         ...current,
@@ -141,6 +180,7 @@ export function ChatView({
           run_id: run.run_id,
           status: run.status,
           error: run.error ?? undefined,
+          artifacts: run.artifacts,
         },
       ]);
     } catch {
@@ -155,6 +195,7 @@ export function ChatView({
       ]);
     } finally {
       setIsSending(false);
+      setLiveTimeline(initialTimeline);
     }
   }
 
@@ -193,6 +234,7 @@ export function ChatView({
           <MessageList
             messages={messages}
             isThinking={isSending}
+            liveParts={liveTimeline.parts}
             onInspectRun={handleInspectRun}
           />
         </div>

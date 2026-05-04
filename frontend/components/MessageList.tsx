@@ -2,27 +2,32 @@
 
 import { useEffect, useRef } from "react";
 
+import { ArtifactGallery } from "@/components/ArtifactGallery";
+import { LiveActivity } from "@/components/LiveActivity";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import type { TimelinePart } from "@/lib/agent-events";
 import { ChatMessage } from "@/lib/local-store";
 import { cn } from "@/lib/utils";
 
 type MessageListProps = {
   messages: ChatMessage[];
   isThinking: boolean;
+  liveParts?: TimelinePart[];
   onInspectRun?: (runId: string, trigger: HTMLButtonElement) => void;
 };
 
 export function MessageList({
   messages,
   isThinking,
+  liveParts = [],
   onInspectRun,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [isThinking, messages]);
+  }, [isThinking, liveParts, messages]);
 
   return (
     <ScrollArea className="h-full">
@@ -41,8 +46,12 @@ export function MessageList({
           const metadata = [message.status, message.run_id]
             .filter(Boolean)
             .join(" · ");
+          const hasArtifacts =
+            message.role === "agent" &&
+            !!message.artifacts &&
+            message.artifacts.length > 0;
           const bubbleClassName = cn(
-            "max-w-[90%] py-3 shadow-sm sm:max-w-[80%]",
+            "py-3 shadow-sm",
             isUser && "bg-primary text-primary-foreground ring-primary/15",
             !isUser && !message.error && "bg-card text-card-foreground",
             message.error &&
@@ -50,71 +59,70 @@ export function MessageList({
             isInspectable &&
               "cursor-pointer transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
           );
+          const bubbleBody = (
+            <Card size="sm" className={bubbleClassName}>
+              <CardContent className="space-y-2">
+                {message.error ? (
+                  <p className="text-sm leading-6">{message.error}</p>
+                ) : (
+                  <pre className="font-sans text-sm leading-6 whitespace-pre-wrap break-words">
+                    {message.text}
+                  </pre>
+                )}
+
+                {metadata ? (
+                  <p className="text-xs opacity-70">{metadata}</p>
+                ) : null}
+              </CardContent>
+            </Card>
+          );
 
           return (
             <div
               key={`${message.role}-${message.run_id ?? index}`}
               className={cn("flex", isUser ? "justify-end" : "justify-start")}
             >
-              {isInspectable ? (
-                <button
-                  type="button"
-                  className="rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  aria-label={`Inspect run ${runId}`}
-                  onClick={(event) => {
-                    if (runId) {
-                      onInspectRun?.(runId, event.currentTarget);
-                    }
-                  }}
-                >
-                  <Card size="sm" className={bubbleClassName}>
-                    <CardContent className="space-y-2">
-                      {message.error ? (
-                        <p className="text-sm leading-6">{message.error}</p>
-                      ) : (
-                        <pre className="font-sans text-sm leading-6 whitespace-pre-wrap break-words">
-                          {message.text}
-                        </pre>
-                      )}
+              <div className="flex max-w-[90%] flex-col gap-2 sm:max-w-[80%]">
+                {isInspectable ? (
+                  <button
+                    type="button"
+                    className="rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    aria-label={`Inspect run ${runId}`}
+                    onClick={(event) => {
+                      if (runId) {
+                        onInspectRun?.(runId, event.currentTarget);
+                      }
+                    }}
+                  >
+                    {bubbleBody}
+                  </button>
+                ) : (
+                  bubbleBody
+                )}
 
-                      {metadata ? (
-                        <p className="text-xs opacity-70">{metadata}</p>
-                      ) : null}
-                    </CardContent>
-                  </Card>
-                </button>
-              ) : (
-                <Card size="sm" className={bubbleClassName}>
-                  <CardContent className="space-y-2">
-                    {message.error ? (
-                      <p className="text-sm leading-6">{message.error}</p>
-                    ) : (
-                      <pre className="font-sans text-sm leading-6 whitespace-pre-wrap break-words">
-                        {message.text}
-                      </pre>
-                    )}
-
-                    {metadata ? (
-                      <p className="text-xs opacity-70">{metadata}</p>
-                    ) : null}
-                  </CardContent>
-                </Card>
-              )}
+                {hasArtifacts && message.artifacts ? (
+                  <ArtifactGallery artifacts={message.artifacts} />
+                ) : null}
+              </div>
             </div>
           );
         })}
 
         {isThinking ? (
-          <div className="flex justify-start">
-            <Card
-              size="sm"
-              className="max-w-[90%] bg-muted py-3 text-muted-foreground sm:max-w-[80%]"
-            >
-              <CardContent>
-                <p className="text-sm italic">thinking...</p>
-              </CardContent>
-            </Card>
-          </div>
+          liveParts.length > 0 ? (
+            <LiveActivity parts={liveParts} />
+          ) : (
+            <div className="flex justify-start">
+              <Card
+                size="sm"
+                className="max-w-[90%] bg-muted py-3 text-muted-foreground sm:max-w-[80%]"
+              >
+                <CardContent>
+                  <p className="text-sm italic">thinking...</p>
+                </CardContent>
+              </Card>
+            </div>
+          )
         ) : null}
 
         <div ref={endRef} />

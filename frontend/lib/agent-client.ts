@@ -25,21 +25,22 @@ function isJsonBody(body: AgentFetchInit["body"]): body is JsonBody {
   return prototype === Object.prototype || prototype === null;
 }
 
-function withJsonBody(init: AgentFetchInit = {}) {
+function withJsonBody(init: AgentFetchInit = {}): RequestInit {
   if (init.body === undefined) {
-    return init;
+    return init as RequestInit;
   }
 
   const headers = new Headers(init.headers);
-  if (isJsonBody(init.body) && !headers.has("content-type")) {
+  const isJson = isJsonBody(init.body);
+  if (isJson && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
   }
 
-  return {
-    ...init,
-    body: isJsonBody(init.body) ? JSON.stringify(init.body) : init.body,
-    headers,
-  };
+  const body: BodyInit | null = isJson
+    ? JSON.stringify(init.body)
+    : (init.body as BodyInit | null);
+
+  return { ...init, body, headers };
 }
 
 function readErrorMessage(body: string) {
