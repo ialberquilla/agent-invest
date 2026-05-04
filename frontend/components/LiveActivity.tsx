@@ -21,17 +21,26 @@ const TOOL_STATUS_TONE: Record<ToolStatus, string> = {
 
 export type LiveActivityProps = {
   parts: TimelinePart[];
+  fullWidth?: boolean;
+  includeText?: boolean;
 };
 
-export function LiveActivity({ parts }: LiveActivityProps) {
-  const visibleParts = parts.filter(isVisible);
+export function LiveActivity({
+  parts,
+  fullWidth = false,
+  includeText = true,
+}: LiveActivityProps) {
+  const visibleParts = parts.filter((part) => isVisible(part, includeText));
   if (visibleParts.length === 0) return null;
 
   return (
     <div className="flex justify-start">
       <Card
         size="sm"
-        className="max-w-[90%] border-dashed bg-muted/30 py-3 sm:max-w-[80%]"
+        className={cn(
+          "border-dashed bg-muted/30 py-3",
+          fullWidth ? "w-full" : "max-w-[90%] sm:max-w-[80%]",
+        )}
       >
         <CardContent className="space-y-3">
           <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -48,8 +57,9 @@ export function LiveActivity({ parts }: LiveActivityProps) {
   );
 }
 
-function isVisible(part: TimelinePart): boolean {
+function isVisible(part: TimelinePart, includeText: boolean): boolean {
   if (part.kind === "step-start" || part.kind === "step-finish") return false;
+  if (part.kind === "text" && !includeText) return false;
   if (part.kind === "reasoning" || part.kind === "text") {
     return part.text.trim().length > 0;
   }
@@ -72,7 +82,8 @@ function PartView({ part }: { part: TimelinePart }) {
 
   if (part.kind === "tool") {
     const statusLabel = TOOL_STATUS_LABEL[part.status] ?? part.status;
-    const tone = TOOL_STATUS_TONE[part.status] ?? "bg-muted text-muted-foreground";
+    const tone =
+      TOOL_STATUS_TONE[part.status] ?? "bg-muted text-muted-foreground";
     return (
       <div className="rounded-md border border-border bg-background/60 px-3 py-2">
         <div className="flex flex-wrap items-center gap-2">
