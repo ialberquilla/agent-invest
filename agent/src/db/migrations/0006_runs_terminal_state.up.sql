@@ -1,3 +1,0 @@
-ALTER TABLE runs
-  ADD COLUMN reply TEXT,
-  ADD COLUMN error TEXT;
