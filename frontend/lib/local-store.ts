@@ -1,9 +1,12 @@
+import type { ArtifactRef } from "@/lib/types";
+
 export type ChatMessage = {
   role: "user" | "agent";
   text: string;
   run_id?: string;
   status?: string;
   error?: string;
+  artifacts?: ArtifactRef[];
 };
 
 export type KnownStrategy = {
@@ -37,6 +40,16 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function isArtifactRef(value: unknown): value is ArtifactRef {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const artifact = value as Record<string, unknown>;
+  return (
+    typeof artifact.kind === "string" && typeof artifact.path === "string"
+  );
+}
+
 function isChatMessage(value: unknown): value is ChatMessage {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return false;
@@ -49,7 +62,10 @@ function isChatMessage(value: unknown): value is ChatMessage {
     typeof message.text === "string" &&
     (message.run_id === undefined || typeof message.run_id === "string") &&
     (message.status === undefined || typeof message.status === "string") &&
-    (message.error === undefined || typeof message.error === "string")
+    (message.error === undefined || typeof message.error === "string") &&
+    (message.artifacts === undefined ||
+      (Array.isArray(message.artifacts) &&
+        message.artifacts.every(isArtifactRef)))
   );
 }
 

@@ -162,22 +162,6 @@ export default function Home() {
     });
   }
 
-  if (!strategyId && !bootstrapError) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4 py-6 sm:px-6">
-        <Card className="w-full max-w-md border-border/70 bg-background shadow-sm">
-          <CardHeader>
-            <CardTitle>Bootstrapping chat</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm text-muted-foreground">
-              Minting a strategy for the first conversation...
-            </p>
-          </CardContent>
-        </Card>
-      </main>
-    );
-  }
   if (bootstrapError) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4 py-6 sm:px-6">
@@ -193,6 +177,22 @@ export default function Home() {
             >
               Retry
             </Button>
+          </CardContent>
+        </Card>
+      </main>
+    );
+  }
+  if (!strategyId) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4 py-6 sm:px-6">
+        <Card className="w-full max-w-md border-border/70 bg-background shadow-sm">
+          <CardHeader>
+            <CardTitle>Bootstrapping chat</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground">
+              Minting a strategy for the first conversation...
+            </p>
           </CardContent>
         </Card>
       </main>

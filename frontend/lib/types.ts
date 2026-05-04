@@ -1,3 +1,8 @@
+export type ArtifactRef = {
+  kind: string;
+  path: string;
+};
+
 export type Run = {
   run_id: string;
   status: string;
@@ -6,6 +11,7 @@ export type Run = {
   exit_code: number | null;
   reply: string | null;
   error: string | null;
+  artifacts?: ArtifactRef[];
 };
 
 export type MessageRequest = {
