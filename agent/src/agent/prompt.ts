@@ -19,10 +19,14 @@ export type BuildSystemPromptOptions = {
 export const RESPONSE_POLICY = [
   "- Do not call the `question` tool or otherwise ask the user clarifying questions. The runtime is non-interactive and cannot answer them — the prompt loop will hang.",
   "- When the request is ambiguous, pick reasonable defaults, state your assumptions in the final reply, and proceed.",
-  "- Always finish each turn with a `text` reply (the user-visible answer). Tool calls and reasoning alone are not a complete turn.",
+  "- Always finish each turn with a brief `text` reply (the user-visible answer). Tool calls and reasoning alone are not a complete turn.",
   "- Treat portfolio outputs as educational research and scenario analysis, not personalized financial advice. Do not claim to know the user's full financial situation, do not guarantee returns, and include appropriate risk/assumption language in the final reply.",
   "- You may still provide concrete model portfolios, token weights, backtest-based comparisons, and refinement suggestions when framed as research examples for the user's stated constraints. Do not refuse solely because the topic is investing or crypto allocation.",
-  "- Whenever the user asks you to design, evaluate, compare, recommend, refine, or simulate a portfolio allocation or strategy, you MUST call `run_backtest` at least once to ground your answer. Treat this as mandatory — never report performance metrics or propose an allocation without running a backtest first. Your final reply must reference the resulting KPIs and the equity_curve.png path produced by the run.",
+  "- Whenever the user asks you to design, evaluate, compare, recommend, refine, or simulate a portfolio allocation or strategy, you MUST call `run_backtest` at least once to ground your answer. Treat this as mandatory; never report performance metrics or propose an allocation without running a backtest first.",
+  "- For any portfolio strategy output, including strategy creation, evaluation, comparison, recommendation, refinement, or simulation, you MUST call `finalize_strategy_result` after the final `run_backtest`. This tool is the structured response contract; do not put JSON in the final text reply.",
+  "- `finalize_strategy_result` takes only human-authored fields plus `backtest_label`; it reads KPIs and chart data from the selected backtest artifacts. Do not invent KPIs or chart values.",
+  "- Use decimal numbers for all allocation weights, for example 0.6 for 60%. Do not use strings like `60%`.",
+  "- Put the user-facing explanation in `reasoning`: explain why the allocation or comparison follows from the user's constraints and the backtest results.",
 ].join("\n");
 
 export const MEMORY_DISCIPLINE_GUIDANCE = [
@@ -47,6 +51,15 @@ export const AGENT_SCRIPT_REGISTRY: readonly AgentScriptDefinition[] = [
     example:
       'uv run --project agent/scripts python -m agent_invest_scripts.run_backtest --allocation \'{"type":"static","weights":{"bitcoin":0.6,"ethereum":0.4},"start":"2024-01-01","end":"2024-12-31"}\' --rebalance monthly --label sixty_forty',
     note: 'Allocation forms: {"type":"static","weights":{coin_id:weight,...},"start":"YYYY-MM-DD","end":"YYYY-MM-DD"} for buy-and-hold or periodic-rebalance to constant weights, OR {"type":"weights","rows":[{"date":"YYYY-MM-DD","coin_id":...,"weight":...},...]} for time-varying allocations. Weights must sum to <= 1.0; the remainder is treated as cash. Use --rebalance none for true buy-and-hold (single rebalance at start). Use list_universe first to discover valid coin_ids.',
+  },
+  {
+    name: "finalize_strategy_result",
+    summary:
+      "Create the canonical structured strategy result JSON from human-authored fields and a selected run_backtest label. This is mandatory after the final backtest for portfolio strategy outputs.",
+    signature: "--payload '<json>'",
+    example:
+      'uv run --project agent/scripts python -m agent_invest_scripts.finalize_strategy_result --payload \'{"title":"BTC/ETH 60/40","summary":"Monthly rebalanced BTC/ETH portfolio.","reasoning":"The backtest shows improved risk-adjusted returns versus the benchmark.","allocation":[{"asset":"Bitcoin","symbol":"BTC","coin_id":"bitcoin","weight":0.6,"rationale":"Core benchmark exposure."},{"asset":"Ethereum","symbol":"ETH","coin_id":"ethereum","weight":0.4,"rationale":"Diversifies crypto beta."}],"assumptions":["Historical prices are representative."],"risks":["Crypto drawdowns can be severe."],"next_steps":["Monitor drawdown and rebalance monthly."],"backtest_label":"btc_eth_60_40"}\'',
+    note: "The payload must include non-empty title, summary, reasoning, allocation, assumptions, risks, next_steps, and backtest_label. The tool writes artifacts/strategy_result/<backtest_label>/strategy_result.json and returns its path.",
   },
   {
     name: "list_runs",

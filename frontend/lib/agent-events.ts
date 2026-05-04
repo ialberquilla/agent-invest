@@ -33,7 +33,11 @@ export type StepBoundaryPart = {
   id: string;
 };
 
-export type TimelinePart = ReasoningPart | TextPart | ToolPart | StepBoundaryPart;
+export type TimelinePart =
+  | ReasoningPart
+  | TextPart
+  | ToolPart
+  | StepBoundaryPart;
 
 export type TimelineState = {
   parts: TimelinePart[];
@@ -70,6 +74,15 @@ export function reduceTimeline(
 
   if (message.event === "run.completed") {
     return { ...state, done: true, finalRun: payload as Run };
+  }
+  if (message.event === "run.finalizing") {
+    return upsertPart(state, {
+      kind: "tool",
+      id: "run-finalizing",
+      name: "report",
+      description: "Creating structured report and charts",
+      status: "running",
+    });
   }
   if (message.event === "run.started") {
     return state;
@@ -169,7 +182,10 @@ function mergePart(previous: TimelinePart, next: TimelinePart): TimelinePart {
     return {
       ...previous,
       ...incoming,
-      text: incomingText.length >= previousText.length ? incomingText : previousText,
+      text:
+        incomingText.length >= previousText.length
+          ? incomingText
+          : previousText,
     };
   }
   return { ...previous, ...next };

@@ -88,10 +88,10 @@ export function RunInspector({ open, runId, onOpenChange }: RunInspectorProps) {
 
     const activeRunId = runId;
     const abortController = new AbortController();
-    setState({ status: "loading" });
 
     async function loadRun() {
       try {
+        setState({ status: "loading" });
         const response = await fetch(
           `/api/runs/${encodeURIComponent(activeRunId)}`,
           {

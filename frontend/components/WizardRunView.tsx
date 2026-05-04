@@ -6,6 +6,7 @@ import { useSearchParams } from "next/navigation";
 
 import { ArtifactGallery } from "@/components/ArtifactGallery";
 import { LiveActivity } from "@/components/LiveActivity";
+import { StrategyResultReport } from "@/components/StrategyResultReport";
 import { Badge } from "@/components/ui/badge";
 import { buttonVariants } from "@/components/ui/button";
 import {
@@ -17,7 +18,7 @@ import {
 } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { initialTimeline, reduceTimeline } from "@/lib/agent-events";
-import type { TimelinePart, TimelineState } from "@/lib/agent-events";
+import type { TimelineState } from "@/lib/agent-events";
 import {
   deriveStrategyLabel,
   setMessages,
@@ -90,17 +91,6 @@ function readStoredRun(id: string | null): StoredWizardRun | null {
   } catch {
     return null;
   }
-}
-
-function latestCompletedText(parts: TimelinePart[]) {
-  for (let index = parts.length - 1; index >= 0; index -= 1) {
-    const part = parts[index];
-    if (part.kind === "text" && part.completed && part.text.trim()) {
-      return part.text.trim();
-    }
-  }
-
-  return "";
 }
 
 export function WizardRunView() {
@@ -236,9 +226,11 @@ export function WizardRunView() {
 
   const finalRun = runState.timeline.finalRun;
   const finalArtifacts = finalRun?.artifacts ?? [];
-  const completedDraft = latestCompletedText(runState.timeline.parts);
-  const finalReply = finalRun?.reply?.trim() || completedDraft;
-  const isFinished = !!finalRun || !!completedDraft;
+  const structuredResult = finalRun?.structured_result ?? null;
+  const finalReply = finalRun?.reply?.trim() ?? "";
+  const isFinished = !!finalRun;
+  const failedBeforeFinal = runState.status === "error" && !isFinished;
+  const isActiveRun = !isFinished && !failedBeforeFinal;
 
   return (
     <main className="min-h-dvh bg-muted/30 px-4 py-6 sm:px-6 lg:px-8">
@@ -254,7 +246,7 @@ export function WizardRunView() {
               </h1>
               <p className="text-base text-muted-foreground">
                 Follow reasoning and tool calls live. The final answer and
-                charts appear on the right when the run finishes.
+                charts appear when the run finishes.
               </p>
             </div>
           </div>
@@ -273,89 +265,120 @@ export function WizardRunView() {
           </div>
         </section>
 
-        <section className="grid min-h-[calc(100dvh-14rem)] gap-6 lg:grid-cols-[minmax(0,1.05fr)_minmax(24rem,0.95fr)]">
-          <Card className="min-h-[32rem] overflow-hidden">
-            <CardHeader className="border-b">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div>
-                  <CardTitle>Live activity</CardTitle>
-                  <CardDescription>
-                    Thinking, tool calls, command output, and draft text.
-                  </CardDescription>
+        {isActiveRun ? (
+          <section className="flex min-h-[calc(100dvh-14rem)] w-full">
+            <Card className="min-h-[32rem] w-full overflow-hidden">
+              <CardHeader className="border-b">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <CardTitle>Live activity</CardTitle>
+                    <CardDescription>
+                      Thinking, tool calls, and command output.
+                    </CardDescription>
+                  </div>
+                  <Badge variant="outline">{runState.status}</Badge>
                 </div>
-                <Badge variant="outline">{runState.status}</Badge>
-              </div>
-            </CardHeader>
-            <CardContent className="h-[calc(100dvh-22rem)] min-h-[26rem] p-0">
-              <ScrollArea className="h-full">
-                <div className="space-y-4 p-4">
-                  {runState.strategyId ? (
-                    <div className="rounded-xl border bg-muted/40 p-3 text-xs text-muted-foreground">
-                      Strategy: {runState.strategyId}
-                      {runState.runId ? ` · Run: ${runState.runId}` : ""}
-                    </div>
-                  ) : null}
+              </CardHeader>
+              <CardContent className="h-[calc(100dvh-22rem)] min-h-[26rem] p-0">
+                <ScrollArea className="h-full">
+                  <div className="space-y-4 p-4">
+                    {runState.strategyId ? (
+                      <div className="rounded-xl border bg-muted/40 p-3 text-xs text-muted-foreground">
+                        Strategy: {runState.strategyId}
+                        {runState.runId ? ` · Run: ${runState.runId}` : ""}
+                      </div>
+                    ) : null}
 
-                  {runState.error && !finalRun ? (
-                    <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
-                      {runState.error}
-                    </div>
-                  ) : null}
+                    {runState.timeline.parts.length > 0 ? (
+                      <LiveActivity
+                        parts={runState.timeline.parts}
+                        fullWidth
+                        includeText={false}
+                      />
+                    ) : (
+                      <div className="rounded-xl border bg-muted/40 p-4 text-sm italic text-muted-foreground">
+                        Starting the allocation agent...
+                      </div>
+                    )}
+                    <div ref={activityEndRef} />
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </section>
+        ) : failedBeforeFinal ? (
+          <section className="flex min-h-[calc(100dvh-14rem)] w-full items-start">
+            <Card className="w-full overflow-hidden">
+              <CardHeader className="border-b">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <CardTitle>Run failed</CardTitle>
+                    <CardDescription>
+                      The allocation agent stopped before producing a final
+                      response.
+                    </CardDescription>
+                  </div>
+                  <Badge variant="outline">{runState.status}</Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4 p-5 sm:p-6">
+                <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm leading-6 text-destructive">
+                  {runState.error ?? "Unable to run allocation agent"}
+                </div>
 
-                  {runState.timeline.parts.length > 0 ? (
+                {runState.timeline.parts.length > 0 ? (
+                  <div className="rounded-2xl border bg-muted/20 p-4">
                     <LiveActivity
                       parts={runState.timeline.parts}
                       fullWidth
                       includeText={false}
                     />
-                  ) : (
-                    <div className="rounded-xl border bg-muted/40 p-4 text-sm italic text-muted-foreground">
-                      Starting the allocation agent...
-                    </div>
-                  )}
-                  <div ref={activityEndRef} />
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
+                    <div ref={activityEndRef} />
+                  </div>
+                ) : null}
 
-          <Card className="min-h-[32rem] overflow-hidden">
-            <CardHeader className="border-b">
-              <CardTitle>Final response</CardTitle>
-              <CardDescription>
-                The answer and charts stay empty until the agent completes.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="h-[calc(100dvh-22rem)] min-h-[26rem] p-0">
-              <ScrollArea className="h-full">
-                <div className="space-y-4 p-4">
-                  {!isFinished ? (
-                    <div className="flex min-h-[18rem] items-center justify-center rounded-2xl border border-dashed bg-muted/30 p-8 text-center text-sm leading-6 text-muted-foreground">
-                      Waiting for the final allocation, metrics, and generated
-                      artifacts.
-                    </div>
-                  ) : null}
+                <Link
+                  href="/"
+                  className={buttonVariants({ variant: "outline" })}
+                >
+                  Back to wizard
+                </Link>
+              </CardContent>
+            </Card>
+          </section>
+        ) : structuredResult ? (
+          <section className="w-full">
+            <StrategyResultReport result={structuredResult} />
+          </section>
+        ) : (
+          <section className="w-full">
+            <Card className="overflow-hidden">
+              <CardHeader className="border-b">
+                <CardTitle>Final response</CardTitle>
+                <CardDescription>
+                  Raw response fallback for runs without a structured report.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4 p-4 sm:p-6">
+                {finalRun?.error ? (
+                  <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm leading-6 text-destructive">
+                    {finalRun.error}
+                  </div>
+                ) : null}
 
-                  {finalRun?.error ? (
-                    <div className="rounded-xl border border-destructive/50 bg-destructive/10 p-4 text-sm leading-6 text-destructive">
-                      {finalRun.error}
-                    </div>
-                  ) : null}
+                {finalReply ? (
+                  <pre className="whitespace-pre-wrap break-words rounded-xl border bg-background p-4 font-sans text-sm leading-6">
+                    {finalReply}
+                  </pre>
+                ) : null}
 
-                  {finalReply ? (
-                    <pre className="whitespace-pre-wrap break-words rounded-xl border bg-background p-4 font-sans text-sm leading-6">
-                      {finalReply}
-                    </pre>
-                  ) : null}
-
-                  {finalArtifacts.length > 0 ? (
-                    <ArtifactGallery artifacts={finalArtifacts} />
-                  ) : null}
-                </div>
-              </ScrollArea>
-            </CardContent>
-          </Card>
-        </section>
+                {finalArtifacts.length > 0 ? (
+                  <ArtifactGallery artifacts={finalArtifacts} />
+                ) : null}
+              </CardContent>
+            </Card>
+          </section>
+        )}
       </div>
     </main>
   );
