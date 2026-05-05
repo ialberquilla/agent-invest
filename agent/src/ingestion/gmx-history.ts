@@ -15,7 +15,7 @@ import { refreshAssetUniverseFeatures } from "./feature-view";
 type AssetDatabase = Pick<typeof db, "insert">;
 type PriceDatabase = Pick<typeof db, "insert" | "select">;
 
-interface SymbolSummary {
+export interface SymbolSummary {
   symbol: string;
   assetId?: string;
   limit?: number;
@@ -28,6 +28,15 @@ interface SymbolSummary {
 
 interface GmxHistoryDependencies {
   refreshFeatureView?: typeof refreshAssetUniverseFeatures;
+}
+
+export interface GmxHistorySummary {
+  dryRun: boolean;
+  featureViewRefreshed: boolean;
+  symbolCount: number;
+  successCount: number;
+  failureCount: number;
+  symbols: SymbolSummary[];
 }
 
 const COLD_START_DAY_LIMIT = 10_000;
@@ -383,71 +392,84 @@ function toNumericString(value: unknown, field: string): string {
   throw new Error(`GMX candle ${field} must be numeric`);
 }
 
+export async function runGmxHistoryIngestion(
+  options: GmxHistoryOptions,
+  dependencies: GmxHistoryDependencies = {},
+): Promise<GmxHistorySummary> {
+  const refreshFeatureView =
+    dependencies.refreshFeatureView ?? refreshAssetUniverseFeatures;
+  writeLog("gmx_history_started", { options });
+
+  const tokens = await fetchTokens();
+  const allSymbols = tokens
+    .map((token) => getTokenSymbol(token))
+    .filter((symbol): symbol is string => symbol !== undefined);
+  const symbols = filterSymbols(allSymbols, options);
+
+  writeLog("gmx_history_symbols_selected", {
+    tokenCount: tokens.length,
+    symbolCount: symbols.length,
+    symbols,
+  });
+
+  const summaries: SymbolSummary[] = [];
+
+  for (const symbol of symbols) {
+    try {
+      writeLog("gmx_history_symbol_started", { symbol });
+      const summary = await processSymbol(symbol, options);
+      summaries.push(summary);
+      writeLog("gmx_history_symbol_completed", summary);
+    } catch (error) {
+      const summary: SymbolSummary = {
+        symbol,
+        rowCount: 0,
+        startTimestamp: null,
+        endTimestamp: null,
+        dryRun: options.dryRun,
+        error: getErrorMessage(error),
+      };
+      summaries.push(summary);
+      writeLog("gmx_history_symbol_failed", summary);
+    }
+  }
+
+  const failures = summaries.filter((summary) => summary.error !== undefined);
+  const wroteClosePrices = summaries.some(
+    (summary) => summary.error === undefined && summary.rowCount > 0,
+  );
+
+  if (!options.dryRun && wroteClosePrices) {
+    writeLog("agent_asset_universe_features_refresh_started");
+    await refreshFeatureView();
+    writeLog("agent_asset_universe_features_refresh_completed");
+  }
+
+  const summary = {
+    dryRun: options.dryRun,
+    featureViewRefreshed: !options.dryRun && wroteClosePrices,
+    symbolCount: summaries.length,
+    successCount: summaries.length - failures.length,
+    failureCount: failures.length,
+    symbols: summaries,
+  };
+
+  writeLog("gmx_history_summary", summary);
+
+  return summary;
+}
+
 export async function main(
   args = process.argv.slice(2),
   dependencies: GmxHistoryDependencies = {},
 ): Promise<number> {
   try {
-    const options = parseOptions(args);
-    const refreshFeatureView =
-      dependencies.refreshFeatureView ?? refreshAssetUniverseFeatures;
-    writeLog("gmx_history_started", { options });
-
-    const tokens = await fetchTokens();
-    const allSymbols = tokens
-      .map((token) => getTokenSymbol(token))
-      .filter((symbol): symbol is string => symbol !== undefined);
-    const symbols = filterSymbols(allSymbols, options);
-
-    writeLog("gmx_history_symbols_selected", {
-      tokenCount: tokens.length,
-      symbolCount: symbols.length,
-      symbols,
-    });
-
-    const summaries: SymbolSummary[] = [];
-
-    for (const symbol of symbols) {
-      try {
-        writeLog("gmx_history_symbol_started", { symbol });
-        const summary = await processSymbol(symbol, options);
-        summaries.push(summary);
-        writeLog("gmx_history_symbol_completed", summary);
-      } catch (error) {
-        const summary: SymbolSummary = {
-          symbol,
-          rowCount: 0,
-          startTimestamp: null,
-          endTimestamp: null,
-          dryRun: options.dryRun,
-          error: getErrorMessage(error),
-        };
-        summaries.push(summary);
-        writeLog("gmx_history_symbol_failed", summary);
-      }
-    }
-
-    const failures = summaries.filter((summary) => summary.error !== undefined);
-    const wroteClosePrices = summaries.some(
-      (summary) => summary.error === undefined && summary.rowCount > 0,
+    const summary = await runGmxHistoryIngestion(
+      parseOptions(args),
+      dependencies,
     );
 
-    if (!options.dryRun && wroteClosePrices) {
-      writeLog("agent_asset_universe_features_refresh_started");
-      await refreshFeatureView();
-      writeLog("agent_asset_universe_features_refresh_completed");
-    }
-
-    writeLog("gmx_history_summary", {
-      dryRun: options.dryRun,
-      featureViewRefreshed: !options.dryRun && wroteClosePrices,
-      symbolCount: summaries.length,
-      successCount: summaries.length - failures.length,
-      failureCount: failures.length,
-      symbols: summaries,
-    });
-
-    return failures.length > 0 ? 1 : 0;
+    return summary.failureCount > 0 ? 1 : 0;
   } catch (error) {
     if (error instanceof CliArgumentError) {
       process.stderr.write(`${error.message}\n`);
