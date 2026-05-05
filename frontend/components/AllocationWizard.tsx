@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Textarea } from "@/components/ui/textarea";
 import {
   buildWizardPrompt,
   type AllocationWizardState,
@@ -34,19 +33,19 @@ const steps = [
   },
   {
     title: "Market Filters",
-    description: "Screen by liquidity, market cap, and concentration.",
+    description: "Set market cap and concentration guardrails.",
   },
   {
     title: "Risk Tolerance",
-    description: "Separate financial and behavioral tolerance.",
+    description: "Set drawdown tolerance and risk posture.",
   },
   {
     title: "Objective and Time Horizon",
-    description: "Define the portfolio goal and rebalance cadence.",
+    description: "Define the time horizon and rebalance cadence.",
   },
   {
     title: "Portfolio Constraints",
-    description: "Capture sizing, cash, costs, and asset count.",
+    description: "Capture sizing, cash, and asset count.",
   },
   {
     title: "Review and Run",
@@ -56,20 +55,15 @@ const steps = [
 
 const defaultState: AllocationWizardState = {
   universe: "top25",
-  customTokens: "",
   exclusions: ["stablecoins", "wrapped"],
   minimumMarketCap: "1b",
-  liquidity: "high",
   concentrationLimit: "20",
   maxDrawdown: "35",
-  drawdownResponse: "hold",
   riskPreference: "balanced",
-  objective: "balanced",
   horizon: "1y",
   rebalance: "monthly",
   initialCapitalUsd: "",
   cashAllocation: "10",
-  tradingCosts: "medium",
   targetAssets: "5-10",
 };
 
@@ -78,14 +72,11 @@ const universeOptions: Option<AllocationWizardState["universe"]>[] = [
   { value: "top25", label: "Top 25 by market cap" },
   { value: "top50", label: "Top 50 by market cap" },
   { value: "majors", label: "Major assets only" },
-  { value: "custom", label: "Custom token list" },
 ];
 
 const exclusionOptions: Option[] = [
   { value: "stablecoins", label: "Stablecoins" },
   { value: "wrapped", label: "Wrapped assets" },
-  { value: "memes", label: "Meme coins" },
-  { value: "low-liquidity", label: "Low-liquidity assets" },
 ];
 
 const minimumMarketCapOptions: Option<
@@ -96,12 +87,6 @@ const minimumMarketCapOptions: Option<
   { value: "500m", label: "$500M+" },
   { value: "1b", label: "$1B+" },
   { value: "10b", label: "$10B+" },
-];
-
-const liquidityOptions: Option<AllocationWizardState["liquidity"]>[] = [
-  { value: "high", label: "High liquidity only" },
-  { value: "moderate", label: "Moderate liquidity allowed" },
-  { value: "open", label: "Open to smaller/liquid names" },
 ];
 
 const concentrationLimitOptions: Option<
@@ -120,15 +105,6 @@ const maxDrawdownOptions: Option<AllocationWizardState["maxDrawdown"]>[] = [
   { value: "moreThan50", label: "More than 50%" },
 ];
 
-const drawdownResponseOptions: Option<
-  AllocationWizardState["drawdownResponse"]
->[] = [
-  { value: "derisk", label: "De-risk immediately" },
-  { value: "rebalance", label: "Rebalance gradually" },
-  { value: "hold", label: "Hold if thesis is intact" },
-  { value: "buyMore", label: "Buy more if expected return improves" },
-];
-
 const riskPreferenceOptions: Option<AllocationWizardState["riskPreference"]>[] =
   [
     { value: "preserve", label: "Preserve capital" },
@@ -136,13 +112,6 @@ const riskPreferenceOptions: Option<AllocationWizardState["riskPreference"]>[] =
     { value: "aggressive", label: "Aggressive growth" },
     { value: "maxUpside", label: "Maximum upside" },
   ];
-
-const objectiveOptions: Option<AllocationWizardState["objective"]>[] = [
-  { value: "drawdown", label: "Lower drawdown" },
-  { value: "sharpe", label: "Higher Sharpe / risk-adjusted return" },
-  { value: "cagr", label: "Higher CAGR" },
-  { value: "balanced", label: "Balanced score" },
-];
 
 const horizonOptions: Option<AllocationWizardState["horizon"]>[] = [
   { value: "3m", label: "3 months" },
@@ -166,12 +135,6 @@ const cashAllocationOptions: Option<AllocationWizardState["cashAllocation"]>[] =
     { value: "agent", label: "Let agent decide" },
   ];
 
-const tradingCostOptions: Option<AllocationWizardState["tradingCosts"]>[] = [
-  { value: "low", label: "Low cost" },
-  { value: "medium", label: "Medium cost" },
-  { value: "high", label: "High cost" },
-];
-
 const targetAssetOptions: Option<AllocationWizardState["targetAssets"]>[] = [
   { value: "3-5", label: "3-5" },
   { value: "5-10", label: "5-10" },
@@ -186,10 +149,6 @@ function getLabel<T extends string>(options: Option<T>[], value: T) {
 function validateState(state: AllocationWizardState) {
   const errors: string[] = [];
   const initialCapital = state.initialCapitalUsd.trim();
-
-  if (state.universe === "custom" && !state.customTokens.trim()) {
-    errors.push("Add at least one token when using a custom universe.");
-  }
 
   if (
     initialCapital &&
@@ -353,24 +312,16 @@ export function AllocationWizard() {
                 .join(", ")
             : "No exclusions",
         },
-        {
-          label: "Custom token list",
-          value: state.customTokens.trim() || "No custom list provided",
-        },
       ],
     },
     {
       stepIndex: 1,
       title: "Market filters",
-      description: "Liquidity, market-cap, and concentration guardrails.",
+      description: "Market-cap and concentration guardrails.",
       items: [
         {
           label: "Minimum market cap",
           value: getLabel(minimumMarketCapOptions, state.minimumMarketCap),
-        },
-        {
-          label: "Liquidity requirement",
-          value: getLabel(liquidityOptions, state.liquidity),
         },
         {
           label: "Single-token limit",
@@ -381,15 +332,11 @@ export function AllocationWizard() {
     {
       stepIndex: 2,
       title: "Risk tolerance",
-      description: "Financial drawdown tolerance and behavioral response.",
+      description: "Financial drawdown tolerance and risk posture.",
       items: [
         {
           label: "Maximum acceptable drawdown",
           value: getLabel(maxDrawdownOptions, state.maxDrawdown),
-        },
-        {
-          label: "Likely drawdown response",
-          value: getLabel(drawdownResponseOptions, state.drawdownResponse),
         },
         {
           label: "Risk posture",
@@ -399,13 +346,9 @@ export function AllocationWizard() {
     },
     {
       stepIndex: 3,
-      title: "Objective and horizon",
-      description: "What the agent should optimize and over what period.",
+      title: "Time horizon",
+      description: "How long the allocation should be designed for.",
       items: [
-        {
-          label: "Optimization objective",
-          value: getLabel(objectiveOptions, state.objective),
-        },
         {
           label: "Time horizon",
           value: getLabel(horizonOptions, state.horizon),
@@ -419,16 +362,12 @@ export function AllocationWizard() {
     {
       stepIndex: 4,
       title: "Portfolio constraints",
-      description: "Sizing, cash, cost, and portfolio breadth assumptions.",
+      description: "Sizing, cash, and portfolio breadth assumptions.",
       items: [
         { label: "Initial capital", value: formatUsd(state.initialCapitalUsd) },
         {
           label: "Cash allocation",
           value: getLabel(cashAllocationOptions, state.cashAllocation),
-        },
-        {
-          label: "Trading cost assumption",
-          value: getLabel(tradingCostOptions, state.tradingCosts),
         },
         {
           label: "Target asset count",
@@ -576,30 +515,6 @@ export function AllocationWizard() {
                       })}
                     </div>
                   </fieldset>
-                  <div className="grid gap-2">
-                    <label
-                      className="text-sm font-medium"
-                      htmlFor="custom-tokens"
-                    >
-                      Custom tokens
-                    </label>
-                    <Textarea
-                      id="custom-tokens"
-                      className="min-h-24 resize-none"
-                      placeholder="Example: BTC, ETH, SOL"
-                      value={state.customTokens}
-                      aria-invalid={
-                        state.universe === "custom" &&
-                        !state.customTokens.trim()
-                      }
-                      onChange={(event) =>
-                        updateState({ customTokens: event.target.value })
-                      }
-                    />
-                    <p className="text-xs leading-5 text-muted-foreground">
-                      Required only when custom token list is selected.
-                    </p>
-                  </div>
                 </>
               ) : null}
 
@@ -612,12 +527,6 @@ export function AllocationWizard() {
                     onChange={(minimumMarketCap) =>
                       updateState({ minimumMarketCap })
                     }
-                  />
-                  <OptionGroup
-                    label="Liquidity preference"
-                    options={liquidityOptions}
-                    value={state.liquidity}
-                    onChange={(liquidity) => updateState({ liquidity })}
                   />
                   <OptionGroup
                     label="Concentration limit"
@@ -639,14 +548,6 @@ export function AllocationWizard() {
                     onChange={(maxDrawdown) => updateState({ maxDrawdown })}
                   />
                   <OptionGroup
-                    label="Likely response to a 25% drawdown"
-                    options={drawdownResponseOptions}
-                    value={state.drawdownResponse}
-                    onChange={(drawdownResponse) =>
-                      updateState({ drawdownResponse })
-                    }
-                  />
-                  <OptionGroup
                     label="Main risk preference"
                     options={riskPreferenceOptions}
                     value={state.riskPreference}
@@ -659,12 +560,6 @@ export function AllocationWizard() {
 
               {selectedStepIndex === 3 ? (
                 <>
-                  <OptionGroup
-                    label="Optimization objective"
-                    options={objectiveOptions}
-                    value={state.objective}
-                    onChange={(objective) => updateState({ objective })}
-                  />
                   <OptionGroup
                     label="Time horizon"
                     options={horizonOptions}
@@ -715,12 +610,6 @@ export function AllocationWizard() {
                     onChange={(cashAllocation) =>
                       updateState({ cashAllocation })
                     }
-                  />
-                  <OptionGroup
-                    label="Trading cost assumption"
-                    options={tradingCostOptions}
-                    value={state.tradingCosts}
-                    onChange={(tradingCosts) => updateState({ tradingCosts })}
                   />
                   <OptionGroup
                     label="Target number of assets"
