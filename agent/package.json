@@ -9,6 +9,8 @@
     "dev": "tsx watch src/api/server.ts",
     "start": "node dist/server.js",
     "test": "tsx --test test/**/*.test.ts",
+    "ingest:gmx": "tsx src/ingestion/gmx-history.ts",
+    "smoke:gmx:dry-run": "node scripts/smoke-gmx-dry-run.cjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio"

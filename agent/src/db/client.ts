@@ -1,7 +1,20 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool, type PoolConfig } from "pg";
 
 import * as schema from "./schema";
+
+for (const envPath of [
+  resolve(process.cwd(), ".env"),
+  resolve(process.cwd(), "agent/.env"),
+]) {
+  if (existsSync(envPath)) {
+    process.loadEnvFile(envPath);
+    break;
+  }
+}
 
 function getPoolConfigFromEnv(): PoolConfig {
   if (process.env.DATABASE_URL) {
