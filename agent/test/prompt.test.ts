@@ -108,6 +108,13 @@ test("tool manifest is registry-driven and includes memory guidance", () => {
       "Use opencode's built-in shell and file-edit tools for memory I/O.",
     ),
   );
+  assert.ok(manifest.includes("`rank_universe`"));
+  assert.ok(
+    manifest.includes(
+      "List the top-N coins by market cap from the database-backed universe dataset.",
+    ),
+  );
+  assert.ok(!manifest.includes("dataset cache"));
 });
 
 test("response policy requires structured strategy output", () => {
@@ -121,5 +128,10 @@ test("response policy requires structured strategy output", () => {
   assert.ok(RESPONSE_POLICY.includes("Do not invent KPIs"));
   assert.ok(
     RESPONSE_POLICY.includes("do not put JSON in the final text reply"),
+  );
+  assert.ok(
+    RESPONSE_POLICY.includes(
+      "Use `rank_universe` to shortlist candidate coins when the user asks for a portfolio, allocation, recommendation, comparison, or refinement and has not specified exact coins.",
+    ),
   );
 });

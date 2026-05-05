@@ -5,16 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date
 from typing import Any, Sequence
 
 import pandas as pd
 
 from agent_invest_scripts._lib import (
-    DatasetNotFoundError,
-    coin_metadata,
+    asset_universe,
     print_json,
-    universe_history,
 )
 from agent_invest_scripts._lib.cli import (
     add_timeout_argument,
@@ -28,8 +25,8 @@ _OUTPUT_COLUMNS = ("coin_id", "symbol", "name", "market_cap")
 class SnapshotNotFoundError(LookupError):
     """Raised when the requested universe snapshot date is not present."""
 
-    def __init__(self, as_of: date) -> None:
-        super().__init__(f"No universe snapshot found for {as_of.isoformat()}")
+    def __init__(self, as_of: str) -> None:
+        super().__init__(f"No universe snapshot found for {as_of}")
         self.as_of = as_of
 
 
@@ -58,29 +55,12 @@ def _positive_int(value: str) -> int:
     return parsed
 
 
-def _iso_date(value: str) -> date:
-    try:
-        return date.fromisoformat(value)
-    except ValueError as error:
-        raise argparse.ArgumentTypeError("--as-of must use YYYY-MM-DD") from error
-
-
 def _build_parser() -> JsonArgumentParser:
     parser = JsonArgumentParser(prog="python -m agent_invest_scripts.list_universe")
     parser.add_argument("--top-n", required=True, type=_positive_int)
-    parser.add_argument("--as-of", type=_iso_date)
+    parser.add_argument("--as-of")
     add_timeout_argument(parser)
     return parser
-
-
-def _date_column(frame: pd.DataFrame) -> str:
-    for column in ("date", "as_of", "snapshot_date"):
-        if column in frame.columns:
-            return column
-
-    raise ValueError(
-        'universe_history dataset must contain a "date", "as_of", or "snapshot_date" column'
-    )
 
 
 def _normalize_scalar(value: Any) -> Any:
@@ -96,92 +76,46 @@ def _normalize_scalar(value: Any) -> Any:
     return value
 
 
-def _coerce_snapshot_dates(frame: pd.DataFrame) -> pd.Series:
-    column = _date_column(frame)
-    dates = pd.to_datetime(frame[column], errors="coerce")
-
-    if dates.isna().all():
-        raise ValueError(f'universe_history dataset has no valid values in "{column}"')
-
-    return dates.dt.date
-
-
-def _with_metadata(snapshot: pd.DataFrame) -> pd.DataFrame:
-    missing_columns = [
-        column for column in ("symbol", "name") if column not in snapshot.columns
-    ]
-
-    if not missing_columns:
-        return snapshot
-
-    metadata = coin_metadata()
-
-    if "coin_id" not in metadata.columns:
-        raise ValueError('coin_metadata dataset must contain a "coin_id" column')
-
-    unavailable_columns = [
-        column for column in missing_columns if column not in metadata.columns
-    ]
-
-    if unavailable_columns:
-        formatted = ", ".join(sorted(unavailable_columns))
-        raise ValueError(
-            f"coin_metadata dataset is missing required column(s): {formatted}"
-        )
-
-    metadata_columns = ["coin_id", *missing_columns]
-    return snapshot.merge(
-        metadata.loc[:, metadata_columns].drop_duplicates(subset=["coin_id"]),
-        on="coin_id",
-        how="left",
-    )
-
-
-def _select_snapshot(frame: pd.DataFrame, *, as_of: date | None) -> pd.DataFrame:
+def _rank_universe(frame: pd.DataFrame, *, top_n: int) -> list[dict[str, Any]]:
     if frame.empty:
-        raise ValueError("universe_history dataset is empty")
+        raise ValueError("asset_universe dataset is empty")
 
-    dated = frame.assign(_snapshot_date=_coerce_snapshot_dates(frame)).dropna(
-        subset=["_snapshot_date"]
-    )
+    if "coin_id" not in frame.columns:
+        raise ValueError('asset_universe dataset must contain a "coin_id" column')
 
-    if dated.empty:
-        raise ValueError(
-            "universe_history dataset has no rows with a valid snapshot date"
-        )
+    if "market_cap" not in frame.columns:
+        raise ValueError('asset_universe dataset must contain a "market_cap" column')
 
-    snapshot_date = as_of or dated["_snapshot_date"].max()
-    snapshot = dated.loc[dated["_snapshot_date"] == snapshot_date].copy()
-
-    if snapshot.empty:
-        raise SnapshotNotFoundError(snapshot_date)
-
-    return snapshot
-
-
-def _rank_snapshot(snapshot: pd.DataFrame, *, top_n: int) -> list[dict[str, Any]]:
-    if "coin_id" not in snapshot.columns:
-        raise ValueError('universe_history dataset must contain a "coin_id" column')
-
-    if "market_cap" not in snapshot.columns:
-        raise ValueError('universe_history dataset must contain a "market_cap" column')
-
-    enriched = _with_metadata(snapshot).copy()
+    ranked_frame = frame.copy()
     missing_columns = [
-        column for column in _OUTPUT_COLUMNS if column not in enriched.columns
+        column for column in _OUTPUT_COLUMNS if column not in ranked_frame.columns
     ]
 
     if missing_columns:
         formatted = ", ".join(sorted(missing_columns))
         raise ValueError(
-            f"universe_history output is missing required column(s): {formatted}"
+            f"asset_universe output is missing required column(s): {formatted}"
         )
 
-    enriched["market_cap"] = pd.to_numeric(enriched["market_cap"], errors="coerce")
-    enriched = enriched.dropna(subset=["market_cap", "coin_id"])
-    ranked = enriched.sort_values(
-        by=["market_cap", "coin_id"],
-        ascending=[False, True],
+    if "market_cap_rank" not in ranked_frame.columns:
+        ranked_frame["market_cap_rank"] = pd.NA
+
+    ranked_frame["market_cap_rank"] = pd.to_numeric(
+        ranked_frame["market_cap_rank"], errors="coerce"
+    )
+    ranked_frame["market_cap"] = pd.to_numeric(
+        ranked_frame["market_cap"], errors="coerce"
+    )
+    ranked_frame = ranked_frame.dropna(subset=["coin_id"])
+    ranked_frame = ranked_frame.assign(
+        _has_rank=ranked_frame["market_cap_rank"].notna(),
+        _fallback_market_cap=ranked_frame["market_cap"].where(
+            ranked_frame["market_cap_rank"].isna()
+        ),
+    )
+    ranked = ranked_frame.sort_values(
+        by=["_has_rank", "market_cap_rank", "_fallback_market_cap", "coin_id"],
+        ascending=[False, True, False, True],
         kind="mergesort",
     ).head(top_n)
 
@@ -202,10 +136,12 @@ def _rank_snapshot(snapshot: pd.DataFrame, *, top_n: int) -> list[dict[str, Any]
     return rows
 
 
-def run(*, top_n: int, as_of: date | None) -> list[dict[str, Any]]:
-    frame = universe_history()
-    snapshot = _select_snapshot(frame, as_of=as_of)
-    return _rank_snapshot(snapshot, top_n=top_n)
+def run(*, top_n: int, as_of: str | None) -> list[dict[str, Any]]:
+    if as_of is not None:
+        raise SnapshotNotFoundError(as_of)
+
+    frame = asset_universe()
+    return _rank_universe(frame, top_n=top_n)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -215,17 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         with script_timeout(resolve_timeout_seconds(args.timeout_seconds)):
             payload = run(top_n=args.top_n, as_of=args.as_of)
     except SnapshotNotFoundError as error:
-        _print_error({"error": str(error), "as_of": error.as_of.isoformat()})
-        raise SystemExit(1) from error
-    except DatasetNotFoundError as error:
-        _print_error(
-            {
-                "error": str(error),
-                "dataset": error.dataset,
-                "key": error.key,
-                "path": error.path,
-            }
-        )
+        _print_error({"error": str(error), "as_of": error.as_of})
         raise SystemExit(1) from error
     except Exception as error:
         _print_error({"error": str(error)})

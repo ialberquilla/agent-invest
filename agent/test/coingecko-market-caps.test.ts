@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 
 import { assets, assetMarketCaps, assetSourceMappings } from "../src/db/schema";
+import { refreshAssetUniverseFeatures } from "../src/ingestion/feature-view";
 import {
   parseOptions,
   processMarketCapRows,
@@ -435,7 +436,11 @@ test("processMarketCapRows performs no writes for dry-run or empty input", async
 
 test("runCoinGeckoMarketCapIngestion fetches mapped ids, skips unmapped assets, and logs summary", async () => {
   const logs: { event: string }[] = [];
-  const calls: { fetchedIds?: string[]; dryRun?: boolean } = {};
+  const calls: {
+    fetchedIds?: string[];
+    dryRun?: boolean;
+    refreshed?: boolean;
+  } = {};
 
   const summary = await runCoinGeckoMarketCapIngestion(
     {
@@ -477,6 +482,10 @@ test("runCoinGeckoMarketCapIngestion fetches mapped ids, skips unmapped assets, 
           missingCoinGeckoIds: ["ethereum"],
         });
       },
+      refreshFeatureView() {
+        calls.refreshed = true;
+        return Promise.resolve();
+      },
       writeLog(event, fields) {
         logs.push({ event, ...fields });
       },
@@ -485,11 +494,14 @@ test("runCoinGeckoMarketCapIngestion fetches mapped ids, skips unmapped assets, 
 
   assert.deepEqual(calls.fetchedIds, ["bitcoin", "ethereum"]);
   assert.equal(calls.dryRun, false);
+  assert.equal(calls.refreshed, true);
   assert.deepEqual(
     logs.map((log) => log.event),
     [
       "coingecko_market_caps_started",
       "coingecko_market_caps_assets_selected",
+      "agent_asset_universe_features_refresh_started",
+      "agent_asset_universe_features_refresh_completed",
       "coingecko_market_caps_completed",
       "coingecko_market_caps_summary",
     ],
@@ -502,6 +514,7 @@ test("runCoinGeckoMarketCapIngestion fetches mapped ids, skips unmapped assets, 
     unmappedCount: 1,
     fetchedCount: 1,
     writtenCount: 1,
+    featureViewRefreshed: true,
     skippedCount: 2,
     missingCoinGeckoIds: ["ethereum"],
   });
@@ -543,7 +556,24 @@ test("runCoinGeckoMarketCapIngestion dry-run fetches but reports zero writes", a
   );
 
   assert.equal(summary.writtenCount, 0);
+  assert.equal(summary.featureViewRefreshed, false);
   assert.equal(summary.fetchedCount, 1);
+});
+
+test("refreshAssetUniverseFeatures refreshes the feature materialized view concurrently", async () => {
+  let query: unknown;
+
+  await refreshAssetUniverseFeatures({
+    execute(value: unknown) {
+      query = value;
+      return Promise.resolve({ rows: [] });
+    },
+  } as never);
+
+  assert.equal(
+    renderSql(query).sql,
+    'REFRESH MATERIALIZED VIEW CONCURRENTLY "agent_asset_universe_features"',
+  );
 });
 
 test("market-cap ingestion upserts rows and cascades deletes against local Postgres", async (t) => {

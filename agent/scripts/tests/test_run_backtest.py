@@ -10,43 +10,32 @@ import pytest
 from agent_invest_scripts import run_backtest
 
 
-def _seed_prices(storage_root: Path) -> None:
+def _daily_prices() -> pd.DataFrame:
     start_date = date(2024, 1, 1)
     rows: list[dict[str, object]] = []
-    coin_a_price = 100.0
-    coin_b_price = 100.0
+    ethereum_price = 100.0
     bitcoin_price = 100.0
 
     for offset in range(30):
         current_date = start_date + timedelta(days=offset)
-        coin_a_price *= 1.01
-        coin_b_price *= 1.001
+        ethereum_price *= 1.01
         bitcoin_price *= 1.005
         rows.append(
             {
-                "date": current_date.isoformat(),
-                "coin_id": "coin-a",
-                "price": coin_a_price,
+                "date": current_date,
+                "coin_id": "ethereum",
+                "price": ethereum_price,
             }
         )
         rows.append(
             {
-                "date": current_date.isoformat(),
-                "coin_id": "coin-b",
-                "price": coin_b_price,
-            }
-        )
-        rows.append(
-            {
-                "date": current_date.isoformat(),
+                "date": current_date,
                 "coin_id": "bitcoin",
                 "price": bitcoin_price,
             }
         )
 
-    datasets_dir = storage_root / "datasets"
-    datasets_dir.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame(rows).to_parquet(datasets_dir / "daily_prices.parquet", index=False)
+    return pd.DataFrame(rows, columns=["date", "coin_id", "price"])
 
 
 def test_run_backtest_static_allocation(
@@ -55,7 +44,7 @@ def test_run_backtest_static_allocation(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    _seed_prices(tmp_path)
+    monkeypatch.setattr(run_backtest, "daily_prices", _daily_prices)
 
     run_backtest.main(
         [
@@ -63,7 +52,7 @@ def test_run_backtest_static_allocation(
             json.dumps(
                 {
                     "type": "static",
-                    "weights": {"coin-a": 1.0},
+                    "weights": {"ethereum": 1.0},
                     "start": "2024-01-01",
                     "end": "2024-01-30",
                 }
@@ -91,6 +80,8 @@ def test_run_backtest_static_allocation(
     drawdown = json.loads(Path(payload["drawdown_json"]).read_text())
     assert equity_curve[0].keys() >= {"date", "equity", "bitcoin_equity"}
     assert drawdown[0].keys() >= {"date", "drawdown", "bitcoin_drawdown"}
+    allocation = json.loads(Path(payload["allocation_json"]).read_text())
+    assert {row["coin_id"] for row in allocation} == {"ethereum"}
 
 
 def test_run_backtest_explicit_weights(
@@ -99,7 +90,7 @@ def test_run_backtest_explicit_weights(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    _seed_prices(tmp_path)
+    monkeypatch.setattr(run_backtest, "daily_prices", _daily_prices)
 
     run_backtest.main(
         [
@@ -108,8 +99,8 @@ def test_run_backtest_explicit_weights(
                 {
                     "type": "weights",
                     "rows": [
-                        {"date": "2024-01-01", "coin_id": "coin-a", "weight": 1.0},
-                        {"date": "2024-01-15", "coin_id": "coin-b", "weight": 1.0},
+                        {"date": "2024-01-01", "coin_id": "bitcoin", "weight": 1.0},
+                        {"date": "2024-01-15", "coin_id": "ethereum", "weight": 1.0},
                     ],
                 }
             ),
@@ -123,6 +114,8 @@ def test_run_backtest_explicit_weights(
     assert payload["label"] == "switch_mid_month"
     assert payload["target_dates"][0] == "2024-01-02"
     assert payload["kpis"]["final_equity_usd"] > 0
+    allocation = json.loads(Path(payload["allocation_json"]).read_text())
+    assert {row["coin_id"] for row in allocation} == {"ethereum"}
 
 
 def test_run_backtest_rejects_leveraged_weights(
@@ -131,7 +124,7 @@ def test_run_backtest_rejects_leveraged_weights(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-    _seed_prices(tmp_path)
+    monkeypatch.setattr(run_backtest, "daily_prices", _daily_prices)
 
     with pytest.raises(SystemExit) as error:
         run_backtest.main(
@@ -140,7 +133,7 @@ def test_run_backtest_rejects_leveraged_weights(
                 json.dumps(
                     {
                         "type": "static",
-                        "weights": {"coin-a": 1.0, "coin-b": 0.5},
+                        "weights": {"bitcoin": 1.0, "ethereum": 0.5},
                         "start": "2024-01-01",
                         "end": "2024-01-30",
                     }

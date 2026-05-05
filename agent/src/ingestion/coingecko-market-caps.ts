@@ -8,6 +8,7 @@ import {
   fetchCoinGeckoMarkets,
   type CoinGeckoMarketRow,
 } from "./coingecko-client";
+import { refreshAssetUniverseFeatures } from "./feature-view";
 
 type SelectionDatabase = Pick<typeof db, "select">;
 type MarketCapWriteDatabase = Pick<typeof db, "insert" | "update">;
@@ -63,6 +64,7 @@ export interface CoinGeckoMarketCapSummary {
   unmappedCount: number;
   fetchedCount: number;
   writtenCount: number;
+  featureViewRefreshed: boolean;
   skippedCount: number;
   missingCoinGeckoIds: string[];
 }
@@ -71,6 +73,7 @@ interface CoinGeckoMarketCapRunnerDependencies {
   selectMappedAssets?: typeof selectMappedGmxAssets;
   fetchMarkets?: typeof fetchCoinGeckoMarkets;
   processRows?: typeof processMarketCapRows;
+  refreshFeatureView?: typeof refreshAssetUniverseFeatures;
   writeLog?: typeof writeLog;
 }
 
@@ -324,6 +327,8 @@ export async function runCoinGeckoMarketCapIngestion(
     dependencies.selectMappedAssets ?? selectMappedGmxAssets;
   const fetchMarkets = dependencies.fetchMarkets ?? fetchCoinGeckoMarkets;
   const processRows = dependencies.processRows ?? processMarketCapRows;
+  const refreshFeatureView =
+    dependencies.refreshFeatureView ?? refreshAssetUniverseFeatures;
   const log = dependencies.writeLog ?? writeLog;
 
   log("coingecko_market_caps_started", {
@@ -350,6 +355,13 @@ export async function runCoinGeckoMarketCapIngestion(
     timestamp: options.date,
     dryRun: options.dryRun,
   });
+
+  if (!options.dryRun && result.processedCount > 0) {
+    log("agent_asset_universe_features_refresh_started");
+    await refreshFeatureView();
+    log("agent_asset_universe_features_refresh_completed");
+  }
+
   const summary = {
     dryRun: options.dryRun,
     date: options.date.toISOString(),
@@ -358,6 +370,7 @@ export async function runCoinGeckoMarketCapIngestion(
     unmappedCount: selection.unmapped.length,
     fetchedCount: marketRows.length,
     writtenCount: options.dryRun ? 0 : result.processedCount,
+    featureViewRefreshed: !options.dryRun && result.processedCount > 0,
     skippedCount: selection.unmapped.length + result.skippedCount,
     missingCoinGeckoIds: result.missingCoinGeckoIds,
   };

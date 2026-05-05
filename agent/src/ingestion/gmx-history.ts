@@ -10,6 +10,7 @@ import {
   type GmxCandle,
   type GmxToken,
 } from "./gmx-client";
+import { refreshAssetUniverseFeatures } from "./feature-view";
 
 type AssetDatabase = Pick<typeof db, "insert">;
 type PriceDatabase = Pick<typeof db, "insert" | "select">;
@@ -23,6 +24,10 @@ interface SymbolSummary {
   endTimestamp: string | null;
   dryRun: boolean;
   error?: string;
+}
+
+interface GmxHistoryDependencies {
+  refreshFeatureView?: typeof refreshAssetUniverseFeatures;
 }
 
 const COLD_START_DAY_LIMIT = 10_000;
@@ -378,9 +383,14 @@ function toNumericString(value: unknown, field: string): string {
   throw new Error(`GMX candle ${field} must be numeric`);
 }
 
-export async function main(args = process.argv.slice(2)): Promise<number> {
+export async function main(
+  args = process.argv.slice(2),
+  dependencies: GmxHistoryDependencies = {},
+): Promise<number> {
   try {
     const options = parseOptions(args);
+    const refreshFeatureView =
+      dependencies.refreshFeatureView ?? refreshAssetUniverseFeatures;
     writeLog("gmx_history_started", { options });
 
     const tokens = await fetchTokens();
@@ -418,8 +428,19 @@ export async function main(args = process.argv.slice(2)): Promise<number> {
     }
 
     const failures = summaries.filter((summary) => summary.error !== undefined);
+    const wroteClosePrices = summaries.some(
+      (summary) => summary.error === undefined && summary.rowCount > 0,
+    );
+
+    if (!options.dryRun && wroteClosePrices) {
+      writeLog("agent_asset_universe_features_refresh_started");
+      await refreshFeatureView();
+      writeLog("agent_asset_universe_features_refresh_completed");
+    }
+
     writeLog("gmx_history_summary", {
       dryRun: options.dryRun,
+      featureViewRefreshed: !options.dryRun && wroteClosePrices,
       symbolCount: summaries.length,
       successCount: summaries.length - failures.length,
       failureCount: failures.length,

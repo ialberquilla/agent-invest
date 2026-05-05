@@ -1,4 +1,4 @@
-"""Dataset readers backed by local parquet files."""
+"""Agent-facing dataset readers."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from typing import Final, Literal, TypeAlias
 
 import pandas as pd
 
+from .db import read_sql_frame
 from .storage import dataset_key, dataset_path
 
 DatasetName: TypeAlias = Literal[
@@ -27,7 +28,7 @@ _DATASET_FILES: Final[dict[DatasetName, str]] = {
 
 
 class DatasetNotFoundError(FileNotFoundError):
-    """Raised when a requested dataset is missing from local storage."""
+    """Raised when a legacy parquet compatibility dataset is missing."""
 
     def __init__(self, dataset: DatasetName, *, key: str, path: Path) -> None:
         super().__init__(f'Dataset "{dataset}" not found at {path}')
@@ -37,7 +38,7 @@ class DatasetNotFoundError(FileNotFoundError):
 
 
 def read_dataset(dataset: DatasetName) -> pd.DataFrame:
-    """Load a parquet dataset from STORAGE_ROOT/datasets."""
+    """Temporary parquet compatibility helper used by tests and old imports only."""
     filename = _DATASET_FILES[dataset]
     key = dataset_key(filename)
     path = dataset_path(filename)
@@ -48,38 +49,73 @@ def read_dataset(dataset: DatasetName) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-def universe_history() -> pd.DataFrame:
-    """Return the `universe_history` dataset."""
-    return read_dataset("universe_history")
-
-
 def daily_prices() -> pd.DataFrame:
-    """Return the `daily_prices` dataset."""
-    return read_dataset("daily_prices")
+    """Return daily close prices from Postgres."""
+    return read_sql_frame(
+        """
+        SELECT
+          "date",
+          "coin_id",
+          "price"
+        FROM "agent_daily_close_prices"
+        ORDER BY "date", "coin_id"
+        """
+    )
 
 
-def daily_market_caps() -> pd.DataFrame:
-    """Return the `daily_market_caps` dataset."""
-    return read_dataset("daily_market_caps")
+def asset_universe() -> pd.DataFrame:
+    """Return the current asset universe from Postgres."""
+    return read_sql_frame(
+        """
+        SELECT
+          "coin_id",
+          "symbol",
+          "name",
+          "market_cap",
+          "market_cap_rank",
+          "price"
+        FROM "agent_asset_universe"
+        ORDER BY "market_cap_rank" NULLS LAST, "coin_id"
+        """
+    )
 
 
-def daily_volumes() -> pd.DataFrame:
-    """Return the `daily_volumes` dataset."""
-    return read_dataset("daily_volumes")
-
-
-def coin_metadata() -> pd.DataFrame:
-    """Return the `coin_metadata` dataset."""
-    return read_dataset("coin_metadata")
+def asset_universe_features() -> pd.DataFrame:
+    """Return current asset universe features from Postgres."""
+    return read_sql_frame(
+        """
+        SELECT
+          "asset_id",
+          "coin_id",
+          "symbol",
+          "name",
+          "market_cap_rank",
+          "market_cap",
+          "latest_price",
+          "first_price_date",
+          "last_price_date",
+          "data_days_365d",
+          "return_30d",
+          "return_90d",
+          "return_180d",
+          "return_365d",
+          "volatility_30d",
+          "volatility_90d",
+          "volatility_180d",
+          "max_drawdown_180d",
+          "sharpe_180d",
+          "price_above_sma_200d"
+        FROM "agent_asset_universe_features"
+        ORDER BY "market_cap_rank" NULLS LAST, "coin_id"
+        """
+    )
 
 
 __all__ = [
     "DatasetName",
     "DatasetNotFoundError",
-    "coin_metadata",
-    "daily_market_caps",
+    "asset_universe",
+    "asset_universe_features",
     "daily_prices",
-    "daily_volumes",
     "read_dataset",
-    "universe_history",
 ]
