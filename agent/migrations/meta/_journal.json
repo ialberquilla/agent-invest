@@ -8,6 +8,20 @@
       "when": 1777892935124,
       "tag": "0000_cloudy_the_renegades",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1777994394721,
+      "tag": "0001_ambiguous_brood",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1777995000000,
+      "tag": "0002_gmx_coingecko_mappings",
+      "breakpoints": true
     }
   ]
 }

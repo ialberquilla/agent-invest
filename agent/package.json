@@ -10,6 +10,7 @@
     "start": "node dist/server.js",
     "test": "tsx --test test/**/*.test.ts",
     "ingest:gmx": "tsx src/ingestion/gmx-history.ts",
+    "ingest:coingecko-market-caps": "tsx src/ingestion/coingecko-market-caps.ts",
     "smoke:gmx:dry-run": "node scripts/smoke-gmx-dry-run.cjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
