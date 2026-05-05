@@ -313,6 +313,64 @@ export const assetPrices = pgTable(
   ],
 );
 
+export const assetSourceMappings = pgTable(
+  "asset_source_mappings",
+  {
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => assets.assetId, { onDelete: "cascade" }),
+    source: text("source").notNull(),
+    sourceAssetId: text("source_asset_id").notNull(),
+    confidence: text("confidence"),
+    metadata: jsonb("metadata").notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({
+      name: "asset_source_mappings_asset_id_source_pk",
+      columns: [table.assetId, table.source],
+    }),
+    uniqueIndex("asset_source_mappings_source_asset_id_idx").on(
+      table.source,
+      table.sourceAssetId,
+    ),
+  ],
+);
+
+export const assetMarketCaps = pgTable(
+  "asset_market_caps",
+  {
+    assetId: text("asset_id")
+      .notNull()
+      .references(() => assets.assetId, { onDelete: "cascade" }),
+    timestamp: timestamp("timestamp", { withTimezone: true }).notNull(),
+    source: text("source").notNull(),
+    marketCap: numeric("market_cap").notNull(),
+    marketCapRank: integer("market_cap_rank"),
+    metadata: jsonb("metadata").notNull().default({}),
+  },
+  (table) => [
+    primaryKey({
+      name: "asset_market_caps_asset_id_timestamp_source_pk",
+      columns: [table.assetId, table.timestamp, table.source],
+    }),
+    index("asset_market_caps_source_timestamp_idx").on(
+      table.source,
+      table.timestamp,
+    ),
+    index("asset_market_caps_asset_id_timestamp_idx").on(
+      table.assetId,
+      table.timestamp,
+    ),
+    index("asset_market_caps_market_cap_rank_idx").on(table.marketCapRank),
+  ],
+);
+
 export const artifacts = pgTable(
   "artifacts",
   {
@@ -372,6 +430,12 @@ export type NewAsset = typeof assets.$inferInsert;
 
 export type AssetPrice = typeof assetPrices.$inferSelect;
 export type NewAssetPrice = typeof assetPrices.$inferInsert;
+
+export type AssetSourceMapping = typeof assetSourceMappings.$inferSelect;
+export type NewAssetSourceMapping = typeof assetSourceMappings.$inferInsert;
+
+export type AssetMarketCap = typeof assetMarketCaps.$inferSelect;
+export type NewAssetMarketCap = typeof assetMarketCaps.$inferInsert;
 
 export type Artifact = typeof artifacts.$inferSelect;
 export type NewArtifact = typeof artifacts.$inferInsert;
