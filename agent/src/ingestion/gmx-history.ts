@@ -483,7 +483,15 @@ export async function main(
   }
 }
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+function isCliEntrypoint() {
+  const modulePath = fileURLToPath(import.meta.url);
+  return (
+    modulePath === process.argv[1] &&
+    /[/\\]src[/\\]ingestion[/\\]gmx-history\.ts$/u.test(modulePath)
+  );
+}
+
+if (isCliEntrypoint()) {
   try {
     process.exitCode = await main();
   } finally {

@@ -2,7 +2,7 @@ services:
   agent:
     build:
       context: .
-      dockerfile: agent/docker/Dockerfile
+      dockerfile: agent/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
