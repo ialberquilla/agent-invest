@@ -27,6 +27,7 @@ export const RESPONSE_POLICY = [
   "- `finalize_strategy_result` takes only human-authored fields plus `backtest_label`; it reads KPIs and chart data from the selected backtest artifacts. Do not invent KPIs or chart values.",
   "- Use decimal numbers for all allocation weights, for example 0.6 for 60%. Do not use strings like `60%`.",
   "- Put the user-facing explanation in `reasoning`: explain why the allocation or comparison follows from the user's constraints and the backtest results.",
+  "- Use `rank_universe` to shortlist candidate coins when the user asks for a portfolio, allocation, recommendation, comparison, or refinement and has not specified exact coins. Then run `run_backtest` on the selected allocation before finalizing the answer.",
 ].join("\n");
 
 export const MEMORY_DISCIPLINE_GUIDANCE = [
@@ -37,10 +38,21 @@ export const MEMORY_DISCIPLINE_GUIDANCE = [
 export const AGENT_SCRIPT_REGISTRY: readonly AgentScriptDefinition[] = [
   {
     name: "list_universe",
-    summary: "List the top-N coins by market cap from the dataset cache.",
+    summary:
+      "List the top-N coins by market cap from the database-backed universe dataset.",
     signature: "--top-n <count> [--as-of YYYY-MM-DD]",
     example:
       "uv run --project agent/scripts python -m agent_invest_scripts.list_universe --top-n 50 --as-of 2026-04-25",
+  },
+  {
+    name: "rank_universe",
+    summary:
+      "Rank candidate coins from the daily-refreshed DB feature universe for portfolio construction.",
+    signature:
+      "--top-n <count> [--max-market-cap-rank <rank>] [--min-data-days-365d <days>] [--positive-trend-only] [--max-volatility-180d <value>] [--sort market_cap_rank|momentum_180d|sharpe_180d|low_volatility]",
+    example:
+      "uv run --project agent/scripts python -m agent_invest_scripts.rank_universe --top-n 20 --max-market-cap-rank 100 --min-data-days-365d 180 --positive-trend-only --sort sharpe_180d",
+    note: "Use this before run_backtest when selecting candidate coins. It is a screening tool, not a substitute for backtesting.",
   },
   {
     name: "run_backtest",
