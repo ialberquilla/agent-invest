@@ -28,6 +28,17 @@ import {
   touchStrategy as defaultTouchStrategy,
   updateStrategyTitleIfBlank as defaultUpdateStrategyTitleIfBlank,
 } from "../db/repositories/strategies";
+import {
+  runCoinGeckoMarketCapIngestion,
+  toUtcDayTimestamp,
+  type CoinGeckoMarketCapOptions,
+  type CoinGeckoMarketCapSummary,
+} from "../ingestion/coingecko-market-caps";
+import {
+  runGmxHistoryIngestion,
+  type GmxHistoryOptions,
+  type GmxHistorySummary,
+} from "../ingestion/gmx-history";
 
 type Repositories = {
   createRun: typeof defaultCreateRun;
@@ -38,6 +49,12 @@ type Repositories = {
   touchStrategy: typeof defaultTouchStrategy;
   updateStrategyTitleIfBlank: typeof defaultUpdateStrategyTitleIfBlank;
 };
+type IngestionRunners = {
+  gmx: (options: GmxHistoryOptions) => Promise<GmxHistorySummary>;
+  coingeckoMarketCaps: (
+    options: CoinGeckoMarketCapOptions,
+  ) => Promise<CoinGeckoMarketCapSummary>;
+};
 type ServerDependencies = {
   buildSystemPrompt?: typeof defaultBuildSystemPrompt;
   getSessionId?: (
@@ -45,6 +62,7 @@ type ServerDependencies = {
     client?: DatabaseClient,
   ) => Promise<string>;
   getOpencodeClient?: () => Promise<OpencodeTurnClient>;
+  ingestionRunners?: Partial<IngestionRunners>;
   repositories?: Partial<Repositories>;
 };
 
@@ -73,6 +91,108 @@ function requiredText(body: Record<string, unknown>, key: string) {
     );
   }
   return value.trim();
+}
+
+function optionalStringList(body: Record<string, unknown>, key: string) {
+  const value = body[key];
+  if (value === undefined || value === null) return undefined;
+
+  const normalize = (entry: string) => entry.trim();
+  const entries =
+    typeof value === "string"
+      ? value.split(",").map(normalize)
+      : Array.isArray(value) &&
+          value.every((entry) => typeof entry === "string")
+        ? value.map(normalize)
+        : null;
+
+  if (!entries || entries.length === 0 || entries.some((entry) => !entry)) {
+    throw httpError(
+      400,
+      `Request body field '${key}' must be a non-empty string array or comma-separated string`,
+    );
+  }
+
+  return entries;
+}
+
+function optionalBoolean(
+  body: Record<string, unknown>,
+  key: string,
+  fallback = false,
+) {
+  const value = body[key];
+  if (value === undefined || value === null) return fallback;
+  if (typeof value === "boolean") return value;
+  throw httpError(400, `Request body field '${key}' must be a boolean`);
+}
+
+function optionalFullRefresh(body: Record<string, unknown>) {
+  if (body.full_refresh !== undefined && body.fullRefresh !== undefined) {
+    throw httpError(
+      400,
+      "Request body must not include both 'full_refresh' and 'fullRefresh'",
+    );
+  }
+
+  return body.fullRefresh === undefined
+    ? optionalBoolean(body, "full_refresh")
+    : optionalBoolean(body, "fullRefresh");
+}
+
+function optionalMarketCapDate(body: Record<string, unknown>) {
+  const value = body.date;
+  if (value === undefined || value === null)
+    return toUtcDayTimestamp(new Date());
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    throw httpError(400, "Request body field 'date' must use YYYY-MM-DD");
+  }
+
+  const [yearText, monthText, dayText] = value.split("-");
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const date = new Date(Date.UTC(year, month - 1, day));
+
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    throw httpError(
+      400,
+      "Request body field 'date' must be a valid calendar day",
+    );
+  }
+
+  return date;
+}
+
+function parseGmxIngestionOptions(
+  body: Record<string, unknown>,
+): GmxHistoryOptions {
+  return {
+    symbols: optionalStringList(body, "symbols"),
+    exclude: optionalStringList(body, "exclude") ?? [],
+    fullRefresh: optionalFullRefresh(body),
+    dryRun: optionalBoolean(body, "dry_run"),
+  };
+}
+
+function parseCoinGeckoMarketCapOptions(
+  body: Record<string, unknown>,
+): CoinGeckoMarketCapOptions {
+  return {
+    symbols: optionalStringList(body, "symbols"),
+    date: optionalMarketCapDate(body),
+    dryRun: optionalBoolean(body, "dry_run"),
+  };
+}
+
+function normalizeIngestionLoader(loader: string) {
+  if (loader === "gmx" || loader === "gmx-history") return "gmx";
+  if (loader === "coingecko-market-caps") return "coingecko-market-caps";
+  return null;
 }
 
 function toIso(value: Date | string | null) {
@@ -520,9 +640,67 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     updateStrategyTitleIfBlank: defaultUpdateStrategyTitleIfBlank,
     ...dependencies.repositories,
   };
+  const ingestionRunners: IngestionRunners = {
+    gmx: runGmxHistoryIngestion,
+    coingeckoMarketCaps: runCoinGeckoMarketCapIngestion,
+    ...dependencies.ingestionRunners,
+  };
+  const runningIngestions = new Set<string>();
   const app = Fastify({ loggerInstance: pino() });
 
   app.get("/health", async () => ({ ok: true }));
+
+  app.post<{ Params: { loader: string } }>(
+    "/ingestion/:loader",
+    async (request, reply) => {
+      const loader = normalizeIngestionLoader(request.params.loader);
+      if (!loader) throw httpError(404, "Ingestion loader not found");
+
+      if (runningIngestions.has(loader)) {
+        throw httpError(409, `Ingestion loader '${loader}' is already running`);
+      }
+
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      if (!isRecord(body)) {
+        throw httpError(400, "Request body must be a JSON object");
+      }
+
+      const startedAt = new Date();
+      runningIngestions.add(loader);
+      request.log.info({ loader }, "ingestion started");
+
+      try {
+        if (loader === "gmx") {
+          const options = parseGmxIngestionOptions(body);
+          const summary = await ingestionRunners.gmx(options);
+          const status = summary.failureCount > 0 ? "failed" : "completed";
+          if (status === "failed") reply.code(500);
+
+          return {
+            loader,
+            status,
+            started_at: startedAt.toISOString(),
+            ended_at: new Date().toISOString(),
+            summary,
+          };
+        }
+
+        const options = parseCoinGeckoMarketCapOptions(body);
+        const summary = await ingestionRunners.coingeckoMarketCaps(options);
+
+        return {
+          loader,
+          status: "completed",
+          started_at: startedAt.toISOString(),
+          ended_at: new Date().toISOString(),
+          summary,
+        };
+      } finally {
+        runningIngestions.delete(loader);
+        request.log.info({ loader }, "ingestion finished");
+      }
+    },
+  );
 
   app.post("/strategies", async (request) => {
     const body = (request.body ?? {}) as Record<string, unknown>;

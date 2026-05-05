@@ -298,6 +298,165 @@ test("POST /strategies rejects a missing user_id", async () => {
   }
 });
 
+test("POST /ingestion/gmx runs the GMX loader with API options", async () => {
+  const state = createState();
+  let capturedOptions: unknown;
+  const app = buildServer({
+    repositories: createRepositoryDouble(state),
+    ingestionRunners: {
+      async gmx(options) {
+        capturedOptions = options;
+        return {
+          dryRun: options.dryRun,
+          featureViewRefreshed: false,
+          symbolCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          symbols: [
+            {
+              symbol: "BTC",
+              assetId: "BTC",
+              limit: 4,
+              rowCount: 4,
+              startTimestamp: "2026-05-01T00:00:00.000Z",
+              endTimestamp: "2026-05-04T00:00:00.000Z",
+              dryRun: options.dryRun,
+            },
+          ],
+        };
+      },
+    },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        symbols: ["BTC", "ETH"],
+        exclude: "ETH",
+        full_refresh: true,
+        dry_run: true,
+      },
+      url: "/ingestion/gmx",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(capturedOptions, {
+      symbols: ["BTC", "ETH"],
+      exclude: ["ETH"],
+      fullRefresh: true,
+      dryRun: true,
+    });
+    assert.deepEqual(response.json().summary, {
+      dryRun: true,
+      featureViewRefreshed: false,
+      symbolCount: 1,
+      successCount: 1,
+      failureCount: 0,
+      symbols: [
+        {
+          symbol: "BTC",
+          assetId: "BTC",
+          limit: 4,
+          rowCount: 4,
+          startTimestamp: "2026-05-01T00:00:00.000Z",
+          endTimestamp: "2026-05-04T00:00:00.000Z",
+          dryRun: true,
+        },
+      ],
+    });
+    assert.equal(response.json().loader, "gmx");
+    assert.equal(response.json().status, "completed");
+  } finally {
+    await app.close();
+  }
+});
+
+test("POST /ingestion/coingecko-market-caps runs market-cap loader", async () => {
+  const state = createState();
+  let capturedOptions: { symbols?: string[]; date?: Date; dryRun?: boolean } =
+    {};
+  const app = buildServer({
+    repositories: createRepositoryDouble(state),
+    ingestionRunners: {
+      async coingeckoMarketCaps(options) {
+        capturedOptions = options;
+        return {
+          dryRun: options.dryRun,
+          date: options.date.toISOString(),
+          selectedCount: 2,
+          mappedCount: 2,
+          unmappedCount: 0,
+          fetchedCount: 2,
+          writtenCount: 0,
+          featureViewRefreshed: false,
+          skippedCount: 0,
+          missingCoinGeckoIds: [],
+        };
+      },
+    },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        symbols: "BTC, ETH",
+        date: "2026-05-01",
+        dry_run: true,
+      },
+      url: "/ingestion/coingecko-market-caps",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(capturedOptions.symbols, ["BTC", "ETH"]);
+    assert.equal(
+      capturedOptions.date?.toISOString(),
+      "2026-05-01T00:00:00.000Z",
+    );
+    assert.equal(capturedOptions.dryRun, true);
+    assert.equal(response.json().loader, "coingecko-market-caps");
+    assert.equal(response.json().status, "completed");
+    assert.deepEqual(response.json().summary, {
+      dryRun: true,
+      date: "2026-05-01T00:00:00.000Z",
+      selectedCount: 2,
+      mappedCount: 2,
+      unmappedCount: 0,
+      fetchedCount: 2,
+      writtenCount: 0,
+      featureViewRefreshed: false,
+      skippedCount: 0,
+      missingCoinGeckoIds: [],
+    });
+  } finally {
+    await app.close();
+  }
+});
+
+test("POST /ingestion rejects unknown loaders", async () => {
+  const app = buildServer({
+    repositories: createRepositoryDouble(createState()),
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: {},
+      url: "/ingestion/unknown",
+    });
+
+    assert.equal(response.statusCode, 404);
+    assert.deepEqual(response.json(), {
+      error: "Not Found",
+      message: "Ingestion loader not found",
+      statusCode: 404,
+    });
+  } finally {
+    await app.close();
+  }
+});
+
 test("POST /messages returns the completed run and auto-creates the strategy", async () => {
   const state = createState();
   const app = buildServer({
