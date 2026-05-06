@@ -233,18 +233,18 @@ export function WizardRunView() {
   const isActiveRun = !isFinished && !failedBeforeFinal;
 
   return (
-    <main className="min-h-dvh bg-muted/30 px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
-        <section className="flex flex-col gap-4 rounded-3xl border bg-background p-5 shadow-sm sm:p-6 lg:flex-row lg:items-end lg:justify-between">
+    <main className="min-h-dvh bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--primary)_16%,transparent),transparent_34%),linear-gradient(180deg,var(--background),color-mix(in_oklab,var(--accent)_38%,var(--background)))] px-3 py-4 sm:px-4 lg:px-6">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
+        <section className="flex flex-col gap-4 rounded-2xl border bg-background p-4 shadow-sm lg:flex-row lg:items-end lg:justify-between">
           <div className="space-y-3">
             <Badge variant="secondary" className="w-fit">
               Allocation run
             </Badge>
             <div className="max-w-3xl space-y-2">
-              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
+              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
                 The agent is building your strategy.
               </h1>
-              <p className="text-base text-muted-foreground">
+              <p className="text-sm leading-6 text-muted-foreground sm:text-base">
                 Follow reasoning and tool calls live. The final answer and
                 charts appear when the run finishes.
               </p>
@@ -254,14 +254,6 @@ export function WizardRunView() {
             <Link href="/" className={buttonVariants({ variant: "outline" })}>
               Back to wizard
             </Link>
-            {runState.strategyId ? (
-              <Link
-                href="/chat"
-                className={buttonVariants({ variant: "outline" })}
-              >
-                Continue in chat
-              </Link>
-            ) : null}
           </div>
         </section>
 

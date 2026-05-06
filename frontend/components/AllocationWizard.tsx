@@ -378,25 +378,25 @@ export function AllocationWizard() {
   ];
 
   return (
-    <main className="min-h-dvh bg-muted/30 px-4 py-6 sm:px-6 lg:px-8">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-6">
-        <section className="grid gap-4 rounded-3xl border bg-background p-5 shadow-sm sm:p-6 lg:grid-cols-[1fr_auto] lg:items-end">
-          <div className="space-y-4">
+    <main className="min-h-dvh bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--primary)_16%,transparent),transparent_34%),linear-gradient(180deg,var(--background),color-mix(in_oklab,var(--accent)_38%,var(--background)))] px-3 py-4 sm:px-4 lg:px-6">
+      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
+        <section className="grid gap-4 rounded-2xl border bg-background p-4 shadow-sm lg:grid-cols-[1fr_auto] lg:items-end">
+          <div className="space-y-3">
             <Badge variant="secondary" className="w-fit">
               Allocation wizard
             </Badge>
-            <div className="max-w-3xl space-y-3">
-              <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl lg:text-5xl">
+            <div className="max-w-3xl space-y-2">
+              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
                 Build a portfolio brief before the agent starts work.
               </h1>
-              <p className="text-base text-muted-foreground sm:text-lg">
+              <p className="text-sm leading-6 text-muted-foreground sm:text-base">
                 Walk through the core allocation inputs, review the draft, and
                 prepare a strategy run. Prompt construction and execution remain
                 intentionally out of scope for this step.
               </p>
             </div>
           </div>
-          <div className="grid gap-2 rounded-2xl bg-muted p-4 text-sm lg:min-w-64">
+          <div className="grid gap-2 rounded-xl bg-accent p-3 text-sm lg:min-w-60">
             <div className="flex items-center justify-between gap-3">
               <span className="text-muted-foreground">Progress</span>
               <span className="font-medium">
@@ -412,14 +412,14 @@ export function AllocationWizard() {
           </div>
         </section>
 
-        <section className="grid min-w-0 gap-6 lg:grid-cols-[18rem_minmax(0,1fr)_22rem]">
-          <Card className="min-w-0 lg:sticky lg:top-6 lg:h-[calc(100dvh-3rem)]">
+        <section className="grid min-w-0 gap-4 lg:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[16rem_minmax(0,1fr)_20rem]">
+          <Card className="min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)]">
             <CardHeader>
               <CardTitle>Guided steps</CardTitle>
               <CardDescription>Jump back to edit any answer.</CardDescription>
             </CardHeader>
             <CardContent className="min-h-0">
-              <ScrollArea className="h-auto lg:h-[calc(100dvh-11rem)]">
+              <ScrollArea className="h-auto lg:max-h-[calc(100dvh-10rem)]">
                 <ol className="grid gap-2 pr-1">
                   {steps.map((step, index) => {
                     const isSelected = index === selectedStepIndex;
@@ -428,31 +428,31 @@ export function AllocationWizard() {
                       <li key={step.title}>
                         <button
                           type="button"
-                          className={`flex w-full min-w-0 gap-3 rounded-xl border p-3 text-left transition-colors ${
+                          className={`flex w-full min-w-0 gap-2.5 rounded-lg border px-3 py-2.5 text-left transition-colors ${
                             isSelected
-                              ? "border-primary bg-primary text-primary-foreground"
-                              : "border-border bg-background hover:bg-muted"
+                              ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                              : "border-border bg-background text-foreground hover:border-foreground/20 hover:bg-muted/70"
                           }`}
                           aria-current={isSelected ? "step" : undefined}
                           onClick={() => setSelectedStepIndex(index)}
                         >
                           <span
-                            className={`flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                            className={`flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
                               isSelected
                                 ? "bg-primary-foreground text-primary"
-                                : "bg-muted text-muted-foreground"
+                                : "bg-muted text-foreground"
                             }`}
                           >
                             {index + 1}
                           </span>
                           <span className="min-w-0 space-y-1">
-                            <span className="block truncate text-sm font-medium">
+                            <span className="block truncate text-sm font-semibold tracking-tight">
                               {step.title}
                             </span>
                             <span
-                              className={`block text-xs leading-5 ${
+                              className={`block text-[13px] leading-5 ${
                                 isSelected
-                                  ? "text-primary-foreground/80"
+                                  ? "text-primary-foreground/90"
                                   : "text-muted-foreground"
                               }`}
                             >
@@ -702,7 +702,7 @@ export function AllocationWizard() {
             </CardFooter>
           </Card>
 
-          <Card className="min-w-0 lg:sticky lg:top-6 lg:h-fit">
+          <Card className="min-w-0 lg:col-span-2 lg:sticky lg:top-4 lg:h-fit xl:col-span-1">
             <CardHeader>
               <CardTitle>Review and Run</CardTitle>
               <CardDescription>

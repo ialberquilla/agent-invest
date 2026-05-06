@@ -2,7 +2,6 @@ import type { ReactNode } from "react";
 import {
   Area,
   AreaChart,
-  CartesianGrid,
   Cell,
   Legend,
   Line,
@@ -16,6 +15,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import type {
   StrategyChartAllocationItem,
   StrategyDrawdownPoint,
@@ -36,18 +36,24 @@ const KPI_ITEMS: Array<{
   { key: "sharpe_ratio", label: "Sharpe", format: formatNumber },
   { key: "sortino_ratio", label: "Sortino", format: formatNumber },
   { key: "max_drawdown", label: "Max drawdown", format: formatPercent },
-  { key: "calmar_ratio", label: "Calmar", format: formatNumber },
   { key: "monthly_hit_rate", label: "Monthly hit rate", format: formatPercent },
   { key: "final_equity_usd", label: "Final equity", format: formatCurrency },
-  {
-    key: "total_trading_cost_usd",
-    label: "Trading costs",
-    format: formatCurrency,
-  },
-  { key: "total_num_swaps", label: "Swaps", format: formatWholeNumber },
 ];
 
-const CHART_COLORS = ["#2563eb", "#f97316", "#16a34a", "#9333ea", "#dc2626"];
+const CHART_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+];
+
+const CHART_AXIS_PROPS = {
+  stroke: "#888888",
+  fontSize: 12,
+  tickLine: false,
+  axisLine: false,
+} as const;
 
 function hasValue(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -83,13 +89,6 @@ function formatNumber(value: number | null | undefined) {
   }).format(value);
 }
 
-function formatWholeNumber(value: number | null | undefined) {
-  if (!hasValue(value)) return "Not provided";
-  return new Intl.NumberFormat("en-US", {
-    maximumFractionDigits: 0,
-  }).format(value);
-}
-
 function formatDate(value: string | null | undefined) {
   if (!value) return "Not provided";
   const date = new Date(value);
@@ -116,51 +115,6 @@ function ChartFallback({ message }: { message: string }) {
   );
 }
 
-function ChartTooltip({
-  active,
-  payload,
-  label,
-  valueFormatter,
-}: {
-  active?: boolean;
-  payload?: Array<{
-    color?: string;
-    dataKey?: string | number;
-    name?: string | number;
-    value?: unknown;
-  }>;
-  label?: string | number;
-  valueFormatter: (value: number) => string;
-}) {
-  if (!active || !payload?.length) return null;
-  const title = label ?? payload[0]?.name;
-
-  return (
-    <div className="rounded-xl border bg-background/95 p-3 text-sm shadow-sm">
-      {title ? (
-        <div className="mb-2 font-medium">{formatDate(String(title))}</div>
-      ) : null}
-      <div className="space-y-1">
-        {payload.map((item, index) =>
-          hasChartValue(item.value) ? (
-            <div
-              key={`${item.dataKey ?? item.name}-${index}`}
-              className="flex items-center gap-2"
-            >
-              <span
-                className="h-2.5 w-2.5 rounded-full"
-                style={{ backgroundColor: item.color }}
-              />
-              <span className="text-muted-foreground">{item.name}</span>
-              <span className="font-medium">{valueFormatter(item.value)}</span>
-            </div>
-          ) : null,
-        )}
-      </div>
-    </div>
-  );
-}
-
 function EquityCurveChart({ data }: { data: StrategyEquityPoint[] | null }) {
   const chartData = (data ?? [])
     .map((point) => ({
@@ -177,23 +131,37 @@ function EquityCurveChart({ data }: { data: StrategyEquityPoint[] | null }) {
   }
 
   return (
-    <div className="h-[320px]">
+    <ChartContainer className="h-[320px] w-full">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={chartData} margin={{ left: 0, right: 16, top: 10 }}>
-          <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-          <XAxis dataKey="date" tickFormatter={formatDate} minTickGap={28} />
+          <XAxis
+            dataKey="date"
+            tickFormatter={formatDate}
+            minTickGap={28}
+            {...CHART_AXIS_PROPS}
+          />
           <YAxis
             tickFormatter={(value) => formatCurrency(Number(value))}
             width={82}
+            {...CHART_AXIS_PROPS}
           />
-          <Tooltip content={<ChartTooltip valueFormatter={formatCurrency} />} />
-          <Legend />
+          <Tooltip
+            cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }}
+            content={
+              <ChartTooltipContent
+                labelFormatter={formatDate}
+                valueFormatter={formatCurrency}
+              />
+            }
+          />
+          <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
           <Area
             type="monotone"
             dataKey="strategy"
             name="Strategy"
-            stroke="#2563eb"
-            fill="#2563eb"
+            stroke="currentColor"
+            fill="currentColor"
+            className="text-primary"
             fillOpacity={0.16}
             connectNulls
           />
@@ -201,14 +169,15 @@ function EquityCurveChart({ data }: { data: StrategyEquityPoint[] | null }) {
             type="monotone"
             dataKey="bitcoin"
             name="Bitcoin"
-            stroke="#f97316"
+            stroke="currentColor"
+            className="text-muted-foreground"
             strokeWidth={2}
             dot={false}
             connectNulls
           />
         </AreaChart>
       </ResponsiveContainer>
-    </div>
+    </ChartContainer>
   );
 }
 
@@ -228,23 +197,37 @@ function DrawdownChart({ data }: { data: StrategyDrawdownPoint[] | null }) {
   }
 
   return (
-    <div className="h-[320px]">
+    <ChartContainer className="h-[320px] w-full">
       <ResponsiveContainer width="100%" height="100%">
         <AreaChart data={chartData} margin={{ left: 0, right: 16, top: 10 }}>
-          <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-          <XAxis dataKey="date" tickFormatter={formatDate} minTickGap={28} />
+          <XAxis
+            dataKey="date"
+            tickFormatter={formatDate}
+            minTickGap={28}
+            {...CHART_AXIS_PROPS}
+          />
           <YAxis
             tickFormatter={(value) => formatPercent(Number(value))}
             width={64}
+            {...CHART_AXIS_PROPS}
           />
-          <Tooltip content={<ChartTooltip valueFormatter={formatPercent} />} />
-          <Legend />
+          <Tooltip
+            cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }}
+            content={
+              <ChartTooltipContent
+                labelFormatter={formatDate}
+                valueFormatter={formatPercent}
+              />
+            }
+          />
+          <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
           <Area
             type="monotone"
             dataKey="strategy"
             name="Strategy"
-            stroke="#2563eb"
-            fill="#2563eb"
+            stroke="currentColor"
+            fill="currentColor"
+            className="text-primary"
             fillOpacity={0.14}
             connectNulls
           />
@@ -252,14 +235,15 @@ function DrawdownChart({ data }: { data: StrategyDrawdownPoint[] | null }) {
             type="monotone"
             dataKey="bitcoin"
             name="Bitcoin"
-            stroke="#f97316"
+            stroke="currentColor"
+            className="text-muted-foreground"
             strokeWidth={2}
             dot={false}
             connectNulls
           />
         </AreaChart>
       </ResponsiveContainer>
-    </div>
+    </ChartContainer>
   );
 }
 
@@ -283,7 +267,7 @@ function AllocationChart({
 
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
-      <div className="h-[260px]">
+      <ChartContainer className="h-[260px] w-full">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
             <Pie
@@ -302,11 +286,11 @@ function AllocationChart({
               ))}
             </Pie>
             <Tooltip
-              content={<ChartTooltip valueFormatter={formatPercent} />}
+              content={<ChartTooltipContent valueFormatter={formatPercent} />}
             />
           </PieChart>
         </ResponsiveContainer>
-      </div>
+      </ChartContainer>
       <div className="space-y-2">
         {chartData.map((item, index) => (
           <div
@@ -338,8 +322,10 @@ function ReportSection({
   children: ReactNode;
 }) {
   return (
-    <section className="space-y-3 rounded-2xl border bg-background p-4 sm:p-5">
-      <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+    <section className="space-y-3 rounded-xl border bg-card p-4 shadow-xs sm:p-5">
+      <h2 className="font-heading text-base font-semibold tracking-tight">
+        {title}
+      </h2>
       {children}
     </section>
   );
@@ -353,7 +339,7 @@ function TextList({ items }: { items: string[] }) {
   return (
     <ul className="space-y-2 text-sm leading-6">
       {items.map((item, index) => (
-        <li key={`${item}-${index}`} className="rounded-xl bg-muted/40 p-3">
+        <li key={`${item}-${index}`} className="rounded-lg bg-muted/50 p-3">
           {item}
         </li>
       ))}
@@ -368,14 +354,14 @@ export function StrategyResultReport({ result }: StrategyResultReportProps) {
   const chartAllocation = charts.allocation ?? allocation;
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="overflow-hidden shadow-xs">
       <CardHeader className="border-b">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-2">
             <Badge variant="secondary" className="w-fit">
               Structured strategy report
             </Badge>
-            <CardTitle className="text-2xl sm:text-3xl">
+            <CardTitle className="font-heading text-2xl font-bold tracking-tight sm:text-3xl">
               {formatMissing(result.title)}
             </CardTitle>
           </div>
@@ -386,13 +372,16 @@ export function StrategyResultReport({ result }: StrategyResultReportProps) {
           {formatMissing(result.summary)}
         </p>
 
-        <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+        <section className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-6">
           {KPI_ITEMS.map((item) => (
-            <div key={item.key} className="rounded-2xl border bg-muted/25 p-4">
-              <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <div
+              key={item.key}
+              className="rounded-lg border bg-card px-3 py-2.5 shadow-xs"
+            >
+              <div className="truncate text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 {item.label}
               </div>
-              <div className="mt-2 text-2xl font-semibold">
+              <div className="mt-1.5 truncate font-heading text-lg font-bold tracking-tight">
                 {item.format(result.kpis?.[item.key])}
               </div>
             </div>
@@ -409,60 +398,74 @@ export function StrategyResultReport({ result }: StrategyResultReportProps) {
         </div>
 
         <ReportSection title="Allocation">
-          <AllocationChart data={chartAllocation} />
-          {allocation.length > 0 ? (
-            <div className="mt-4 space-y-3">
-              {allocation.map((item, index) => (
-                <div
-                  key={`${item.asset}-${item.symbol ?? index}`}
-                  className="rounded-xl border bg-muted/20 p-4"
-                >
-                  <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <h3 className="font-medium">
-                        {formatMissing(item.asset)}
-                      </h3>
-                      <p className="text-xs text-muted-foreground">
-                        {item.symbol ?? item.coin_id ?? "No symbol provided"}
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] xl:items-start">
+            <AllocationChart data={chartAllocation} />
+            <div className="min-w-0 space-y-3">
+              <div>
+                <h3 className="font-heading text-sm font-semibold tracking-tight">
+                  Selected assets
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  Weights and rationale behind the proposed allocation.
+                </p>
+              </div>
+              {allocation.length > 0 ? (
+                <div className="grid max-h-[28rem] gap-3 overflow-auto pr-1">
+                  {allocation.map((item, index) => (
+                    <div
+                      key={`${item.asset}-${item.symbol ?? index}`}
+                      className="rounded-xl border bg-card p-3 shadow-xs"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h3 className="truncate text-sm font-semibold">
+                            {formatMissing(item.asset)}
+                          </h3>
+                          <p className="text-xs text-muted-foreground">
+                            {item.symbol ??
+                              item.coin_id ??
+                              "No symbol provided"}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className="shrink-0">
+                          {formatPercent(item.weight)}
+                        </Badge>
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                        {formatMissing(item.rationale)}
                       </p>
                     </div>
-                    <Badge variant="outline">
-                      {formatPercent(item.weight)}
-                    </Badge>
-                  </div>
-                  <p className="mt-3 text-sm leading-6 text-muted-foreground">
-                    {formatMissing(item.rationale)}
-                  </p>
+                  ))}
                 </div>
-              ))}
+              ) : (
+                <p className="text-sm text-muted-foreground">Not provided</p>
+              )}
             </div>
-          ) : (
-            <p className="text-sm text-muted-foreground">Not provided</p>
-          )}
+          </div>
         </ReportSection>
 
         <ReportSection title="Backtest context">
           <dl className="grid gap-3 text-sm sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-xl bg-muted/40 p-3">
+            <div className="rounded-lg bg-muted/50 p-3">
               <dt className="text-muted-foreground">Period</dt>
               <dd className="mt-1 font-medium">
                 {formatMissing(backtest.start_date)} to{" "}
                 {formatMissing(backtest.end_date)}
               </dd>
             </div>
-            <div className="rounded-xl bg-muted/40 p-3">
+            <div className="rounded-lg bg-muted/50 p-3">
               <dt className="text-muted-foreground">Rebalance</dt>
               <dd className="mt-1 font-medium">
                 {formatMissing(backtest.rebalance)}
               </dd>
             </div>
-            <div className="rounded-xl bg-muted/40 p-3">
+            <div className="rounded-lg bg-muted/50 p-3">
               <dt className="text-muted-foreground">Initial capital</dt>
               <dd className="mt-1 font-medium">
                 {formatCurrency(backtest.initial_capital_usd)}
               </dd>
             </div>
-            <div className="rounded-xl bg-muted/40 p-3">
+            <div className="rounded-lg bg-muted/50 p-3">
               <dt className="text-muted-foreground">Benchmark</dt>
               <dd className="mt-1 font-medium">
                 {formatMissing(backtest.benchmark)}
