@@ -71,11 +71,3 @@ def memory_key(*, scope: str, user_id: str, strategy_id: str | None = None) -> s
         )
 
     raise ValueError(f"unsupported scope: {scope}")
-
-
-def dataset_key(filename: str) -> str:
-    return join_key("datasets", filename)
-
-
-def dataset_path(filename: str) -> Path:
-    return key_path(dataset_key(filename))
