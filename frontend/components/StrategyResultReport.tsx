@@ -55,6 +55,9 @@ const CHART_AXIS_PROPS = {
   axisLine: false,
 } as const;
 
+const STRATEGY_SERIES_COLOR = "#2563eb";
+const BITCOIN_SERIES_COLOR = "#f97316";
+
 function hasValue(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value);
 }
@@ -87,6 +90,11 @@ function formatNumber(value: number | null | undefined) {
   return new Intl.NumberFormat("en-US", {
     maximumFractionDigits: 2,
   }).format(value);
+}
+
+function formatMultiple(value: number | null | undefined) {
+  if (!hasValue(value)) return "Not provided";
+  return `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(value)}x`;
 }
 
 function formatDate(value: string | null | undefined) {
@@ -159,9 +167,9 @@ function EquityCurveChart({ data }: { data: StrategyEquityPoint[] | null }) {
             type="monotone"
             dataKey="strategy"
             name="Strategy"
-            stroke="currentColor"
-            fill="currentColor"
-            className="text-primary"
+            stroke={STRATEGY_SERIES_COLOR}
+            fill={STRATEGY_SERIES_COLOR}
+            strokeWidth={2.5}
             fillOpacity={0.16}
             connectNulls
           />
@@ -169,9 +177,9 @@ function EquityCurveChart({ data }: { data: StrategyEquityPoint[] | null }) {
             type="monotone"
             dataKey="bitcoin"
             name="Bitcoin"
-            stroke="currentColor"
-            className="text-muted-foreground"
-            strokeWidth={2}
+            stroke={BITCOIN_SERIES_COLOR}
+            strokeDasharray="6 4"
+            strokeWidth={2.5}
             dot={false}
             connectNulls
           />
@@ -225,9 +233,9 @@ function DrawdownChart({ data }: { data: StrategyDrawdownPoint[] | null }) {
             type="monotone"
             dataKey="strategy"
             name="Strategy"
-            stroke="currentColor"
-            fill="currentColor"
-            className="text-primary"
+            stroke={STRATEGY_SERIES_COLOR}
+            fill={STRATEGY_SERIES_COLOR}
+            strokeWidth={2.5}
             fillOpacity={0.14}
             connectNulls
           />
@@ -235,9 +243,9 @@ function DrawdownChart({ data }: { data: StrategyDrawdownPoint[] | null }) {
             type="monotone"
             dataKey="bitcoin"
             name="Bitcoin"
-            stroke="currentColor"
-            className="text-muted-foreground"
-            strokeWidth={2}
+            stroke={BITCOIN_SERIES_COLOR}
+            strokeDasharray="6 4"
+            strokeWidth={2.5}
             dot={false}
             connectNulls
           />
@@ -249,8 +257,10 @@ function DrawdownChart({ data }: { data: StrategyDrawdownPoint[] | null }) {
 
 function AllocationChart({
   data,
+  label = "Target allocation",
 }: {
   data: StrategyChartAllocationItem[] | null;
+  label?: string;
 }) {
   const chartData = (data ?? [])
     .map((item) => ({
@@ -267,6 +277,7 @@ function AllocationChart({
 
   return (
     <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
+      <div className="sr-only">{label}</div>
       <ChartContainer className="h-[260px] w-full">
         <ResponsiveContainer width="100%" height="100%">
           <PieChart>
@@ -351,7 +362,10 @@ export function StrategyResultReport({ result }: StrategyResultReportProps) {
   const allocation = result.allocation ?? [];
   const backtest = result.backtest ?? {};
   const charts = result.charts ?? {};
-  const chartAllocation = charts.allocation ?? allocation;
+  const chartAllocation =
+    charts.target_allocation ?? charts.allocation ?? allocation;
+  const finalAllocation = charts.final_allocation ?? null;
+  const normalizedCapital = backtest.capital_mode === "normalized";
 
   return (
     <Card className="overflow-hidden shadow-xs">
@@ -382,7 +396,9 @@ export function StrategyResultReport({ result }: StrategyResultReportProps) {
                 {item.label}
               </div>
               <div className="mt-1.5 truncate font-heading text-lg font-bold tracking-tight">
-                {item.format(result.kpis?.[item.key])}
+                {item.key === "final_equity_usd" && normalizedCapital
+                  ? formatMultiple(result.kpis?.final_equity_multiple)
+                  : item.format(result.kpis?.[item.key])}
               </div>
             </div>
           ))}
@@ -399,7 +415,34 @@ export function StrategyResultReport({ result }: StrategyResultReportProps) {
 
         <ReportSection title="Allocation">
           <div className="grid gap-5 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] xl:items-start">
-            <AllocationChart data={chartAllocation} />
+            <div className="space-y-3">
+              <div>
+                <h3 className="font-heading text-sm font-semibold tracking-tight">
+                  Target allocation
+                </h3>
+                <p className="text-sm text-muted-foreground">
+                  The proposed target weights used for the selected backtest.
+                </p>
+              </div>
+              <AllocationChart data={chartAllocation} />
+              {finalAllocation ? (
+                <div className="rounded-xl border bg-muted/30 p-3">
+                  <h3 className="font-heading text-sm font-semibold tracking-tight">
+                    Final drifted allocation
+                  </h3>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Buy-and-hold weights can drift away from target weights over
+                    time.
+                  </p>
+                  <div className="mt-3">
+                    <AllocationChart
+                      data={finalAllocation}
+                      label="Final drifted allocation"
+                    />
+                  </div>
+                </div>
+              ) : null}
+            </div>
             <div className="min-w-0 space-y-3">
               <div>
                 <h3 className="font-heading text-sm font-semibold tracking-tight">
@@ -462,7 +505,9 @@ export function StrategyResultReport({ result }: StrategyResultReportProps) {
             <div className="rounded-lg bg-muted/50 p-3">
               <dt className="text-muted-foreground">Initial capital</dt>
               <dd className="mt-1 font-medium">
-                {formatCurrency(backtest.initial_capital_usd)}
+                {normalizedCapital
+                  ? `${formatNumber(backtest.initial_capital_usd)} normalized units`
+                  : formatCurrency(backtest.initial_capital_usd)}
               </dd>
             </div>
             <div className="rounded-lg bg-muted/50 p-3">
@@ -479,6 +524,12 @@ export function StrategyResultReport({ result }: StrategyResultReportProps) {
             {formatMissing(result.reasoning)}
           </p>
         </ReportSection>
+
+        {(result.constraint_violations ?? []).length > 0 ? (
+          <ReportSection title="Constraint Violations">
+            <TextList items={result.constraint_violations ?? []} />
+          </ReportSection>
+        ) : null}
 
         <div className="grid gap-5 lg:grid-cols-3">
           <ReportSection title="Assumptions">

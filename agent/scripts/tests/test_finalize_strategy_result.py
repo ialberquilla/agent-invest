@@ -16,7 +16,12 @@ def _write_backtest_artifacts(storage_root: Path, label: str) -> None:
             {
                 "kpis": {"cagr": 0.2, "sharpe_ratio": 1.5},
                 "spec": {
-                    "allocation": {"start": "2024-01-01", "end": "2024-01-31"},
+                    "allocation": {
+                        "type": "static",
+                        "weights": {"bitcoin": 1},
+                        "start": "2024-01-01",
+                        "end": "2024-01-31",
+                    },
                     "rebalance": "monthly",
                     "initial_capital_usd": 1000,
                 },
@@ -50,6 +55,10 @@ def _write_backtest_artifacts(storage_root: Path, label: str) -> None:
     )
     (artifact_dir / "allocation.json").write_text(
         json.dumps([{"date": "2024-01-01", "coin_id": "bitcoin", "weight": 1}]),
+        encoding="utf-8",
+    )
+    (artifact_dir / "target_allocation.json").write_text(
+        json.dumps([{"coin_id": "bitcoin", "weight": 1}]),
         encoding="utf-8",
     )
 
@@ -139,3 +148,42 @@ def test_finalize_strategy_result_rejects_missing_backtest(
 
     assert error.value.code == 1
     assert "required backtest artifact is missing" in capsys.readouterr().err
+
+
+def test_finalize_strategy_result_rejects_allocation_that_differs_from_backtest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    _write_backtest_artifacts(tmp_path, "btc_only")
+
+    with pytest.raises(SystemExit) as error:
+        finalize_strategy_result.main(
+            [
+                "--payload",
+                json.dumps(
+                    {
+                        "title": "ETH Only",
+                        "summary": "A mismatched strategy.",
+                        "reasoning": "Reasoning.",
+                        "allocation": [
+                            {
+                                "asset": "Ethereum",
+                                "symbol": "ETH",
+                                "coin_id": "ethereum",
+                                "weight": 1,
+                                "rationale": "Different exposure.",
+                            }
+                        ],
+                        "assumptions": ["Assumption."],
+                        "risks": ["Risk."],
+                        "next_steps": ["Next step."],
+                        "backtest_label": "btc_only",
+                    }
+                ),
+            ]
+        )
+
+    assert error.value.code == 1
+    assert "must match the selected backtest allocation" in capsys.readouterr().err

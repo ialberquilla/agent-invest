@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+import math
 
 import polars as pl
 
@@ -54,6 +55,7 @@ def run_backtest(
         raise ValueError("At least two price dates are required to run a backtest")
 
     asset_columns = [column for column in prices_wide.columns if column != "date"]
+    _validate_target_assets(targets, asset_columns)
     returns_wide = prices_wide.select(
         "date", *[pl.col(column).pct_change().alias(column) for column in asset_columns]
     )
@@ -90,10 +92,15 @@ def run_backtest(
             current_weights = dict(target_weights)
 
         gross_return = sum(
-            current_weights.get(column, 0.0) * float(row.get(column) or 0.0)
-            for column in asset_columns
+            weight * _required_asset_return(row.get(coin_id), day=day, coin_id=coin_id)
+            for coin_id, weight in current_weights.items()
         )
         net_return = gross_return - trading_cost_fraction
+        if equity_multiplier * (1.0 + net_return) < 0.0:
+            raise ValueError(
+                f"trading costs exceed portfolio equity on {day.isoformat()}; "
+                "reduce fixed costs, increase initial capital, or use less frequent rebalancing"
+            )
         equity_multiplier *= 1.0 + net_return
         equity_usd *= 1.0 + net_return
 
@@ -136,6 +143,7 @@ def run_backtest(
         {
             "initial_capital_usd": float(initial_capital_usd),
             "final_equity_usd": equity_usd,
+            "final_equity_multiple": float(equity_multiplier),
             "total_trading_cost_usd": float(
                 performance.get_column("trading_cost_usd").sum()
             ),
@@ -160,6 +168,36 @@ def _wide_prices(prices_long: pl.DataFrame, universe: list[str] | None) -> pl.Da
     )
 
 
+def _validate_target_assets(
+    targets: dict[date, dict[str, float]], asset_columns: list[str]
+) -> None:
+    available = set(asset_columns)
+    requested = {
+        coin_id for target_weights in targets.values() for coin_id in target_weights
+    }
+    missing = sorted(requested - available)
+    if missing:
+        missing_list = ", ".join(missing)
+        raise ValueError(
+            f"allocation references asset(s) without prices: {missing_list}"
+        )
+
+
+def _required_asset_return(value: object, *, day: date, coin_id: str) -> float:
+    if value is None:
+        raise ValueError(
+            f"missing price return for {coin_id} on {day.isoformat()}; "
+            "cannot backtest through a data gap"
+        )
+    asset_return = float(value)
+    if not math.isfinite(asset_return):
+        raise ValueError(
+            f"missing price return for {coin_id} on {day.isoformat()}; "
+            "cannot backtest through a data gap"
+        )
+    return asset_return
+
+
 def _period_key(day: date, rebalance_frequency: str) -> tuple[int, int]:
     if rebalance_frequency == "weekly":
         iso_calendar = day.isocalendar()
@@ -178,7 +216,9 @@ def _drift_weights(
     denominator = 1.0 + gross_return
     drifted_weights: dict[str, float] = {}
     for coin_id, weight in current_weights.items():
-        asset_return = float(returns_row.get(coin_id) or 0.0)
+        asset_return = _required_asset_return(
+            returns_row.get(coin_id), day=returns_row["date"], coin_id=coin_id
+        )
         drifted_weights[coin_id] = weight * (1.0 + asset_return) / denominator
     return prune_small_weights(drifted_weights)
 

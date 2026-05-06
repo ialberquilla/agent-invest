@@ -91,7 +91,7 @@ test("tool manifest is registry-driven and includes memory guidance", () => {
 
   assert.ok(
     manifest.includes(
-      "Always invoke them with `uv run --project agent/scripts python -m agent_invest_scripts.<script> ...`.",
+      "Always invoke them from `agent/scripts` with `uv run --project . python -m agent_invest_scripts.<script> ...`.",
     ),
   );
   assert.ok(

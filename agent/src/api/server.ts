@@ -1,7 +1,14 @@
 import "../env";
 import { randomUUID } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import { readFile, readdir, stat } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  readFile,
+  readdir,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
@@ -268,6 +275,7 @@ const KNOWN_ARTIFACT_KINDS: Record<string, string> = {
   "drawdown.png": "drawdown_png",
   "drawdown.json": "drawdown_json",
   "allocation.json": "allocation_json",
+  "target_allocation.json": "target_allocation_json",
   "report.json": "report_json",
   "strategy_result.json": "strategy_result_json",
 };
@@ -277,6 +285,7 @@ const JSON_ARTIFACT_FILENAMES = new Set([
   "equity_curve.json",
   "drawdown.json",
   "allocation.json",
+  "target_allocation.json",
   "strategy_result.json",
 ]);
 
@@ -297,6 +306,73 @@ function resolveStorageRoot() {
 function artifactsDir() {
   const root = resolveStorageRoot();
   return root ? path.join(root, "artifacts") : undefined;
+}
+
+function traceDir(runId: string) {
+  const dir = artifactsDir();
+  return dir ? path.join(dir, "runs", runId) : undefined;
+}
+
+async function writePromptTrace(
+  runId: string,
+  payload: Record<string, unknown>,
+): Promise<ArtifactRef[]> {
+  const dir = traceDir(runId);
+  if (!dir) return [];
+  await mkdir(dir, { recursive: true });
+  const filePath = path.join(dir, "prompt_trace.json");
+  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
+  const relative = relativeArtifactPath(filePath);
+  return relative ? [{ kind: kindFromPath(relative), path: relative }] : [];
+}
+
+async function appendOpencodeEventTrace(
+  runId: string,
+  event: unknown,
+): Promise<void> {
+  const dir = traceDir(runId);
+  if (!dir) return;
+  await mkdir(dir, { recursive: true });
+  await appendFile(
+    path.join(dir, "opencode_events.jsonl"),
+    `${JSON.stringify(event)}\n`,
+    "utf-8",
+  );
+}
+
+function promptTracePayload(options: {
+  runId: string;
+  strategyId: string;
+  sessionId: string;
+  messageId: string;
+  userText: string;
+  system: string;
+  result?: OpencodePromptResult;
+  error?: unknown;
+  eventCount?: number;
+  startedAt: string;
+  endedAt: string;
+}) {
+  return {
+    run_id: options.runId,
+    strategy_id: options.strategyId,
+    session_id: options.sessionId,
+    started_at: options.startedAt,
+    ended_at: options.endedAt,
+    event_count: options.eventCount ?? null,
+    user_text: options.userText,
+    system_prompt: options.system,
+    agent_input: {
+      messageId: options.messageId,
+      sessionId: options.sessionId,
+      system: options.system,
+      text: options.userText,
+    },
+    assistant_message: options.result?.info ?? null,
+    parts: options.result?.parts ?? [],
+    reply: options.result?.parts ? replyText(options.result.parts) : null,
+    error: options.error ? errorMessage(options.error) : null,
+  };
 }
 
 function relativeArtifactPath(absolute: string): string | null {
@@ -495,6 +571,11 @@ function mergeArtifactPayload(
 
   if (filename === "allocation.json") {
     const allocation = normalizeArray(payload, normalizeAllocationPoint);
+    if (allocation) charts.final_allocation = allocation;
+  }
+
+  if (filename === "target_allocation.json") {
+    const allocation = normalizeArray(payload, normalizeAllocationPoint);
     if (allocation) charts.allocation = allocation;
   }
 
@@ -554,6 +635,29 @@ async function readFinalizedStructuredResult(
   } catch {
     return null;
   }
+}
+
+function selectedBacktestLabel(structuredResult: unknown): string | null {
+  if (!isRecord(structuredResult)) return null;
+  const backtest = structuredResult.backtest;
+  if (isRecord(backtest) && typeof backtest.label === "string") {
+    return backtest.label;
+  }
+  return null;
+}
+
+function artifactsForSelectedResult(
+  structuredResult: unknown,
+  artifacts: ArtifactRef[],
+): ArtifactRef[] {
+  const label = selectedBacktestLabel(structuredResult);
+  if (!label) return artifacts;
+  return artifacts.filter(
+    (artifact) =>
+      artifact.path.includes(`/strategy_result/${label}/`) ||
+      artifact.path.includes(`/run_backtest/${label}/`) ||
+      artifact.path.includes("/runs/"),
+  );
 }
 
 async function structuredResultFromArtifacts(
@@ -735,8 +839,11 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
     let promptError: unknown;
     let result: OpencodePromptResult | undefined;
+    let system = "";
+    const messageId = `msg_${runId.replace(/-/g, "")}`;
+    const traceStartedAt = new Date().toISOString();
     try {
-      const system = await buildSystemPrompt({ userId, strategyId });
+      system = await buildSystemPrompt({ userId, strategyId });
       const opencode = await getOpencodeClient();
       request.log.info(
         { runId, sessionId, textLength: text.length },
@@ -744,7 +851,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       );
       const promptStart = Date.now();
       result = await opencode.prompt({
-        messageId: `msg_${runId.replace(/-/g, "")}`,
+        messageId,
         sessionId,
         system,
         text,
@@ -778,6 +885,28 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       promptError = error;
     }
 
+    const traceArtifacts = await writePromptTrace(
+      runId,
+      promptTracePayload({
+        runId,
+        strategyId,
+        sessionId,
+        messageId,
+        userText: text,
+        system,
+        result,
+        error: promptError,
+        startedAt: traceStartedAt,
+        endedAt: new Date().toISOString(),
+      }),
+    ).catch((error) => {
+      request.log.warn(
+        { error: errorMessage(error), runId },
+        "failed to write prompt trace",
+      );
+      return [] as ArtifactRef[];
+    });
+
     if (promptError) {
       await repositories.markRunFailed(runId, errorMessage(promptError));
     } else {
@@ -786,6 +915,9 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
     const run = await repositories.readRun(runId);
     if (!run) throw new Error(`Run missing after execution: ${runId}`);
+    if (traceArtifacts.length > 0) {
+      request.log.info({ runId, traceArtifacts }, "prompt trace written");
+    }
     if (promptError) throw promptError;
     return runResponse(run);
   });
@@ -905,6 +1037,12 @@ export function buildServer(dependencies: ServerDependencies = {}) {
             continue;
           }
           eventCount += 1;
+          await appendOpencodeEventTrace(runId, event).catch((error) => {
+            request.log.warn(
+              { error: errorMessage(error), runId },
+              "stream: failed to append opencode event trace",
+            );
+          });
           send(event.type, event);
         }
       } catch (error) {
@@ -918,12 +1056,15 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
     let promptError: unknown;
     let result: OpencodePromptResult | undefined;
+    let system = "";
+    const messageId = `msg_${runId.replace(/-/g, "")}`;
+    const traceStartedAt = new Date().toISOString();
     try {
-      const system = await buildSystemPrompt({ userId, strategyId });
+      system = await buildSystemPrompt({ userId, strategyId });
       const promptStart = Date.now();
       request.log.info({ runId, sessionId }, "stream: calling opencode prompt");
       result = await opencode.prompt({
-        messageId: `msg_${runId.replace(/-/g, "")}`,
+        messageId,
         sessionId,
         system,
         text,
@@ -965,6 +1106,29 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     ]);
     await eventLoopWithTimeout.catch(() => undefined);
 
+    const traceArtifacts = await writePromptTrace(
+      runId,
+      promptTracePayload({
+        runId,
+        strategyId,
+        sessionId,
+        messageId,
+        userText: text,
+        system,
+        result,
+        error: promptError,
+        eventCount,
+        startedAt: traceStartedAt,
+        endedAt: new Date().toISOString(),
+      }),
+    ).catch((error) => {
+      request.log.warn(
+        { error: errorMessage(error), runId },
+        "stream: failed to write prompt trace",
+      );
+      return [] as ArtifactRef[];
+    });
+
     if (promptError) {
       await repositories.markRunFailed(runId, errorMessage(promptError));
     } else {
@@ -993,12 +1157,14 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       ? extractArtifactsFromParts(result.parts)
       : [];
     const artifacts = mergeArtifacts(filesystemArtifacts, textArtifacts);
+    const allArtifacts = mergeArtifacts(artifacts, traceArtifacts);
     request.log.info(
       {
         runId,
-        artifactCount: artifacts.length,
+        artifactCount: allArtifacts.length,
         filesystemArtifactCount: filesystemArtifacts.length,
         textArtifactCount: textArtifacts.length,
+        traceArtifactCount: traceArtifacts.length,
         storageRoot: process.env.STORAGE_ROOT ?? null,
         artifactsDir: artifactsDir() ?? null,
       },
@@ -1007,13 +1173,21 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
     const run = await repositories.readRun(runId);
     if (run) {
+      const finalizedStructuredResult =
+        await readFinalizedStructuredResult(allArtifacts);
       const structuredResult =
-        (await readFinalizedStructuredResult(artifacts)) ??
+        finalizedStructuredResult ??
         parseStrategyResultBlock(run.reply ?? "") ??
-        (await structuredResultFromArtifacts(run.reply ?? "", artifacts));
+        (await structuredResultFromArtifacts(run.reply ?? "", allArtifacts));
+      const enrichmentArtifacts = finalizedStructuredResult
+        ? artifactsForSelectedResult(finalizedStructuredResult, allArtifacts)
+        : allArtifacts;
       const enrichedStructuredResult =
-        await enrichStructuredResultFromArtifacts(structuredResult, artifacts);
-      finalize(runResponse(run, enrichedStructuredResult), artifacts);
+        await enrichStructuredResultFromArtifacts(
+          structuredResult,
+          enrichmentArtifacts,
+        );
+      finalize(runResponse(run, enrichedStructuredResult), allArtifacts);
     } else {
       finalize(
         {

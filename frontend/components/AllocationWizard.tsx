@@ -71,7 +71,7 @@ const universeOptions: Option<AllocationWizardState["universe"]>[] = [
   { value: "top10", label: "Top 10 by market cap" },
   { value: "top25", label: "Top 25 by market cap" },
   { value: "top50", label: "Top 50 by market cap" },
-  { value: "majors", label: "Major assets only" },
+  { value: "all", label: "All available assets" },
 ];
 
 const exclusionOptions: Option[] = [
@@ -287,10 +287,12 @@ export function AllocationWizard() {
     }
 
     const runId = crypto.randomUUID();
-    sessionStorage.setItem(
-      `wizard-run:${runId}`,
-      JSON.stringify({ prompt: buildWizardPrompt(state), state }),
-    );
+    const storedRun = JSON.stringify({
+      prompt: buildWizardPrompt(state),
+      state,
+    });
+    localStorage.setItem(`wizard-run:${runId}`, storedRun);
+    sessionStorage.setItem(`wizard-run:${runId}`, storedRun);
     router.push(`/wizard/run?id=${encodeURIComponent(runId)}`);
   }
 

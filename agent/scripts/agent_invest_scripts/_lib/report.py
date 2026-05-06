@@ -34,6 +34,7 @@ def write_report(
     equity_curve_json = out_dir / "equity_curve.json"
     drawdown_json = out_dir / "drawdown.json"
     allocation_json = out_dir / "allocation.json"
+    target_allocation_json = out_dir / "target_allocation.json"
     report_json = out_dir / "report.json"
     equity_curve = _equity_curve_points(result.performance)
     benchmark_curve = _bitcoin_benchmark_points(
@@ -49,6 +50,7 @@ def write_report(
     )
     _write_json(drawdown_json, _drawdown_points(equity_curve, benchmark_curve))
     _write_json(allocation_json, _final_allocation_points(result.weights))
+    _write_json(target_allocation_json, _target_allocation_points(spec))
     report_payload = {
         "kpis": result.summary,
         "equity_curve": equity_curve,
@@ -66,6 +68,7 @@ def write_report(
         "equity_curve_json": str(equity_curve_json),
         "drawdown_json": str(drawdown_json),
         "allocation_json": str(allocation_json),
+        "target_allocation_json": str(target_allocation_json),
         "report_json": str(report_json),
     }
 
@@ -184,6 +187,36 @@ def _final_allocation_points(weights: pl.DataFrame) -> list[dict[str, Any]]:
         .sort("coin_id")
         .to_dicts()
     ]
+
+
+def _target_allocation_points(spec: dict[str, Any] | None) -> list[dict[str, Any]]:
+    allocation = spec.get("allocation") if isinstance(spec, dict) else None
+    if not isinstance(allocation, dict):
+        return []
+    if allocation.get("type") == "static" and isinstance(
+        allocation.get("weights"), dict
+    ):
+        return [
+            {"coin_id": str(coin_id), "weight": float(weight)}
+            for coin_id, weight in sorted(allocation["weights"].items())
+        ]
+    if allocation.get("type") == "weights" and isinstance(allocation.get("rows"), list):
+        rows = [row for row in allocation["rows"] if isinstance(row, dict)]
+        latest_date = max((row.get("date") for row in rows), default=None)
+        if latest_date is None:
+            return []
+        return [
+            {
+                "date": latest_date,
+                "coin_id": row["coin_id"],
+                "weight": float(row["weight"]),
+            }
+            for row in rows
+            if row.get("date") == latest_date
+            and isinstance(row.get("coin_id"), str)
+            and isinstance(row.get("weight"), int | float)
+        ]
+    return []
 
 
 def _write_json(path: Path, payload: Any) -> None:

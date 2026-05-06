@@ -39,6 +39,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--initial-capital-usd", type=float, default=1000.0, help="Starting equity"
     )
+    parser.add_argument(
+        "--normalized-capital",
+        action="store_true",
+        help="Treat initial capital as normalized units rather than user-provided USD",
+    )
     parser.add_argument("--label", default="default", help="Artifact label")
     add_timeout_argument(parser)
     return parser
@@ -52,6 +57,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             allocation = _parse_json_object(args.allocation, "--allocation")
             costs = _parse_json_object(args.costs, "--costs") if args.costs else {}
             prices = _load_prices_frame()
+            prices = _slice_prices_to_allocation_window(prices, allocation)
             targets = _build_targets(allocation, prices, args.rebalance)
             target_dates = [target_date.isoformat() for target_date in sorted(targets)]
             result = run_backtest(
@@ -69,6 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "rebalance": args.rebalance,
                     "costs": costs,
                     "initial_capital_usd": args.initial_capital_usd,
+                    "capital_mode": "normalized" if args.normalized_capital else "usd",
                     "label": args.label,
                     "target_dates": target_dates,
                 },
@@ -104,6 +111,38 @@ def _load_prices_frame() -> pl.DataFrame:
         .select("date", "coin_id", "price")
         .sort(["date", "coin_id"])
     )
+
+
+def _slice_prices_to_allocation_window(
+    prices: pl.DataFrame, allocation: Mapping[str, Any]
+) -> pl.DataFrame:
+    allocation_type = allocation.get("type")
+    if allocation_type == "static":
+        start = _read_date(allocation, "start", location="allocation.start")
+        end = _read_date(allocation, "end", location="allocation.end")
+    elif allocation_type == "weights":
+        rows = allocation.get("rows")
+        if not isinstance(rows, list) or not rows:
+            raise ValueError("allocation.rows must be a non-empty array")
+        row_dates = [
+            _read_date(row, "date", location=f"allocation.rows[{index}].date")
+            for index, row in enumerate(rows)
+            if isinstance(row, Mapping)
+        ]
+        if len(row_dates) != len(rows):
+            raise ValueError("allocation.rows entries must be objects")
+        start = min(row_dates)
+        end = max(row_dates)
+    else:
+        raise ValueError('allocation.type must be "weights" or "static"')
+
+    if start > end:
+        raise ValueError("allocation.start must be on or before allocation.end")
+
+    sliced = prices.filter((pl.col("date") >= start) & (pl.col("date") <= end))
+    if sliced.is_empty():
+        raise ValueError("allocation date range does not overlap daily_prices")
+    return sliced
 
 
 def _build_targets(

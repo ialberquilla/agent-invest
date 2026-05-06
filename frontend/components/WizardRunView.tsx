@@ -19,6 +19,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { initialTimeline, reduceTimeline } from "@/lib/agent-events";
 import type { TimelineState } from "@/lib/agent-events";
+import type { Run } from "@/lib/types";
 import {
   deriveStrategyLabel,
   setMessages,
@@ -31,6 +32,11 @@ import type { AllocationWizardState } from "@/lib/wizard-prompt";
 type StoredWizardRun = {
   prompt: string;
   state: AllocationWizardState;
+};
+
+type StoredWizardRunResult = {
+  strategyId: string;
+  run: Run;
 };
 
 type RunState = {
@@ -82,7 +88,8 @@ function getErrorMessage(payload: unknown, fallback: string) {
 function readStoredRun(id: string | null): StoredWizardRun | null {
   if (!id) return null;
 
-  const raw = sessionStorage.getItem(`wizard-run:${id}`);
+  const key = `wizard-run:${id}`;
+  const raw = localStorage.getItem(key) ?? sessionStorage.getItem(key);
   if (!raw) return null;
 
   try {
@@ -91,6 +98,39 @@ function readStoredRun(id: string | null): StoredWizardRun | null {
   } catch {
     return null;
   }
+}
+
+function isStoredWizardRunResult(
+  value: unknown,
+): value is StoredWizardRunResult {
+  return (
+    isRecord(value) &&
+    typeof value.strategyId === "string" &&
+    isRecord(value.run) &&
+    typeof value.run.run_id === "string"
+  );
+}
+
+function readStoredRunResult(id: string | null): StoredWizardRunResult | null {
+  if (!id) return null;
+
+  const raw = localStorage.getItem(`wizard-run-result:${id}`);
+  if (!raw) return null;
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return isStoredWizardRunResult(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredRunResult(id: string | null, strategyId: string, run: Run) {
+  if (!id) return;
+  localStorage.setItem(
+    `wizard-run-result:${id}`,
+    JSON.stringify({ strategyId, run }),
+  );
 }
 
 export function WizardRunView() {
@@ -106,6 +146,24 @@ export function WizardRunView() {
   });
 
   useEffect(() => {
+    const previousResult = readStoredRunResult(id);
+    if (previousResult) {
+      setStoredRun(readStoredRun(id));
+      setRunState({
+        status: previousResult.run.error ? "error" : "completed",
+        strategyId: previousResult.strategyId,
+        runId: previousResult.run.run_id,
+        error: previousResult.run.error,
+        timeline: {
+          ...initialTimeline,
+          done: true,
+          finalRun: previousResult.run,
+        },
+      });
+      hasStartedRef.current = true;
+      return;
+    }
+
     const next = readStoredRun(id);
     setStoredRun(next);
     if (!next) {
@@ -191,6 +249,7 @@ export function WizardRunView() {
         }
 
         const artifacts = runResult.artifacts ?? [];
+        writeStoredRunResult(id, strategyId, runResult);
         setMessages(strategyId, [
           { role: "user", text: activeRun.prompt },
           {
@@ -222,7 +281,7 @@ export function WizardRunView() {
     }
 
     void run();
-  }, [storedRun]);
+  }, [id, storedRun]);
 
   const finalRun = runState.timeline.finalRun;
   const finalArtifacts = finalRun?.artifacts ?? [];
