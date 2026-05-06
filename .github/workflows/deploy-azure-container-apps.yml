@@ -1,0 +1,180 @@
+name: Deploy to Azure Container Apps
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  REGISTRY_NAME: ${{ vars.AZURE_REGISTRY_NAME }}
+  RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+  CONTAINER_APP_ENV: ${{ vars.AZURE_CONTAINER_APP_ENV }}
+  AGENT_IMAGE: agent-invest-agent
+  FRONTEND_IMAGE: agent-invest-frontend
+  AGENT_APP_NAME: agent-invest-agent-prod
+  FRONTEND_APP_NAME: agent-invest-frontend-prod
+
+jobs:
+  deploy-agent:
+    runs-on: ubuntu-latest
+    outputs:
+      agent_url: ${{ steps.get-agent-url.outputs.agent_url }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name ${{ env.REGISTRY_NAME }}
+
+      - name: Build and push agent image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./agent/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check if agent container app exists
+        id: check-agent
+        run: |
+          if az containerapp show --name "${{ env.AGENT_APP_NAME }}" --resource-group "${{ env.RESOURCE_GROUP }}" &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create agent container app
+        if: steps.check-agent.outputs.exists == 'false'
+        run: |
+          az containerapp create \
+            --name "${{ env.AGENT_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --environment "${{ env.CONTAINER_APP_ENV }}" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --target-port 8000 \
+            --ingress external \
+            --registry-server "${{ env.REGISTRY_NAME }}.azurecr.io" \
+            --cpu 2.0 \
+            --memory 4Gi \
+            --min-replicas 1 \
+            --max-replicas 3 \
+            --secrets \
+              database-url="${{ secrets.DATABASE_URL }}" \
+              coingecko-api-key="${{ secrets.COINGECKO_API_KEY }}" \
+            --env-vars \
+              DATABASE_URL=secretref:database-url \
+              COINGECKO_API_KEY=secretref:coingecko-api-key \
+              HOST=0.0.0.0 \
+              PORT=8000 \
+              NODE_ENV=production
+
+      - name: Update agent container app
+        if: steps.check-agent.outputs.exists == 'true'
+        run: |
+          az containerapp secret set \
+            --name "${{ env.AGENT_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --secrets \
+              database-url="${{ secrets.DATABASE_URL }}" \
+              coingecko-api-key="${{ secrets.COINGECKO_API_KEY }}"
+          az containerapp update \
+            --name "${{ env.AGENT_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --cpu 2.0 \
+            --memory 4Gi \
+            --set-env-vars \
+              DATABASE_URL=secretref:database-url \
+              COINGECKO_API_KEY=secretref:coingecko-api-key \
+              HOST=0.0.0.0 \
+              PORT=8000 \
+              NODE_ENV=production
+
+      - name: Get agent URL
+        id: get-agent-url
+        run: |
+          AGENT_FQDN=$(az containerapp show \
+            --name "${{ env.AGENT_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query properties.configuration.ingress.fqdn \
+            -o tsv)
+          echo "agent_url=https://${AGENT_FQDN}" >> "$GITHUB_OUTPUT"
+
+  deploy-frontend:
+    needs: deploy-agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name ${{ env.REGISTRY_NAME }}
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./frontend/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check if frontend container app exists
+        id: check-frontend
+        run: |
+          if az containerapp show --name "${{ env.FRONTEND_APP_NAME }}" --resource-group "${{ env.RESOURCE_GROUP }}" &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create frontend container app
+        if: steps.check-frontend.outputs.exists == 'false'
+        run: |
+          az containerapp create \
+            --name "${{ env.FRONTEND_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --environment "${{ env.CONTAINER_APP_ENV }}" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:latest" \
+            --target-port 4000 \
+            --ingress external \
+            --registry-server "${{ env.REGISTRY_NAME }}.azurecr.io" \
+            --cpu 0.5 \
+            --memory 1Gi \
+            --min-replicas 1 \
+            --max-replicas 3 \
+            --env-vars \
+              AGENT_URL=${{ needs.deploy-agent.outputs.agent_url }} \
+              NODE_ENV=production
+
+      - name: Update frontend container app
+        if: steps.check-frontend.outputs.exists == 'true'
+        run: |
+          az containerapp update \
+            --name "${{ env.FRONTEND_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:latest" \
+            --cpu 0.5 \
+            --memory 1Gi \
+            --set-env-vars \
+              AGENT_URL=${{ needs.deploy-agent.outputs.agent_url }} \
+              NODE_ENV=production

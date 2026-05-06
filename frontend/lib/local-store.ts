@@ -1,4 +1,4 @@
-import type { ArtifactRef } from "@/lib/types";
+import type { ArtifactRef, StrategyResult } from "@/lib/types";
 
 export type ChatMessage = {
   role: "user" | "agent";
@@ -7,6 +7,7 @@ export type ChatMessage = {
   status?: string;
   error?: string;
   artifacts?: ArtifactRef[];
+  structured_result?: StrategyResult | null;
 };
 
 export type KnownStrategy = {
@@ -45,17 +46,19 @@ function isArtifactRef(value: unknown): value is ArtifactRef {
     return false;
   }
   const artifact = value as Record<string, unknown>;
-  return (
-    typeof artifact.kind === "string" && typeof artifact.path === "string"
-  );
+  return typeof artifact.kind === "string" && typeof artifact.path === "string";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function isChatMessage(value: unknown): value is ChatMessage {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return false;
   }
 
-  const message = value as Record<string, unknown>;
+  const message = value;
 
   return (
     (message.role === "user" || message.role === "agent") &&
@@ -65,16 +68,19 @@ function isChatMessage(value: unknown): value is ChatMessage {
     (message.error === undefined || typeof message.error === "string") &&
     (message.artifacts === undefined ||
       (Array.isArray(message.artifacts) &&
-        message.artifacts.every(isArtifactRef)))
+        message.artifacts.every(isArtifactRef))) &&
+    (message.structured_result === undefined ||
+      message.structured_result === null ||
+      isRecord(message.structured_result))
   );
 }
 
 function isKnownStrategy(value: unknown): value is KnownStrategy {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
+  if (!isRecord(value)) {
     return false;
   }
 
-  const strategy = value as Record<string, unknown>;
+  const strategy = value;
 
   return (
     isNonEmptyString(strategy.strategy_id) &&

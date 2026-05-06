@@ -1,5 +1,5 @@
-import { StrategyChatShell } from "@/components/StrategyChatShell";
+import { redirect } from "next/navigation";
 
 export default function ChatPage() {
-  return <StrategyChatShell />;
+  redirect("/");
 }
