@@ -1,6 +1,7 @@
 import {
   createOpencodeClient as createSdkOpencodeClient,
   createOpencodeServer,
+  type Auth,
   type AssistantMessage,
   type OpencodeClient,
   type Event as OpencodeEvent,
@@ -92,6 +93,50 @@ function resolveOpencodeDirectory(env: NodeJS.ProcessEnv = process.env) {
   return directory ? directory : process.cwd();
 }
 
+function resolveOpencodeAuth(env: NodeJS.ProcessEnv = process.env) {
+  const providerID = env.OPENCODE_AUTH_PROVIDER?.trim();
+  const key =
+    env.OPENCODE_AUTH_KEY?.trim() ||
+    (providerID === "azure" ? env.AZURE_API_KEY?.trim() : undefined);
+
+  if (!providerID && !key) return undefined;
+  if (!providerID)
+    throw new Error(
+      "OPENCODE_AUTH_PROVIDER is required when OPENCODE_AUTH_KEY is set",
+    );
+  if (!key)
+    throw new Error(
+      providerID === "azure"
+        ? "AZURE_API_KEY or OPENCODE_AUTH_KEY is required when OPENCODE_AUTH_PROVIDER=azure"
+        : "OPENCODE_AUTH_KEY is required when OPENCODE_AUTH_PROVIDER is set",
+    );
+  if (providerID === "azure" && !env.AZURE_RESOURCE_NAME?.trim()) {
+    throw new Error(
+      "AZURE_RESOURCE_NAME is required when OPENCODE_AUTH_PROVIDER=azure",
+    );
+  }
+
+  return {
+    providerID,
+    auth: { type: "api", key } satisfies Auth,
+  };
+}
+
+async function configureOpencodeAuth(
+  client: OpencodeClient,
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  const resolved = resolveOpencodeAuth(env);
+
+  if (!resolved) return;
+
+  await client.auth.set({
+    path: { id: resolved.providerID },
+    body: resolved.auth,
+    throwOnError: true,
+  });
+}
+
 function normalizeSessionId(sessionId: string | null | undefined) {
   const normalized = sessionId?.trim();
 
@@ -105,11 +150,15 @@ async function createManagedOpencode(
   const directory = resolveOpencodeDirectory(env);
 
   if (baseUrl) {
+    const client = createSdkOpencodeClient({
+      baseUrl,
+      directory,
+    });
+
+    await configureOpencodeAuth(client, env);
+
     return {
-      client: createSdkOpencodeClient({
-        baseUrl,
-        directory,
-      }),
+      client,
       close() {},
     };
   }
@@ -122,11 +171,15 @@ async function createManagedOpencode(
     },
   });
 
+  const client = createSdkOpencodeClient({
+    baseUrl: server.url,
+    directory,
+  });
+
+  await configureOpencodeAuth(client, env);
+
   return {
-    client: createSdkOpencodeClient({
-      baseUrl: server.url,
-      directory,
-    }),
+    client,
     close() {
       server.close();
     },
