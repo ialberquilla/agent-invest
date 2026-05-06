@@ -13,6 +13,7 @@ const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const DEFAULT_STORAGE_ROOT = resolve(REPO_ROOT, ".data/storage");
 const readOptionalEnv = (name: string): string | undefined =>
   process.env[name]?.trim() || undefined;
+const TRUE_ENV_VALUES = new Set(["1", "true", "yes", "on"]);
 const buildStorageKey = (...segments: Array<string | undefined>): string =>
   segments.filter(Boolean).join("/");
 const isNotFoundError = (error: unknown): boolean =>
@@ -42,10 +43,15 @@ async function writeFileAtomically(
 export function getStorageConfig() {
   const configuredRoot = readOptionalEnv("STORAGE_ROOT");
   return {
+    disabled: isStorageDisabled(),
     root: configuredRoot
       ? resolve(REPO_ROOT, configuredRoot)
       : DEFAULT_STORAGE_ROOT,
   };
+}
+export function isStorageDisabled(): boolean {
+  const raw = readOptionalEnv("AGENT_STORAGE_DISABLED");
+  return raw ? TRUE_ENV_VALUES.has(raw.toLowerCase()) : false;
 }
 export const storageLayout = {
   userPrefix: (userId: string) =>
@@ -89,7 +95,8 @@ export const storageLayout = {
   },
 };
 export function resolveStoragePath(key: string): string {
-  const { root } = getStorageConfig();
+  const { disabled, root } = getStorageConfig();
+  if (disabled) throw new Error("Storage is disabled");
   const filePath = resolve(root, key);
   const relativePath = relative(root, filePath);
   if (
@@ -102,6 +109,7 @@ export function resolveStoragePath(key: string): string {
   return filePath;
 }
 export async function getObject(key: string): Promise<string | null> {
+  if (isStorageDisabled()) return null;
   try {
     return await readFile(resolveStoragePath(key), "utf8");
   } catch (error) {
@@ -110,9 +118,11 @@ export async function getObject(key: string): Promise<string | null> {
   }
 }
 export async function putObject(key: string, body: string): Promise<void> {
+  if (isStorageDisabled()) return;
   await writeFileAtomically(resolveStoragePath(key), body);
 }
 export async function deleteObject(key: string): Promise<void> {
+  if (isStorageDisabled()) return;
   await unlink(resolveStoragePath(key)).catch((error) => {
     if (!isNotFoundError(error)) throw error;
   });

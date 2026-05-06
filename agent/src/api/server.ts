@@ -6,6 +6,7 @@ import {
   mkdir,
   readFile,
   readdir,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -46,6 +47,7 @@ import {
   type GmxHistoryOptions,
   type GmxHistorySummary,
 } from "../ingestion/gmx-history";
+import { isStorageDisabled } from "../storage/local";
 
 type Repositories = {
   createRun: typeof defaultCreateRun;
@@ -132,6 +134,22 @@ function optionalBoolean(
   if (value === undefined || value === null) return fallback;
   if (typeof value === "boolean") return value;
   throw httpError(400, `Request body field '${key}' must be a boolean`);
+}
+
+function optionalPositiveNumber(
+  body: Record<string, unknown>,
+  key: string,
+  fallback: number,
+) {
+  const value = body[key];
+  if (value === undefined || value === null) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw httpError(
+      400,
+      `Request body field '${key}' must be a positive number`,
+    );
+  }
+  return value;
 }
 
 function optionalFullRefresh(body: Record<string, unknown>) {
@@ -290,6 +308,8 @@ const JSON_ARTIFACT_FILENAMES = new Set([
 ]);
 
 function resolveStorageRoot() {
+  if (isStorageDisabled()) return undefined;
+
   const explicit = process.env.STORAGE_ROOT?.trim();
   if (explicit) return path.resolve(explicit);
 
@@ -306,6 +326,10 @@ function resolveStorageRoot() {
 function artifactsDir() {
   const root = resolveStorageRoot();
   return root ? path.join(root, "artifacts") : undefined;
+}
+
+function storageRootDir() {
+  return resolveStorageRoot();
 }
 
 function traceDir(runId: string) {
@@ -432,6 +456,63 @@ async function snapshotArtifacts(): Promise<ArtifactSnapshot> {
   if (!dir) return snapshot;
   await walkArtifacts(dir, snapshot);
   return snapshot;
+}
+
+async function cleanupArtifactDirectory(
+  dir: string,
+  cutoffMs: number,
+): Promise<{ deletedBytes: number; deletedFiles: number }> {
+  let deletedBytes = 0;
+  let deletedFiles = 0;
+
+  async function visit(current: string): Promise<boolean> {
+    const entries = await readdir(current, { withFileTypes: true }).catch(
+      (error) => {
+        if (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "ENOENT"
+        ) {
+          return [];
+        }
+        throw error;
+      },
+    );
+    let isEmpty = true;
+
+    for (const entry of entries) {
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        const childEmpty = await visit(full);
+        if (childEmpty && full !== dir) {
+          await rm(full, { force: true, recursive: true });
+        } else isEmpty = false;
+        continue;
+      }
+
+      if (!entry.isFile()) {
+        isEmpty = false;
+        continue;
+      }
+
+      const info = await stat(full).catch(() => null);
+      if (!info) continue;
+      if (info.mtimeMs >= cutoffMs) {
+        isEmpty = false;
+        continue;
+      }
+
+      await rm(full, { force: true });
+      deletedBytes += info.size;
+      deletedFiles += 1;
+    }
+
+    return isEmpty;
+  }
+
+  await visit(dir);
+  return { deletedBytes, deletedFiles };
 }
 
 function diffArtifactSnapshots(
@@ -957,6 +1038,45 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     },
   );
 
+  app.post("/maintenance/storage/cleanup", async (request) => {
+    const token = process.env.MAINTENANCE_TOKEN?.trim();
+    if (token) {
+      const authorization = request.headers.authorization;
+      const headerToken = Array.isArray(request.headers["x-maintenance-token"])
+        ? request.headers["x-maintenance-token"][0]
+        : request.headers["x-maintenance-token"];
+      const bearerToken = authorization?.startsWith("Bearer ")
+        ? authorization.slice("Bearer ".length).trim()
+        : undefined;
+      if (bearerToken !== token && headerToken !== token) {
+        throw httpError(401, "Unauthorized");
+      }
+    }
+
+    const dir = storageRootDir();
+    if (!dir) throw httpError(500, "STORAGE_ROOT is not configured");
+
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const maxAgeHours = optionalPositiveNumber(body, "max_age_hours", 24);
+    const cutoffMs = Date.now() - maxAgeHours * 60 * 60 * 1000;
+    const { deletedBytes, deletedFiles } = await cleanupArtifactDirectory(
+      dir,
+      cutoffMs,
+    );
+
+    request.log.info(
+      { deletedBytes, deletedFiles, maxAgeHours, storageRoot: dir },
+      "storage cleanup completed",
+    );
+
+    return {
+      storage_root: dir,
+      deleted_bytes: deletedBytes,
+      deleted_files: deletedFiles,
+      max_age_hours: maxAgeHours,
+    };
+  });
+
   app.post("/messages/stream", async (request, reply) => {
     const body = (request.body ?? {}) as Record<string, unknown>;
     const userId = requiredText(body, "user_id");
@@ -1206,6 +1326,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 export async function startServer() {
   const app = buildServer();
   try {
+    await createOpencodeClient();
     await app.listen({ host: process.env.HOST ?? "0.0.0.0", port: getPort() });
   } catch (error) {
     app.log.error(error);
