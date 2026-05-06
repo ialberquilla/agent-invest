@@ -1326,6 +1326,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 export async function startServer() {
   const app = buildServer();
   try {
+    await createOpencodeClient();
     await app.listen({ host: process.env.HOST ?? "0.0.0.0", port: getPort() });
   } catch (error) {
     app.log.error(error);
