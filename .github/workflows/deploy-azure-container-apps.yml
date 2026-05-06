@@ -71,9 +71,15 @@ jobs:
             --secrets \
               database-url="${{ secrets.DATABASE_URL }}" \
               coingecko-api-key="${{ secrets.COINGECKO_API_KEY }}" \
+              azure-api-key="${{ secrets.AZURE_API_KEY }}" \
+              azure-resource-name="${{ secrets.AZURE_RESOURCE_NAME }}" \
             --env-vars \
               DATABASE_URL=secretref:database-url \
               COINGECKO_API_KEY=secretref:coingecko-api-key \
+              AZURE_API_KEY=secretref:azure-api-key \
+              AZURE_RESOURCE_NAME=secretref:azure-resource-name \
+              OPENCODE_MODEL=azure/gpt-5.4 \
+              OPENCODE_AUTH_PROVIDER=azure \
               HOST=0.0.0.0 \
               PORT=8000 \
               NODE_ENV=production
@@ -86,7 +92,9 @@ jobs:
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --secrets \
               database-url="${{ secrets.DATABASE_URL }}" \
-              coingecko-api-key="${{ secrets.COINGECKO_API_KEY }}"
+              coingecko-api-key="${{ secrets.COINGECKO_API_KEY }}" \
+              azure-api-key="${{ secrets.AZURE_API_KEY }}" \
+              azure-resource-name="${{ secrets.AZURE_RESOURCE_NAME }}"
           az containerapp update \
             --name "${{ env.AGENT_APP_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
@@ -96,6 +104,10 @@ jobs:
             --set-env-vars \
               DATABASE_URL=secretref:database-url \
               COINGECKO_API_KEY=secretref:coingecko-api-key \
+              AZURE_API_KEY=secretref:azure-api-key \
+              AZURE_RESOURCE_NAME=secretref:azure-resource-name \
+              OPENCODE_MODEL=azure/gpt-5.4 \
+              OPENCODE_AUTH_PROVIDER=azure \
               HOST=0.0.0.0 \
               PORT=8000 \
               NODE_ENV=production
