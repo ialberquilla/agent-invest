@@ -51,6 +51,8 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV HOST=0.0.0.0
 ENV PORT=8000
+ENV OPENCODE_MODEL=azure/gpt-5.4
+ENV OPENCODE_AUTH_PROVIDER=azure
 ENV STORAGE_ROOT=/tmp/agent-invest-storage
 ENV UV_CACHE_DIR=/tmp/agent-invest-storage/uv
 ENV XDG_CACHE_HOME=/tmp/agent-invest-storage/xdg-cache
