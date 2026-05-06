@@ -2,51 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Final, Literal, TypeAlias
-
 import pandas as pd
 
 from .db import read_sql_frame
-from .storage import dataset_key, dataset_path
-
-DatasetName: TypeAlias = Literal[
-    "universe_history",
-    "daily_prices",
-    "daily_market_caps",
-    "daily_volumes",
-    "coin_metadata",
-]
-
-_DATASET_FILES: Final[dict[DatasetName, str]] = {
-    "universe_history": "universe_history.parquet",
-    "daily_prices": "daily_prices.parquet",
-    "daily_market_caps": "daily_market_caps.parquet",
-    "daily_volumes": "daily_volumes.parquet",
-    "coin_metadata": "coin_metadata.parquet",
-}
-
-
-class DatasetNotFoundError(FileNotFoundError):
-    """Raised when a legacy parquet compatibility dataset is missing."""
-
-    def __init__(self, dataset: DatasetName, *, key: str, path: Path) -> None:
-        super().__init__(f'Dataset "{dataset}" not found at {path}')
-        self.dataset = dataset
-        self.key = key
-        self.path = str(path)
-
-
-def read_dataset(dataset: DatasetName) -> pd.DataFrame:
-    """Temporary parquet compatibility helper used by tests and old imports only."""
-    filename = _DATASET_FILES[dataset]
-    key = dataset_key(filename)
-    path = dataset_path(filename)
-
-    if not path.exists():
-        raise DatasetNotFoundError(dataset, key=key, path=path)
-
-    return pd.read_parquet(path)
 
 
 def daily_prices() -> pd.DataFrame:
@@ -112,10 +70,7 @@ def asset_universe_features() -> pd.DataFrame:
 
 
 __all__ = [
-    "DatasetName",
-    "DatasetNotFoundError",
     "asset_universe",
     "asset_universe_features",
     "daily_prices",
-    "read_dataset",
 ]

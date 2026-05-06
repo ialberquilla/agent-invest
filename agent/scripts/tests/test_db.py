@@ -88,14 +88,14 @@ def test_load_env_files_uses_repo_root_before_agent_env(
 def test_read_sql_frame_preserves_database_column_names(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rows = [{"coin_id": "bitcoin", "market_cap_usd": 123.45}]
+    rows = [{"coin_id": "bitcoin", "market_cap": 123.45}]
 
     class Column:
         def __init__(self, name: str) -> None:
             self.name = name
 
     class Cursor:
-        description = [Column("coin_id"), Column("market_cap_usd")]
+        description = [Column("coin_id"), Column("market_cap")]
 
         def __enter__(self) -> Cursor:
             return self
@@ -104,7 +104,7 @@ def test_read_sql_frame_preserves_database_column_names(
             pass
 
         def execute(self, sql: str, params: dict[str, Any] | None) -> None:
-            assert sql == "SELECT coin_id, market_cap_usd FROM daily_market_caps"
+            assert sql == "SELECT coin_id, market_cap FROM agent_asset_universe"
             assert params == {"coin_id": "bitcoin"}
 
         def fetchall(self) -> list[dict[str, object]]:
@@ -123,7 +123,7 @@ def test_read_sql_frame_preserves_database_column_names(
     monkeypatch.setattr(db, "_connect_postgres", lambda: Connection())
 
     frame = db.read_sql_frame(
-        "SELECT coin_id, market_cap_usd FROM daily_market_caps",
+        "SELECT coin_id, market_cap FROM agent_asset_universe",
         {"coin_id": "bitcoin"},
     )
 
