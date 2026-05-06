@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  utimes,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -454,6 +461,67 @@ test("POST /ingestion rejects unknown loaders", async () => {
     });
   } finally {
     await app.close();
+  }
+});
+
+test("POST /maintenance/storage/cleanup deletes old storage files", async () => {
+  const storageRoot = await mkdtemp(
+    path.join(tmpdir(), "agent-invest-cleanup-"),
+  );
+  const previousStorageRoot = process.env.STORAGE_ROOT;
+  const previousToken = process.env.MAINTENANCE_TOKEN;
+  process.env.STORAGE_ROOT = storageRoot;
+  process.env.MAINTENANCE_TOKEN = "secret-token";
+
+  const app = buildServer({
+    repositories: createRepositoryDouble(createState()),
+  });
+  const oldPath = path.join(storageRoot, "users", "user-1", "old.md");
+  const freshPath = path.join(storageRoot, "artifacts", "runs", "fresh.json");
+
+  try {
+    await mkdir(path.dirname(oldPath), { recursive: true });
+    await mkdir(path.dirname(freshPath), { recursive: true });
+    await writeFile(oldPath, "old");
+    await writeFile(freshPath, "fresh");
+    const oldTime = new Date(Date.now() - 2 * 60 * 60 * 1000);
+    await utimes(oldPath, oldTime, oldTime);
+
+    const unauthorized = await app.inject({
+      method: "POST",
+      payload: { max_age_hours: 1 },
+      url: "/maintenance/storage/cleanup",
+    });
+    assert.equal(unauthorized.statusCode, 401);
+
+    const response = await app.inject({
+      headers: { authorization: "Bearer secret-token" },
+      method: "POST",
+      payload: { max_age_hours: 1 },
+      url: "/maintenance/storage/cleanup",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().deleted_files, 1);
+    assert.equal(await readFile(freshPath, "utf8"), "fresh");
+    await assert.rejects(
+      () => readFile(oldPath, "utf8"),
+      (error) => {
+        return (
+          typeof error === "object" &&
+          error !== null &&
+          "code" in error &&
+          error.code === "ENOENT"
+        );
+      },
+    );
+  } finally {
+    await app.close();
+    if (previousStorageRoot === undefined) delete process.env.STORAGE_ROOT;
+    else process.env.STORAGE_ROOT = previousStorageRoot;
+    if (previousToken === undefined) delete process.env.MAINTENANCE_TOKEN;
+    else process.env.MAINTENANCE_TOKEN = previousToken;
+    await rm(storageRoot, { force: true, recursive: true });
   }
 });
 
