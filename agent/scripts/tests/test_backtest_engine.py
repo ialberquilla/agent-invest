@@ -1,9 +1,11 @@
 from datetime import date, timedelta
 
 import polars as pl
+import pytest
 
 from agent_invest_scripts._lib.backtest import (
     TradingCostModel,
+    run_backtest,
     run_cross_sectional_momentum_backtest,
 )
 
@@ -43,3 +45,20 @@ def test_cross_sectional_backtest_selects_top_asset() -> None:
     assert "coin-a" in selected_coin_ids
     assert result.performance.height > 0
     assert result.summary["average_holding_count"] <= 1.0
+
+
+def test_run_backtest_rejects_costs_that_bankrupt_portfolio() -> None:
+    prices = pl.DataFrame(
+        [
+            {"date": date(2024, 1, 1), "coin_id": "coin-a", "price": 100.0},
+            {"date": date(2024, 1, 2), "coin_id": "coin-a", "price": 100.0},
+        ]
+    )
+
+    with pytest.raises(ValueError, match="trading costs exceed portfolio equity"):
+        run_backtest(
+            prices,
+            {date(2024, 1, 2): {"coin-a": 1.0}},
+            cost_model=TradingCostModel(gas_usd_per_swap=200.0),
+            initial_capital_usd=100.0,
+        )

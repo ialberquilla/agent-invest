@@ -920,7 +920,7 @@ test("POST /messages/stream enriches structured_result from JSON artifacts", asy
     assert.deepEqual(completed.data.structured_result, {
       ...structuredResult,
       charts: {
-        allocation: [{ asset: "bitcoin", weight: 1 }],
+        final_allocation: [{ asset: "bitcoin", weight: 1 }],
         drawdown: [
           {
             benchmark_drawdown: -0.2,

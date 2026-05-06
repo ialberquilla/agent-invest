@@ -394,3 +394,113 @@ def test_sort_modes_rank_sharpe_and_low_volatility() -> None:
         "middle",
         "best-sharpe",
     ]
+
+
+def test_filters_by_market_cap_and_exclusions() -> None:
+    payload = rank_universe.rank_universe(
+        pd.DataFrame(
+            [
+                _row(coin_id="pass", symbol="pass", name="Pass", market_cap=500.0),
+                _row(coin_id="too-small", market_cap=99.0),
+                _row(
+                    coin_id="usd-coin", symbol="usdc", name="USD Coin", market_cap=500.0
+                ),
+                _row(
+                    coin_id="wrapped-bitcoin",
+                    symbol="wbtc",
+                    name="Wrapped Bitcoin",
+                    market_cap=500.0,
+                ),
+            ]
+        ),
+        top_n=5,
+        min_market_cap=100.0,
+        exclude_stablecoins=True,
+        exclude_wrapped=True,
+    )
+
+    assert [row["coin_id"] for row in payload] == ["pass"]
+
+
+def test_risk_profile_max_upside_tilts_to_smaller_high_momentum_assets() -> None:
+    payload = rank_universe.rank_universe(
+        pd.DataFrame(
+            [
+                _row(coin_id="large", market_cap_rank=1, return_180d=0.5),
+                _row(coin_id="smaller", market_cap_rank=40, return_180d=0.5),
+                _row(coin_id="low-momentum", market_cap_rank=60, return_180d=0.2),
+            ]
+        ),
+        top_n=3,
+        risk_profile="max_upside",
+    )
+
+    assert [row["coin_id"] for row in payload] == [
+        "smaller",
+        "large",
+        "low-momentum",
+    ]
+
+
+def test_filters_by_long_history_days() -> None:
+    payload = rank_universe.rank_universe(
+        pd.DataFrame(
+            [
+                _row(
+                    coin_id="old",
+                    first_price_date="2022-01-01",
+                    last_price_date="2026-01-01",
+                ),
+                _row(
+                    coin_id="new",
+                    first_price_date="2025-01-01",
+                    last_price_date="2026-01-01",
+                ),
+            ]
+        ),
+        top_n=5,
+        min_history_days=1000,
+    )
+
+    assert [row["coin_id"] for row in payload] == ["old"]
+
+
+def test_objective_low_volatility_sorts_by_volatility_and_drawdown() -> None:
+    payload = rank_universe.rank_universe(
+        pd.DataFrame(
+            [
+                _row(coin_id="lowest-vol", volatility_180d=0.2, max_drawdown_180d=-0.4),
+                _row(
+                    coin_id="better-drawdown",
+                    volatility_180d=0.2,
+                    max_drawdown_180d=-0.2,
+                ),
+                _row(coin_id="higher-vol", volatility_180d=0.5, max_drawdown_180d=-0.1),
+            ]
+        ),
+        top_n=3,
+        objective="low_volatility",
+    )
+
+    assert [row["coin_id"] for row in payload] == [
+        "better-drawdown",
+        "lowest-vol",
+        "higher-vol",
+    ]
+
+
+def test_return_and_drawdown_filters() -> None:
+    payload = rank_universe.rank_universe(
+        pd.DataFrame(
+            [
+                _row(coin_id="pass", return_180d=0.4, max_drawdown_180d=-0.2),
+                _row(coin_id="low-return", return_180d=0.1, max_drawdown_180d=-0.2),
+                _row(coin_id="deep-drawdown", return_180d=0.4, max_drawdown_180d=-0.7),
+            ]
+        ),
+        top_n=3,
+        min_return_180d=0.2,
+        max_drawdown_180d=-0.35,
+    )
+
+    assert [row["coin_id"] for row in payload] == ["pass"]

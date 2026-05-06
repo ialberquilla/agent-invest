@@ -11,6 +11,7 @@ export type StrategyResult = {
   kpis: StrategyKpis;
   assumptions: string[];
   risks: string[];
+  constraint_violations?: string[];
   next_steps: string[];
   backtest: StrategyBacktestSummary;
   charts: StrategyCharts;
@@ -32,6 +33,7 @@ export type StrategyKpis = {
   calmar_ratio?: number | null;
   monthly_hit_rate?: number | null;
   final_equity_usd?: number | null;
+  final_equity_multiple?: number | null;
   total_trading_cost_usd?: number | null;
   total_num_swaps?: number | null;
 };
@@ -41,6 +43,7 @@ export type StrategyBacktestSummary = {
   end_date?: string | null;
   rebalance?: "none" | "daily" | "weekly" | "monthly" | null;
   initial_capital_usd?: number | null;
+  capital_mode?: "usd" | "normalized" | null;
   benchmark?: "bitcoin" | null;
 };
 
@@ -48,6 +51,8 @@ export type StrategyCharts = {
   equity_curve?: StrategyEquityPoint[] | null;
   drawdown?: StrategyDrawdownPoint[] | null;
   allocation?: StrategyChartAllocationItem[] | null;
+  target_allocation?: StrategyChartAllocationItem[] | null;
+  final_allocation?: StrategyChartAllocationItem[] | null;
 };
 
 export type StrategyEquityPoint = {

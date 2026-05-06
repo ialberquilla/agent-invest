@@ -68,6 +68,7 @@ def test_run_backtest_static_allocation(
     assert {"cagr", "sharpe_ratio", "max_drawdown", "final_equity_usd"} <= kpis.keys()
     assert payload["label"] == "test_run"
     assert len(payload["target_dates"]) == 1
+    assert payload["target_dates"][0] == "2024-01-02"
     assert kpis["total_num_swaps"] == 1
     assert kpis["final_equity_usd"] > 1000.0
     assert Path(payload["equity_curve_png"]).is_file()
@@ -78,6 +79,8 @@ def test_run_backtest_static_allocation(
     assert Path(payload["report_json"]).is_file()
     equity_curve = json.loads(Path(payload["equity_curve_json"]).read_text())
     drawdown = json.loads(Path(payload["drawdown_json"]).read_text())
+    assert equity_curve[0]["date"] == "2024-01-02"
+    assert equity_curve[-1]["date"] == "2024-01-30"
     assert equity_curve[0].keys() >= {"date", "equity", "bitcoin_equity"}
     assert drawdown[0].keys() >= {"date", "drawdown", "bitcoin_drawdown"}
     allocation = json.loads(Path(payload["allocation_json"]).read_text())
@@ -143,3 +146,30 @@ def test_run_backtest_rejects_leveraged_weights(
 
     assert error.value.code == 1
     assert "weights must sum to <= 1.0" in capsys.readouterr().err
+
+
+def test_run_backtest_rejects_assets_without_prices(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(run_backtest, "daily_prices", _daily_prices)
+
+    with pytest.raises(SystemExit) as error:
+        run_backtest.main(
+            [
+                "--allocation",
+                json.dumps(
+                    {
+                        "type": "static",
+                        "weights": {"missing-coin": 1.0},
+                        "start": "2024-01-01",
+                        "end": "2024-01-30",
+                    }
+                ),
+            ]
+        )
+
+    assert error.value.code == 1
+    assert "allocation references asset(s) without prices" in capsys.readouterr().err

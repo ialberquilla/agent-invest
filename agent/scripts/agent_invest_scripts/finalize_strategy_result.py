@@ -75,6 +75,7 @@ def _build_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     spec = report.get("spec") if isinstance(report.get("spec"), dict) else {}
 
     allocation = _read_allocation(payload.get("allocation"))
+    _validate_allocation_matches_backtest(allocation, spec)
     return {
         "title": _read_text(payload, "title"),
         "summary": _read_text(payload, "summary"),
@@ -84,11 +85,20 @@ def _build_result(payload: Mapping[str, Any]) -> dict[str, Any]:
         "assumptions": _read_text_list(payload.get("assumptions"), "assumptions"),
         "risks": _read_text_list(payload.get("risks"), "risks"),
         "next_steps": _read_text_list(payload.get("next_steps"), "next_steps"),
+        "constraint_violations": _read_text_list(
+            payload.get("constraint_violations"),
+            "constraint_violations",
+            required=False,
+        ),
         "backtest": _backtest_context(spec),
         "charts": {
             "equity_curve": _equity_curve(backtest_dir / "equity_curve.json"),
             "drawdown": _drawdown(backtest_dir / "drawdown.json"),
-            "allocation": _chart_allocation(backtest_dir / "allocation.json"),
+            "allocation": _chart_allocation(backtest_dir / "target_allocation.json"),
+            "target_allocation": _chart_allocation(
+                backtest_dir / "target_allocation.json"
+            ),
+            "final_allocation": _chart_allocation(backtest_dir / "allocation.json"),
         },
     }
 
@@ -120,7 +130,9 @@ def _read_text(payload: Mapping[str, Any], key: str) -> str:
     return value.strip()
 
 
-def _read_text_list(value: Any, key: str) -> list[str]:
+def _read_text_list(value: Any, key: str, *, required: bool = True) -> list[str]:
+    if value is None and not required:
+        return []
     if not isinstance(value, list):
         raise ValueError(f"{key} must be an array of strings")
     items = []
@@ -158,6 +170,83 @@ def _read_allocation(value: Any) -> list[dict[str, Any]]:
     return items
 
 
+def _validate_allocation_matches_backtest(
+    allocation: list[dict[str, Any]], spec: Mapping[str, Any]
+) -> None:
+    expected = _target_weights_from_spec(spec)
+    if not expected:
+        return
+
+    actual: dict[str, float] = {}
+    missing_coin_ids = []
+    for item in allocation:
+        coin_id = item.get("coin_id")
+        if not isinstance(coin_id, str) or not coin_id.strip():
+            missing_coin_ids.append(item["asset"])
+            continue
+        actual[coin_id.strip()] = float(item["weight"])
+
+    if missing_coin_ids:
+        formatted = ", ".join(missing_coin_ids)
+        raise ValueError(
+            "allocation entries must include coin_id values that match the backtest: "
+            f"{formatted}"
+        )
+
+    expected_keys = set(expected)
+    actual_keys = set(actual)
+    if actual_keys != expected_keys:
+        raise ValueError(
+            "final allocation coin_ids must match the selected backtest allocation; "
+            f"expected {sorted(expected_keys)}, got {sorted(actual_keys)}"
+        )
+
+    mismatches = [
+        coin_id
+        for coin_id in sorted(expected)
+        if abs(expected[coin_id] - actual[coin_id]) > _WEIGHT_SUM_TOLERANCE
+    ]
+    if mismatches:
+        raise ValueError(
+            "final allocation weights must match the selected backtest allocation for: "
+            + ", ".join(mismatches)
+        )
+
+
+def _target_weights_from_spec(spec: Mapping[str, Any]) -> dict[str, float]:
+    allocation = (
+        spec.get("allocation") if isinstance(spec.get("allocation"), dict) else {}
+    )
+    if allocation.get("type") == "static":
+        raw_weights = allocation.get("weights")
+        if isinstance(raw_weights, dict):
+            return {
+                str(coin_id): _read_finite_number(
+                    weight, f"allocation.weights.{coin_id}"
+                )
+                for coin_id, weight in raw_weights.items()
+            }
+    if allocation.get("type") == "weights":
+        rows = allocation.get("rows")
+        if isinstance(rows, list):
+            latest_date = max(
+                (row.get("date") for row in rows if isinstance(row, dict)), default=None
+            )
+            if latest_date is None:
+                return {}
+            weights: dict[str, float] = {}
+            for row in rows:
+                if not isinstance(row, dict) or row.get("date") != latest_date:
+                    continue
+                coin_id = row.get("coin_id")
+                if isinstance(coin_id, str):
+                    weights[coin_id] = _read_finite_number(
+                        row.get("weight"), f"allocation.rows.{coin_id}.weight"
+                    )
+            return weights
+    return {}
+
+
 def _optional_text(value: Any) -> str | None:
     if value is None:
         return None
@@ -181,10 +270,12 @@ def _backtest_context(spec: Mapping[str, Any]) -> dict[str, Any]:
         spec.get("allocation") if isinstance(spec.get("allocation"), dict) else {}
     )
     return {
+        "label": spec.get("label"),
         "start_date": allocation.get("start"),
         "end_date": allocation.get("end"),
         "rebalance": spec.get("rebalance"),
         "initial_capital_usd": spec.get("initial_capital_usd"),
+        "capital_mode": spec.get("capital_mode"),
         "benchmark": "bitcoin",
     }
 
