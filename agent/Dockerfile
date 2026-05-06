@@ -53,9 +53,9 @@ ENV HOST=0.0.0.0
 ENV PORT=8000
 ENV OPENCODE_MODEL=azure/gpt-5.4
 ENV OPENCODE_AUTH_PROVIDER=azure
-ENV STORAGE_ROOT=/app/.data/storage
-ENV UV_CACHE_DIR=/app/.data/uv
-ENV XDG_CACHE_HOME=/app/.data/xdg-cache
+ENV STORAGE_ROOT=/tmp/agent-invest-storage
+ENV UV_CACHE_DIR=/tmp/agent-invest-storage/uv
+ENV XDG_CACHE_HOME=/tmp/agent-invest-storage/xdg-cache
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/agent/node_modules ./agent/node_modules
