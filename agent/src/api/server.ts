@@ -15,7 +15,11 @@ import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
 import pino from "pino";
 
-import { buildSystemPrompt as defaultBuildSystemPrompt } from "../agent/prompt";
+import {
+  buildAllocationWizardPrompt,
+  buildSystemPrompt as defaultBuildSystemPrompt,
+  type AllocationWizardParams,
+} from "../agent/prompt";
 import {
   createOpencodeClient,
   getOrCreateSession,
@@ -100,6 +104,113 @@ function requiredText(body: Record<string, unknown>, key: string) {
     );
   }
   return value.trim();
+}
+
+function requiredChoice<T extends readonly string[]>(
+  body: Record<string, unknown>,
+  key: string,
+  choices: T,
+): T[number] {
+  const value = body[key];
+  if (typeof value === "string" && choices.includes(value)) return value;
+  throw httpError(400, `Request body field '${key}' is invalid`);
+}
+
+function requiredStringArray(body: Record<string, unknown>, key: string) {
+  const value = body[key];
+  if (
+    Array.isArray(value) &&
+    value.every((entry) => typeof entry === "string")
+  ) {
+    return value;
+  }
+  throw httpError(400, `Request body field '${key}' must be a string array`);
+}
+
+function parseAllocationWizardParams(value: unknown): AllocationWizardParams {
+  if (!isRecord(value)) {
+    throw httpError(
+      400,
+      "Request body field 'wizard_params' must be an object",
+    );
+  }
+
+  const initialCapitalUsd = value.initialCapitalUsd;
+  if (typeof initialCapitalUsd !== "string") {
+    throw httpError(
+      400,
+      "Request body field 'wizard_params.initialCapitalUsd' must be a string",
+    );
+  }
+
+  return {
+    universe: requiredChoice(value, "universe", [
+      "top10",
+      "top25",
+      "top50",
+      "all",
+    ] as const),
+    exclusions: requiredStringArray(value, "exclusions"),
+    minimumMarketCap: requiredChoice(value, "minimumMarketCap", [
+      "none",
+      "100m",
+      "500m",
+      "1b",
+      "10b",
+    ] as const),
+    concentrationLimit: requiredChoice(value, "concentrationLimit", [
+      "20",
+      "30",
+      "agent",
+    ] as const),
+    maxDrawdown: requiredChoice(value, "maxDrawdown", [
+      "10",
+      "20",
+      "35",
+      "50",
+      "moreThan50",
+    ] as const),
+    riskPreference: requiredChoice(value, "riskPreference", [
+      "preserve",
+      "balanced",
+      "aggressive",
+      "maxUpside",
+    ] as const),
+    horizon: requiredChoice(value, "horizon", [
+      "3m",
+      "6m",
+      "1y",
+      "3yPlus",
+    ] as const),
+    rebalance: requiredChoice(value, "rebalance", [
+      "none",
+      "monthly",
+      "weekly",
+      "agent",
+    ] as const),
+    initialCapitalUsd,
+    cashAllocation: requiredChoice(value, "cashAllocation", [
+      "none",
+      "10",
+      "25",
+      "agent",
+    ] as const),
+    targetAssets: requiredChoice(value, "targetAssets", [
+      "3-5",
+      "5-10",
+      "10-20",
+      "agent",
+    ] as const),
+  };
+}
+
+function resolveMessageText(body: Record<string, unknown>) {
+  if (body.wizard_params !== undefined) {
+    return buildAllocationWizardPrompt(
+      parseAllocationWizardParams(body.wizard_params),
+    );
+  }
+  return requiredText(body, "text");
 }
 
 function optionalStringList(body: Record<string, unknown>, key: string) {
@@ -902,7 +1013,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const body = (request.body ?? {}) as Record<string, unknown>;
     const userId = requiredText(body, "user_id");
     const strategyId = requiredText(body, "strategy_id");
-    const text = requiredText(body, "text");
+    const text = resolveMessageText(body);
     const runId = randomUUID();
 
     const strategy = await repositories.ensureStrategy(userId, strategyId);
@@ -1081,7 +1192,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const body = (request.body ?? {}) as Record<string, unknown>;
     const userId = requiredText(body, "user_id");
     const strategyId = requiredText(body, "strategy_id");
-    const text = requiredText(body, "text");
+    const text = resolveMessageText(body);
     const runId = randomUUID();
 
     const strategy = await repositories.ensureStrategy(userId, strategyId);
