@@ -18,8 +18,11 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "AgentInvest",
-  description: "AI-assisted crypto allocation strategy workspace",
+  title: "Pond3r | DeFi Allocation Copilot",
+  description: "Agentic DeFi portfolio research and allocation workspace",
+  icons: {
+    icon: "/favicon.svg",
+  },
 };
 
 export default function RootLayout({

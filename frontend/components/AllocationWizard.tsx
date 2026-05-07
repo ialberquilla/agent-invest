@@ -380,19 +380,19 @@ export function AllocationWizard() {
   return (
     <main className="min-h-dvh bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--primary)_16%,transparent),transparent_34%),linear-gradient(180deg,var(--background),color-mix(in_oklab,var(--accent)_38%,var(--background)))] px-3 py-4 sm:px-4 lg:px-6">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
-        <section className="grid gap-4 rounded-2xl border bg-background p-4 shadow-sm lg:grid-cols-[1fr_auto] lg:items-end">
-          <div className="space-y-3">
-            <Badge variant="secondary" className="w-fit">
-              Allocation wizard
-            </Badge>
+        <section className="grid gap-5 overflow-hidden rounded-2xl border bg-background p-4 shadow-sm lg:grid-cols-[1fr_auto] lg:items-end">
+          <div className="min-w-0">
             <div className="max-w-3xl space-y-2">
+              <Badge variant="secondary" className="w-fit">
+                Pond3r agent
+              </Badge>
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
-                Build a portfolio brief before the agent starts work.
+                DeFi allocation copilot for crypto portfolio research.
               </h1>
               <p className="text-sm leading-6 text-muted-foreground sm:text-base">
-                Walk through the core allocation inputs, review the draft, and
-                prepare a strategy run. Prompt construction and execution remain
-                intentionally out of scope for this step.
+                Give Pond3r the core allocation inputs, review the mandate, and
+                launch an agent run grounded in portfolio constraints and
+                backtests.
               </p>
             </div>
           </div>
