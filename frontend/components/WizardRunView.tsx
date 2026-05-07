@@ -31,7 +31,6 @@ import { readSse } from "@/lib/sse";
 import type { AllocationWizardState } from "@/lib/wizard-prompt";
 
 type StoredWizardRun = {
-  prompt: string;
   state: AllocationWizardState;
 };
 
@@ -79,9 +78,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isStoredWizardRun(value: unknown): value is StoredWizardRun {
-  return (
-    isRecord(value) && typeof value.prompt === "string" && isRecord(value.state)
-  );
+  return isRecord(value) && isRecord(value.state);
+}
+
+function wizardSubmissionText() {
+  return "Allocation wizard submission";
 }
 
 async function readJson(response: Response) {
@@ -252,12 +253,13 @@ export function WizardRunView() {
         }
 
         const strategyId = strategyPayload.strategy_id;
+        const userMessageText = wizardSubmissionText();
         setStrategyId(strategyId);
         upsertKnownStrategy({
           strategy_id: strategyId,
-          label: deriveStrategyLabel(activeRun.prompt),
+          label: deriveStrategyLabel(userMessageText),
         });
-        setMessages(strategyId, [{ role: "user", text: activeRun.prompt }]);
+        setMessages(strategyId, [{ role: "user", text: userMessageText }]);
         setRunState((current) => ({ ...current, strategyId }));
 
         let response: Response;
@@ -268,7 +270,7 @@ export function WizardRunView() {
             cache: "no-store",
             body: JSON.stringify({
               strategy_id: strategyId,
-              text: activeRun.prompt,
+              wizard_params: activeRun.state,
             }),
           });
         } catch (error) {
@@ -318,7 +320,7 @@ export function WizardRunView() {
         const artifacts = runResult.artifacts ?? [];
         writeStoredRunResult(id, strategyId, runResult);
         setMessages(strategyId, [
-          { role: "user", text: activeRun.prompt },
+          { role: "user", text: userMessageText },
           {
             role: "agent",
             text: runResult.reply ?? "",

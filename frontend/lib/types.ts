@@ -87,7 +87,8 @@ export type Run = {
 export type MessageRequest = {
   user_id: string;
   strategy_id: string;
-  text: string;
+  text?: string;
+  wizard_params?: unknown;
 };
 
 export type StrategyCreateResponse = {

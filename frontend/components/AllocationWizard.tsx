@@ -15,10 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  buildWizardPrompt,
-  type AllocationWizardState,
-} from "@/lib/wizard-prompt";
+import type { AllocationWizardState } from "@/lib/wizard-prompt";
 import { trackEvent } from "@/lib/analytics";
 
 type Option<T extends string = string> = {
@@ -411,7 +408,6 @@ export function AllocationWizard() {
 
     const runId = crypto.randomUUID();
     const storedRun = JSON.stringify({
-      prompt: buildWizardPrompt(state),
       state,
     });
     localStorage.setItem(`wizard-run:${runId}`, storedRun);

@@ -4,6 +4,7 @@ import { USER_ID } from "@/lib/constants";
 type StreamRequestBody = {
   strategy_id?: unknown;
   text?: unknown;
+  wizard_params?: unknown;
 };
 
 function errorResponse(error: unknown) {
@@ -34,6 +35,7 @@ export async function POST(request: Request) {
         user_id: USER_ID,
         strategy_id: body.strategy_id,
         text: body.text,
+        wizard_params: body.wizard_params,
       },
     });
 
