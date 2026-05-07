@@ -184,8 +184,8 @@ function OptionGroup<T extends string>({
               type="button"
               className={`rounded-xl border p-3 text-left text-sm transition-colors ${
                 isSelected
-                  ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border bg-background hover:bg-muted"
+                  ? "border-primary/70 bg-primary/10 text-foreground shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--primary)_35%,transparent)]"
+                  : "border-border bg-background text-foreground hover:bg-muted"
               }`}
               aria-pressed={isSelected}
               onClick={() => onChange(option.value)}
@@ -194,9 +194,7 @@ function OptionGroup<T extends string>({
               {option.description ? (
                 <span
                   className={`mt-1 block text-xs leading-5 ${
-                    isSelected
-                      ? "text-primary-foreground/80"
-                      : "text-muted-foreground"
+                    isSelected ? "text-primary" : "text-muted-foreground"
                   }`}
                 >
                   {option.description}
@@ -414,7 +412,7 @@ export function AllocationWizard() {
           </div>
         </section>
 
-        <section className="grid min-w-0 gap-4 lg:grid-cols-[16rem_minmax(0,1fr)] xl:grid-cols-[16rem_minmax(0,1fr)_20rem]">
+        <section className="grid min-w-0 gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]">
           <Card className="min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)]">
             <CardHeader>
               <CardTitle>Guided steps</CardTitle>
@@ -448,7 +446,7 @@ export function AllocationWizard() {
                             {index + 1}
                           </span>
                           <span className="min-w-0 space-y-1">
-                            <span className="block truncate text-sm font-semibold tracking-tight">
+                            <span className="block text-sm font-semibold leading-5 tracking-tight">
                               {step.title}
                             </span>
                             <span
@@ -471,16 +469,47 @@ export function AllocationWizard() {
           </Card>
 
           <Card className="min-w-0">
-            <CardHeader>
-              <Badge variant="outline" className="w-fit">
-                Step {selectedStepIndex + 1}
-              </Badge>
-              <CardTitle className="text-2xl">
-                {steps[selectedStepIndex].title}
-              </CardTitle>
-              <CardDescription>
-                {steps[selectedStepIndex].description}
-              </CardDescription>
+            <CardHeader className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0 space-y-2">
+                  <Badge variant="outline" className="w-fit">
+                    Step {selectedStepIndex + 1}
+                  </Badge>
+                  <CardTitle className="text-2xl">
+                    {steps[selectedStepIndex].title}
+                  </CardTitle>
+                  <CardDescription>
+                    {steps[selectedStepIndex].description}
+                  </CardDescription>
+                </div>
+                <div className="flex shrink-0 flex-col gap-2 sm:flex-row lg:pt-1">
+                  <Button
+                    variant="outline"
+                    size="lg"
+                    disabled={selectedStepIndex === 0}
+                    className="sm:min-w-28"
+                    onClick={() =>
+                      setSelectedStepIndex((index) => Math.max(index - 1, 0))
+                    }
+                  >
+                    Back
+                  </Button>
+                  {isReviewStep ? (
+                    <Button
+                      size="lg"
+                      disabled={errors.length > 0}
+                      className="sm:min-w-44"
+                      onClick={runAllocationAgent}
+                    >
+                      Run allocation agent
+                    </Button>
+                  ) : (
+                    <Button size="lg" className="sm:min-w-52" onClick={goNext}>
+                      Continue to {steps[selectedStepIndex + 1].title}
+                    </Button>
+                  )}
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="grid gap-5">
               {selectedStepIndex === 0 ? (
@@ -505,8 +534,8 @@ export function AllocationWizard() {
                             type="button"
                             className={`rounded-xl border p-3 text-left text-sm transition-colors ${
                               isSelected
-                                ? "border-primary bg-primary text-primary-foreground"
-                                : "border-border bg-background hover:bg-muted"
+                                ? "border-primary/70 bg-primary/10 text-foreground shadow-[inset_0_0_0_1px_color-mix(in_oklab,var(--primary)_35%,transparent)]"
+                                : "border-border bg-background text-foreground hover:bg-muted"
                             }`}
                             aria-pressed={isSelected}
                             onClick={() => toggleExclusion(option.value)}
@@ -677,31 +706,6 @@ export function AllocationWizard() {
                 </>
               ) : null}
             </CardContent>
-            <CardFooter className="flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <Button
-                variant="outline"
-                disabled={selectedStepIndex === 0}
-                onClick={() =>
-                  setSelectedStepIndex((index) => Math.max(index - 1, 0))
-                }
-              >
-                Back
-              </Button>
-              {isReviewStep ? (
-                <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row">
-                  <Button
-                    disabled={errors.length > 0}
-                    onClick={runAllocationAgent}
-                  >
-                    Run allocation agent
-                  </Button>
-                </div>
-              ) : (
-                <Button onClick={goNext}>
-                  Continue to {steps[selectedStepIndex + 1].title}
-                </Button>
-              )}
-            </CardFooter>
           </Card>
 
           <Card className="min-w-0 lg:col-span-2 lg:sticky lg:top-4 lg:h-fit xl:col-span-1">
