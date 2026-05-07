@@ -77,6 +77,8 @@ jobs:
             --env-vars \
               DATABASE_URL=secretref:database-url \
               COINGECKO_API_KEY=secretref:coingecko-api-key \
+              COINGECKO_API_BASE_URL=https://api.coingecko.com/api/v3/ \
+              COINGECKO_API_KEY_HEADER=x-cg-demo-api-key \
               AZURE_API_KEY=secretref:azure-api-key \
               AZURE_RESOURCE_NAME=secretref:azure-resource-name \
               OPENCODE_MODEL=azure/gpt-5.4 \
@@ -109,6 +111,8 @@ jobs:
             --set-env-vars \
               DATABASE_URL=secretref:database-url \
               COINGECKO_API_KEY=secretref:coingecko-api-key \
+              COINGECKO_API_BASE_URL=https://api.coingecko.com/api/v3/ \
+              COINGECKO_API_KEY_HEADER=x-cg-demo-api-key \
               AZURE_API_KEY=secretref:azure-api-key \
               AZURE_RESOURCE_NAME=secretref:azure-resource-name \
               OPENCODE_MODEL=azure/gpt-5.4 \

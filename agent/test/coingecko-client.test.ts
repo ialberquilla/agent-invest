@@ -128,6 +128,31 @@ test("fetchCoinGeckoMarkets only sends API key header when configured", async ()
   assert.deepEqual(headers[2], { "x-custom-key": "demo-key" });
 });
 
+test("fetchCoinGeckoMarkets supports configurable API base URL", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiBaseUrl = process.env.COINGECKO_API_BASE_URL;
+  const calls: URL[] = [];
+
+  globalThis.fetch = ((input: string | URL | Request) => {
+    calls.push(new URL(input.toString()));
+
+    return Promise.resolve(new Response("[]", { status: 200 }));
+  }) as typeof fetch;
+
+  try {
+    process.env.COINGECKO_API_BASE_URL =
+      "https://pro-api.coingecko.com/api/v3/";
+    await fetchCoinGeckoMarkets({ ids: ["bitcoin"] });
+  } finally {
+    globalThis.fetch = originalFetch;
+    restoreEnv("COINGECKO_API_BASE_URL", originalApiBaseUrl);
+  }
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0]?.origin, "https://pro-api.coingecko.com");
+  assert.equal(calls[0]?.pathname, "/api/v3/coins/markets");
+});
+
 test("fetchCoinGeckoMarkets retries 429 and 5xx responses", async () => {
   const originalFetch = globalThis.fetch;
   const statuses = [429, 500, 200];

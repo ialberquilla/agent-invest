@@ -1,4 +1,4 @@
-const COINGECKO_API_BASE_URL = "https://api.coingecko.com/api/v3/";
+const DEFAULT_COINGECKO_API_BASE_URL = "https://api.coingecko.com/api/v3/";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_RETRIES = 3;
 const BASE_RETRY_DELAY_MS = 500;
@@ -54,7 +54,10 @@ async function requestJson<T>(
   path: string,
   query?: URLSearchParams,
 ): Promise<T> {
-  const url = new URL(path, COINGECKO_API_BASE_URL);
+  const url = new URL(
+    path,
+    process.env.COINGECKO_API_BASE_URL ?? DEFAULT_COINGECKO_API_BASE_URL,
+  );
 
   if (query) {
     url.search = query.toString();
