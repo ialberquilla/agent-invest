@@ -14,6 +14,9 @@ dist
 agent/node_modules
 agent/dist
 agent/coverage
+agent/scripts/.venv
+agent/scripts/.pytest_cache
+agent/scripts/.ruff_cache
 agent/.env
 agent/.env.*
 !agent/.env.example

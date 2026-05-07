@@ -45,6 +45,12 @@ WORKDIR /app
 COPY agent ./agent
 RUN pnpm --filter @agent-invest/agent build
 
+FROM base AS python-deps
+WORKDIR /app/agent/scripts
+COPY agent/scripts/pyproject.toml agent/scripts/uv.lock ./
+COPY agent/scripts/agent_invest_scripts ./agent_invest_scripts
+RUN uv sync --frozen
+
 FROM base AS runner
 WORKDIR /app
 
@@ -66,6 +72,7 @@ COPY --from=builder /app/agent/src ./agent/src
 COPY --from=builder /app/agent/migrations ./agent/migrations
 COPY --from=builder /app/agent/drizzle.config.ts ./agent/drizzle.config.ts
 COPY --from=builder /app/agent/docker/entrypoint.sh ./agent/docker/entrypoint.sh
+COPY --from=python-deps /app/agent/scripts ./agent/scripts
 
 RUN chmod +x ./agent/docker/entrypoint.sh
 
