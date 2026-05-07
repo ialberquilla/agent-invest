@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Pond3r">
+  <defs>
+    <linearGradient id="bg" x1="10" y1="6" x2="54" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#05273a"/>
+      <stop offset="1" stop-color="#071421"/>
+    </linearGradient>
+    <linearGradient id="mark" x1="15" y1="12" x2="49" y2="52" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#44c7d4"/>
+      <stop offset="1" stop-color="#1b7f95"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <path fill="url(#mark)" d="M18 23c-6 3-8 13-4 21 2 4 5 6 9 5 4-1 6-5 5-10l-3-13c-1-3-4-5-7-3Zm28 0c6 3 8 13 4 21-2 4-5 6-9 5-4-1-6-5-5-10l3-13c1-3 4-5 7-3Z"/>
+  <path fill="url(#mark)" d="M32 14c-12 0-20 8-20 19 0 12 8 21 20 21s20-9 20-21c0-11-8-19-20-19Z"/>
+  <path fill="none" stroke="#082437" stroke-linecap="round" stroke-width="3" d="M22 29c3-5 9-5 12-1m-4 0c-4 3-3 8 2 9m9-9c4 3 4 8 0 10M21 41c5 4 17 4 22 0"/>
+  <path fill="#082437" d="M20 42c3 8 8 12 12 12s9-4 12-12c-6 4-18 4-24 0Z"/>
+  <circle cx="25" cy="46" r="2.5" fill="#041522"/>
+  <circle cx="39" cy="46" r="2.5" fill="#041522"/>
+</svg>

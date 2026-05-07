@@ -1,6 +1,6 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { Bot, Command, Search } from "lucide-react";
+import { Command, Search } from "lucide-react";
 
 type DashboardShellProps = {
   eyebrow: string;
@@ -21,13 +21,10 @@ export function DashboardShell({
     <main className="min-h-dvh bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--primary)_12%,transparent),transparent_30%),var(--background)] text-foreground">
       <header className="sticky top-0 z-20 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/75">
         <div className="mx-auto flex min-h-14 max-w-7xl items-center gap-4 px-4 sm:px-6 lg:px-8">
-          <Link href="/" className="flex shrink-0 items-center gap-3">
-            <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground shadow-sm">
-              <Bot className="size-4" />
-            </span>
+          <Link href="/" className="flex shrink-0 items-center">
             <span className="font-heading text-sm font-bold tracking-tight">
-              <span>Agent</span>
-              <span className="text-muted-foreground">Invest</span>
+              <span>Pond</span>
+              <span className="text-muted-foreground">3r</span>
             </span>
           </Link>
 
