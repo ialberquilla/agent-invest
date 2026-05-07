@@ -290,6 +290,16 @@ export function WizardRunView() {
   const isFinished = !!finalRun;
   const failedBeforeFinal = runState.status === "error" && !isFinished;
   const isActiveRun = !isFinished && !failedBeforeFinal;
+  const headerTitle = isActiveRun
+    ? "The agent is building your strategy."
+    : failedBeforeFinal
+      ? "The allocation run failed."
+      : "Your strategy report is ready.";
+  const headerDescription = isActiveRun
+    ? "Follow reasoning and tool calls live. The final answer and charts appear when the run finishes."
+    : failedBeforeFinal
+      ? "Review the error and any captured activity below."
+      : "Review the final answer, allocation rationale, and charts below.";
 
   return (
     <main className="min-h-dvh bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--primary)_16%,transparent),transparent_34%),linear-gradient(180deg,var(--background),color-mix(in_oklab,var(--accent)_38%,var(--background)))] px-3 py-4 sm:px-4 lg:px-6">
@@ -301,11 +311,10 @@ export function WizardRunView() {
             </Badge>
             <div className="max-w-3xl space-y-2">
               <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
-                The agent is building your strategy.
+                {headerTitle}
               </h1>
               <p className="text-sm leading-6 text-muted-foreground sm:text-base">
-                Follow reasoning and tool calls live. The final answer and
-                charts appear when the run finishes.
+                {headerDescription}
               </p>
             </div>
           </div>
