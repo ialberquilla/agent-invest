@@ -6,6 +6,8 @@
     "dev": "pnpm --filter @agent-invest/agent dev",
     "build": "pnpm -r --if-present build",
     "db:migrate": "pnpm --filter @agent-invest/agent db:migrate",
+    "ingest:gmx": "pnpm --filter @agent-invest/agent ingest:gmx",
+    "ingest:coingecko-market-caps": "pnpm --filter @agent-invest/agent ingest:coingecko-market-caps",
     "test": "pnpm --filter @agent-invest/agent test",
     "lint": "eslint .",
     "format": "prettier --check ."

@@ -156,7 +156,7 @@ jobs:
               DATABASE_URL=secretref:database-url \
               NODE_ENV=production \
             --command /bin/sh \
-            --args "-lc" "pnpm --filter @agent-invest/agent ingest:gmx"
+            --args "-lc" "pnpm ingest:gmx"
 
       - name: Update GMX ingestion job
         if: steps.check-gmx-ingestion-job.outputs.exists == 'true'
@@ -180,7 +180,7 @@ jobs:
               DATABASE_URL=secretref:database-url \
               NODE_ENV=production \
             --command /bin/sh \
-            --args "-lc" "pnpm --filter @agent-invest/agent ingest:gmx"
+            --args "-lc" "pnpm ingest:gmx"
 
       - name: Check if CoinGecko ingestion job exists
         id: check-coingecko-ingestion-job
@@ -216,7 +216,7 @@ jobs:
               COINGECKO_API_KEY_HEADER=x-cg-demo-api-key \
               NODE_ENV=production \
             --command /bin/sh \
-            --args "-lc" "pnpm --filter @agent-invest/agent ingest:coingecko-market-caps"
+            --args "-lc" "pnpm ingest:coingecko-market-caps"
 
       - name: Update CoinGecko ingestion job
         if: steps.check-coingecko-ingestion-job.outputs.exists == 'true'
@@ -244,7 +244,7 @@ jobs:
               COINGECKO_API_KEY_HEADER=x-cg-demo-api-key \
               NODE_ENV=production \
             --command /bin/sh \
-            --args "-lc" "pnpm --filter @agent-invest/agent ingest:coingecko-market-caps"
+            --args "-lc" "pnpm ingest:coingecko-market-caps"
 
       - name: Get agent URL
         id: get-agent-url
