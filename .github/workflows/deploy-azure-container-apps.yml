@@ -83,6 +83,7 @@ jobs:
               OPENCODE_AUTH_PROVIDER=azure \
               MAINTENANCE_TOKEN=secretref:maintenance-token \
               STORAGE_ROOT=/tmp/agent-invest-storage \
+              OPENCODE_DIRECTORY=/app \
               HOST=0.0.0.0 \
               PORT=8000 \
               NODE_ENV=production
@@ -114,6 +115,7 @@ jobs:
               OPENCODE_AUTH_PROVIDER=azure \
               MAINTENANCE_TOKEN=secretref:maintenance-token \
               STORAGE_ROOT=/tmp/agent-invest-storage \
+              OPENCODE_DIRECTORY=/app \
               HOST=0.0.0.0 \
               PORT=8000 \
               NODE_ENV=production

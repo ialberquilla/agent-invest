@@ -62,6 +62,7 @@ ENV OPENCODE_AUTH_PROVIDER=azure
 ENV STORAGE_ROOT=/tmp/agent-invest-storage
 ENV UV_CACHE_DIR=/tmp/agent-invest-storage/uv
 ENV XDG_CACHE_HOME=/tmp/agent-invest-storage/xdg-cache
+ENV OPENCODE_DIRECTORY=/app
 
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/agent/node_modules ./agent/node_modules
@@ -74,6 +75,7 @@ COPY --from=builder /app/agent/drizzle.config.ts ./agent/drizzle.config.ts
 COPY --from=builder /app/agent/docker/entrypoint.sh ./agent/docker/entrypoint.sh
 COPY --from=python-deps /app/agent/scripts ./agent/scripts
 
+RUN test -d ./agent/scripts/agent_invest_scripts
 RUN chmod +x ./agent/docker/entrypoint.sh
 
 EXPOSE 8000
