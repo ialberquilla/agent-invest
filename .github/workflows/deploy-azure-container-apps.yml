@@ -13,6 +13,8 @@ env:
   FRONTEND_IMAGE: agent-invest-frontend
   AGENT_APP_NAME: agent-invest-agent-prod
   FRONTEND_APP_NAME: agent-invest-frontend-prod
+  GMX_INGESTION_JOB_NAME: agent-invest-gmx-ingestion-daily
+  COINGECKO_INGESTION_JOB_NAME: agent-invest-coingecko-ingestion-daily
 
 jobs:
   deploy-agent:
@@ -123,6 +125,126 @@ jobs:
               HOST=0.0.0.0 \
               PORT=8000 \
               NODE_ENV=production
+
+      - name: Check if GMX ingestion job exists
+        id: check-gmx-ingestion-job
+        run: |
+          if az containerapp job show --name "${{ env.GMX_INGESTION_JOB_NAME }}" --resource-group "${{ env.RESOURCE_GROUP }}" &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GMX ingestion job
+        if: steps.check-gmx-ingestion-job.outputs.exists == 'false'
+        run: |
+          az containerapp job create \
+            --name "${{ env.GMX_INGESTION_JOB_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --environment "${{ env.CONTAINER_APP_ENV }}" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --registry-server "${{ env.REGISTRY_NAME }}.azurecr.io" \
+            --trigger-type Schedule \
+            --cron-expression "0 2 * * *" \
+            --replica-timeout 3600 \
+            --replica-retry-limit 1 \
+            --cpu 2.0 \
+            --memory 4Gi \
+            --secrets \
+              database-url="${{ secrets.DATABASE_URL }}" \
+            --env-vars \
+              DATABASE_URL=secretref:database-url \
+              NODE_ENV=production \
+            --command pnpm \
+            --args "--filter" "@agent-invest/agent" "ingest:gmx"
+
+      - name: Update GMX ingestion job
+        if: steps.check-gmx-ingestion-job.outputs.exists == 'true'
+        run: |
+          az containerapp job secret set \
+            --name "${{ env.GMX_INGESTION_JOB_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --secrets \
+              database-url="${{ secrets.DATABASE_URL }}"
+          az containerapp job update \
+            --name "${{ env.GMX_INGESTION_JOB_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --trigger-type Schedule \
+            --cron-expression "0 2 * * *" \
+            --replica-timeout 3600 \
+            --replica-retry-limit 1 \
+            --cpu 2.0 \
+            --memory 4Gi \
+            --set-env-vars \
+              DATABASE_URL=secretref:database-url \
+              NODE_ENV=production \
+            --command pnpm \
+            --args "--filter" "@agent-invest/agent" "ingest:gmx"
+
+      - name: Check if CoinGecko ingestion job exists
+        id: check-coingecko-ingestion-job
+        run: |
+          if az containerapp job show --name "${{ env.COINGECKO_INGESTION_JOB_NAME }}" --resource-group "${{ env.RESOURCE_GROUP }}" &>/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create CoinGecko ingestion job
+        if: steps.check-coingecko-ingestion-job.outputs.exists == 'false'
+        run: |
+          az containerapp job create \
+            --name "${{ env.COINGECKO_INGESTION_JOB_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --environment "${{ env.CONTAINER_APP_ENV }}" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --registry-server "${{ env.REGISTRY_NAME }}.azurecr.io" \
+            --trigger-type Schedule \
+            --cron-expression "0 3 * * *" \
+            --replica-timeout 1800 \
+            --replica-retry-limit 1 \
+            --cpu 1.0 \
+            --memory 2Gi \
+            --secrets \
+              database-url="${{ secrets.DATABASE_URL }}" \
+              coingecko-api-key="${{ secrets.COINGECKO_API_KEY }}" \
+            --env-vars \
+              DATABASE_URL=secretref:database-url \
+              COINGECKO_API_KEY=secretref:coingecko-api-key \
+              COINGECKO_API_BASE_URL=https://api.coingecko.com/api/v3/ \
+              COINGECKO_API_KEY_HEADER=x-cg-demo-api-key \
+              NODE_ENV=production \
+            --command pnpm \
+            --args "--filter" "@agent-invest/agent" "ingest:coingecko-market-caps"
+
+      - name: Update CoinGecko ingestion job
+        if: steps.check-coingecko-ingestion-job.outputs.exists == 'true'
+        run: |
+          az containerapp job secret set \
+            --name "${{ env.COINGECKO_INGESTION_JOB_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --secrets \
+              database-url="${{ secrets.DATABASE_URL }}" \
+              coingecko-api-key="${{ secrets.COINGECKO_API_KEY }}"
+          az containerapp job update \
+            --name "${{ env.COINGECKO_INGESTION_JOB_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --trigger-type Schedule \
+            --cron-expression "0 3 * * *" \
+            --replica-timeout 1800 \
+            --replica-retry-limit 1 \
+            --cpu 1.0 \
+            --memory 2Gi \
+            --set-env-vars \
+              DATABASE_URL=secretref:database-url \
+              COINGECKO_API_KEY=secretref:coingecko-api-key \
+              COINGECKO_API_BASE_URL=https://api.coingecko.com/api/v3/ \
+              COINGECKO_API_KEY_HEADER=x-cg-demo-api-key \
+              NODE_ENV=production \
+            --command pnpm \
+            --args "--filter" "@agent-invest/agent" "ingest:coingecko-market-caps"
 
       - name: Get agent URL
         id: get-agent-url
