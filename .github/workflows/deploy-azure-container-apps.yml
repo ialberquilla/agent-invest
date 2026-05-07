@@ -153,6 +153,8 @@ jobs:
           file: ./frontend/Dockerfile
           push: true
           tags: ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:latest
+          build-args: |
+            NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -182,6 +184,7 @@ jobs:
             --max-replicas 3 \
             --env-vars \
               AGENT_URL=${{ needs.deploy-agent.outputs.agent_url }} \
+              NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID }} \
               NODE_ENV=production
 
       - name: Update frontend container app
@@ -195,4 +198,5 @@ jobs:
             --memory 1Gi \
             --set-env-vars \
               AGENT_URL=${{ needs.deploy-agent.outputs.agent_url }} \
+              NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID }} \
               NODE_ENV=production

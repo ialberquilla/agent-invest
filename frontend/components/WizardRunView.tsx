@@ -19,6 +19,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { initialTimeline, reduceTimeline } from "@/lib/agent-events";
 import type { TimelineState } from "@/lib/agent-events";
+import { trackEvent } from "@/lib/analytics";
 import type { Run } from "@/lib/types";
 import {
   deriveStrategyLabel,
@@ -46,6 +47,24 @@ type RunState = {
   error: string | null;
   timeline: TimelineState;
 };
+
+type FailureStage =
+  | "missing_stored_run"
+  | "strategy_create"
+  | "stream_start"
+  | "stream_processing"
+  | "final_result"
+  | "unknown";
+
+class WizardRunError extends Error {
+  constructor(
+    message: string,
+    readonly failureStage: FailureStage,
+  ) {
+    super(message);
+    this.name = "WizardRunError";
+  }
+}
 
 const initialRunState: RunState = {
   status: "loading",
@@ -83,6 +102,13 @@ function getErrorMessage(payload: unknown, fallback: string) {
   }
 
   return fallback;
+}
+
+function trackRunFailed(failureStage: FailureStage) {
+  trackEvent("wizard_run_failed", {
+    run_source: "allocation_wizard",
+    failure_stage: failureStage,
+  });
 }
 
 function readStoredRun(id: string | null): StoredWizardRun | null {
@@ -167,6 +193,7 @@ export function WizardRunView() {
     const next = readStoredRun(id);
     setStoredRun(next);
     if (!next) {
+      trackRunFailed("missing_stored_run");
       setRunState({
         ...initialRunState,
         status: "error",
@@ -187,24 +214,41 @@ export function WizardRunView() {
 
     async function run() {
       setRunState({ ...initialRunState, status: "running" });
+      trackEvent("wizard_run_started", {
+        run_source: "allocation_wizard",
+      });
 
       try {
-        const strategyResponse = await fetch("/api/strategies", {
-          method: "POST",
-          cache: "no-store",
-        });
+        let strategyResponse: Response;
+        try {
+          strategyResponse = await fetch("/api/strategies", {
+            method: "POST",
+            cache: "no-store",
+          });
+        } catch (error) {
+          throw new WizardRunError(
+            error instanceof Error
+              ? error.message
+              : "Unable to create a strategy",
+            "strategy_create",
+          );
+        }
         const strategyPayload = await readJson(strategyResponse);
 
         if (!strategyResponse.ok) {
-          throw new Error(
+          throw new WizardRunError(
             getErrorMessage(strategyPayload, "Unable to create a strategy"),
+            "strategy_create",
           );
         }
         if (
           !isRecord(strategyPayload) ||
           typeof strategyPayload.strategy_id !== "string"
         ) {
-          throw new Error("Strategy creation returned an invalid response");
+          throw new WizardRunError(
+            "Strategy creation returned an invalid response",
+            "strategy_create",
+          );
         }
 
         const strategyId = strategyPayload.strategy_id;
@@ -216,36 +260,59 @@ export function WizardRunView() {
         setMessages(strategyId, [{ role: "user", text: activeRun.prompt }]);
         setRunState((current) => ({ ...current, strategyId }));
 
-        const response = await fetch("/api/messages/stream", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          cache: "no-store",
-          body: JSON.stringify({
-            strategy_id: strategyId,
-            text: activeRun.prompt,
-          }),
-        });
+        let response: Response;
+        try {
+          response = await fetch("/api/messages/stream", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            cache: "no-store",
+            body: JSON.stringify({
+              strategy_id: strategyId,
+              text: activeRun.prompt,
+            }),
+          });
+        } catch (error) {
+          throw new WizardRunError(
+            error instanceof Error
+              ? error.message
+              : "Unable to run allocation agent",
+            "stream_start",
+          );
+        }
 
         if (!response.ok) {
           const payload = await readJson(response);
-          throw new Error(
+          throw new WizardRunError(
             getErrorMessage(payload, "Unable to run allocation agent"),
+            "stream_start",
           );
         }
         if (!response.body) {
-          throw new Error("Stream returned no body");
+          throw new WizardRunError("Stream returned no body", "stream_start");
         }
 
         let timeline: TimelineState = initialTimeline;
-        for await (const sseMessage of readSse(response.body)) {
-          timeline = reduceTimeline(timeline, sseMessage);
-          setRunState((current) => ({ ...current, timeline }));
-          if (timeline.done) break;
+        try {
+          for await (const sseMessage of readSse(response.body)) {
+            timeline = reduceTimeline(timeline, sseMessage);
+            setRunState((current) => ({ ...current, timeline }));
+            if (timeline.done) break;
+          }
+        } catch (error) {
+          throw new WizardRunError(
+            error instanceof Error
+              ? error.message
+              : "Unable to process allocation agent stream",
+            "stream_processing",
+          );
         }
 
         const runResult = timeline.finalRun;
         if (!runResult) {
-          throw new Error("Stream ended without a completed run");
+          throw new WizardRunError(
+            "Stream ended without a completed run",
+            "stream_processing",
+          );
         }
 
         const artifacts = runResult.artifacts ?? [];
@@ -261,6 +328,15 @@ export function WizardRunView() {
             artifacts,
           },
         ]);
+        if (runResult.error) {
+          trackRunFailed("final_result");
+        } else {
+          trackEvent("wizard_run_completed", {
+            run_source: "allocation_wizard",
+            has_artifacts: artifacts.length > 0,
+            artifact_count: artifacts.length,
+          });
+        }
         setRunState({
           status: runResult.error ? "error" : "completed",
           strategyId,
@@ -269,6 +345,9 @@ export function WizardRunView() {
           timeline,
         });
       } catch (error) {
+        trackRunFailed(
+          error instanceof WizardRunError ? error.failureStage : "unknown",
+        );
         setRunState((current) => ({
           ...current,
           status: "error",
