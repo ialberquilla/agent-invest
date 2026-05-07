@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
@@ -19,6 +19,7 @@ import {
   buildWizardPrompt,
   type AllocationWizardState,
 } from "@/lib/wizard-prompt";
+import { trackEvent } from "@/lib/analytics";
 
 type Option<T extends string = string> = {
   value: T;
@@ -65,6 +66,20 @@ const defaultState: AllocationWizardState = {
   initialCapitalUsd: "",
   cashAllocation: "10",
   targetAssets: "5-10",
+};
+
+const initialCapitalInvalidCode = "initial_capital_invalid";
+
+type NavigationSource =
+  | "next"
+  | "back"
+  | "sidebar"
+  | "summary"
+  | "review_button";
+
+type ValidationResult = {
+  messages: string[];
+  codes: string[];
 };
 
 const universeOptions: Option<AllocationWizardState["universe"]>[] = [
@@ -146,18 +161,38 @@ function getLabel<T extends string>(options: Option<T>[], value: T) {
   return options.find((option) => option.value === value)?.label ?? value;
 }
 
-function validateState(state: AllocationWizardState) {
-  const errors: string[] = [];
+function validateState(state: AllocationWizardState): ValidationResult {
+  const messages: string[] = [];
+  const codes: string[] = [];
   const initialCapital = state.initialCapitalUsd.trim();
 
   if (
     initialCapital &&
     (!Number.isFinite(Number(initialCapital)) || Number(initialCapital) <= 0)
   ) {
-    errors.push("Initial capital must be a positive number when provided.");
+    messages.push("Initial capital must be a positive number when provided.");
+    codes.push(initialCapitalInvalidCode);
   }
 
-  return errors;
+  return { messages, codes };
+}
+
+function getStepParams(stepIndex: number) {
+  return {
+    step_index: stepIndex,
+    step_name: steps[stepIndex].title,
+  };
+}
+
+function getInitialCapitalMetadata(value: string) {
+  const trimmed = value.trim();
+  const amount = Number(trimmed);
+
+  return {
+    initial_capital_provided: trimmed.length > 0,
+    initial_capital_valid:
+      trimmed.length === 0 || (Number.isFinite(amount) && amount > 0),
+  };
 }
 
 function OptionGroup<T extends string>({
@@ -253,36 +288,126 @@ export function AllocationWizard() {
   const router = useRouter();
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [state, setState] = useState<AllocationWizardState>(defaultState);
-  const errors = useMemo(() => validateState(state), [state]);
+  const validation = useMemo(() => validateState(state), [state]);
+  const errors = validation.messages;
+  const navigationSourceRef = useRef<NavigationSource | undefined>(undefined);
   const progress = Math.round(((selectedStepIndex + 1) / steps.length) * 100);
   const isReviewStep = selectedStepIndex === steps.length - 1;
+
+  const trackSelectedStepViewed = useEffectEvent(() => {
+    const navigationSource = navigationSourceRef.current;
+    navigationSourceRef.current = undefined;
+
+    trackEvent("wizard_step_viewed", {
+      ...getStepParams(selectedStepIndex),
+      navigation_source: navigationSource,
+    });
+
+    if (selectedStepIndex === steps.length - 1) {
+      trackEvent("wizard_review_opened", {
+        completed_steps: steps.length - 1,
+        has_validation_errors: validation.codes.length > 0,
+        initial_capital_provided: getInitialCapitalMetadata(
+          state.initialCapitalUsd,
+        ).initial_capital_provided,
+      });
+
+      if (validation.codes.length > 0) {
+        trackEvent("wizard_validation_failed", {
+          error_count: validation.codes.length,
+          error_codes: validation.codes.join(","),
+        });
+      }
+    }
+  });
+
+  useEffect(() => {
+    trackEvent("wizard_started", getStepParams(0));
+  }, []);
+
+  useEffect(() => {
+    trackSelectedStepViewed();
+  }, [selectedStepIndex]);
 
   function updateState(update: Partial<AllocationWizardState>) {
     setState((current) => ({ ...current, ...update }));
   }
 
+  function selectPredefinedField<K extends keyof AllocationWizardState>(
+    fieldName: K,
+    fieldValue: AllocationWizardState[K],
+  ) {
+    updateState({ [fieldName]: fieldValue });
+    trackEvent("wizard_field_selected", {
+      ...getStepParams(selectedStepIndex),
+      field_name: fieldName,
+      field_value: String(fieldValue),
+    });
+  }
+
+  function goToStep(stepIndex: number, navigationSource: NavigationSource) {
+    navigationSourceRef.current = navigationSource;
+    setSelectedStepIndex(stepIndex);
+  }
+
   function goNext() {
     if (selectedStepIndex === steps.length - 2 && errors.length > 0) {
-      setSelectedStepIndex(steps.length - 1);
+      goToStep(steps.length - 1, "next");
       return;
     }
 
-    setSelectedStepIndex((index) => Math.min(index + 1, steps.length - 1));
+    goToStep(Math.min(selectedStepIndex + 1, steps.length - 1), "next");
   }
 
   function toggleExclusion(value: string) {
+    const selected = !state.exclusions.includes(value);
+
     setState((current) => ({
       ...current,
-      exclusions: current.exclusions.includes(value)
-        ? current.exclusions.filter((item) => item !== value)
-        : [...current.exclusions, value],
+      exclusions: selected
+        ? [...current.exclusions, value]
+        : current.exclusions.filter((item) => item !== value),
     }));
+
+    trackEvent("wizard_exclusion_toggled", {
+      ...getStepParams(selectedStepIndex),
+      field_name: "exclusions",
+      field_value: value,
+      selected,
+    });
+  }
+
+  function trackInitialCapitalChanged() {
+    trackEvent("wizard_initial_capital_changed", {
+      ...getStepParams(selectedStepIndex),
+      ...getInitialCapitalMetadata(state.initialCapitalUsd),
+    });
   }
 
   function runAllocationAgent() {
     if (errors.length > 0) {
+      trackEvent("wizard_validation_failed", {
+        error_count: validation.codes.length,
+        error_codes: validation.codes.join(","),
+      });
       return;
     }
+
+    trackEvent("wizard_run_submitted", {
+      universe: state.universe,
+      minimumMarketCap: state.minimumMarketCap,
+      concentrationLimit: state.concentrationLimit,
+      maxDrawdown: state.maxDrawdown,
+      riskPreference: state.riskPreference,
+      horizon: state.horizon,
+      rebalance: state.rebalance,
+      cashAllocation: state.cashAllocation,
+      targetAssets: state.targetAssets,
+      exclusions_count: state.exclusions.length,
+      initial_capital_provided: getInitialCapitalMetadata(
+        state.initialCapitalUsd,
+      ).initial_capital_provided,
+    });
 
     const runId = crypto.randomUUID();
     const storedRun = JSON.stringify({
@@ -434,7 +559,7 @@ export function AllocationWizard() {
                               : "border-border bg-background text-foreground hover:border-foreground/20 hover:bg-muted/70"
                           }`}
                           aria-current={isSelected ? "step" : undefined}
-                          onClick={() => setSelectedStepIndex(index)}
+                          onClick={() => goToStep(index, "sidebar")}
                         >
                           <span
                             className={`flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
@@ -489,7 +614,7 @@ export function AllocationWizard() {
                     disabled={selectedStepIndex === 0}
                     className="sm:min-w-28"
                     onClick={() =>
-                      setSelectedStepIndex((index) => Math.max(index - 1, 0))
+                      goToStep(Math.max(selectedStepIndex - 1, 0), "back")
                     }
                   >
                     Back
@@ -518,7 +643,9 @@ export function AllocationWizard() {
                     label="Token universe"
                     options={universeOptions}
                     value={state.universe}
-                    onChange={(universe) => updateState({ universe })}
+                    onChange={(universe) =>
+                      selectPredefinedField("universe", universe)
+                    }
                   />
                   <fieldset className="grid gap-3">
                     <legend className="text-sm font-medium">Exclusions</legend>
@@ -556,7 +683,10 @@ export function AllocationWizard() {
                     options={minimumMarketCapOptions}
                     value={state.minimumMarketCap}
                     onChange={(minimumMarketCap) =>
-                      updateState({ minimumMarketCap })
+                      selectPredefinedField(
+                        "minimumMarketCap",
+                        minimumMarketCap,
+                      )
                     }
                   />
                   <OptionGroup
@@ -564,7 +694,10 @@ export function AllocationWizard() {
                     options={concentrationLimitOptions}
                     value={state.concentrationLimit}
                     onChange={(concentrationLimit) =>
-                      updateState({ concentrationLimit })
+                      selectPredefinedField(
+                        "concentrationLimit",
+                        concentrationLimit,
+                      )
                     }
                   />
                 </>
@@ -576,14 +709,16 @@ export function AllocationWizard() {
                     label="Maximum financially acceptable drawdown"
                     options={maxDrawdownOptions}
                     value={state.maxDrawdown}
-                    onChange={(maxDrawdown) => updateState({ maxDrawdown })}
+                    onChange={(maxDrawdown) =>
+                      selectPredefinedField("maxDrawdown", maxDrawdown)
+                    }
                   />
                   <OptionGroup
                     label="Main risk preference"
                     options={riskPreferenceOptions}
                     value={state.riskPreference}
                     onChange={(riskPreference) =>
-                      updateState({ riskPreference })
+                      selectPredefinedField("riskPreference", riskPreference)
                     }
                   />
                 </>
@@ -595,13 +730,17 @@ export function AllocationWizard() {
                     label="Time horizon"
                     options={horizonOptions}
                     value={state.horizon}
-                    onChange={(horizon) => updateState({ horizon })}
+                    onChange={(horizon) =>
+                      selectPredefinedField("horizon", horizon)
+                    }
                   />
                   <OptionGroup
                     label="Rebalancing cadence"
                     options={rebalanceOptions}
                     value={state.rebalance}
-                    onChange={(rebalance) => updateState({ rebalance })}
+                    onChange={(rebalance) =>
+                      selectPredefinedField("rebalance", rebalance)
+                    }
                   />
                 </>
               ) : null}
@@ -628,6 +767,7 @@ export function AllocationWizard() {
                       onChange={(event) =>
                         updateState({ initialCapitalUsd: event.target.value })
                       }
+                      onBlur={trackInitialCapitalChanged}
                     />
                     <p className="text-xs leading-5 text-muted-foreground">
                       Leave blank if the agent should reason in percentages
@@ -639,14 +779,16 @@ export function AllocationWizard() {
                     options={cashAllocationOptions}
                     value={state.cashAllocation}
                     onChange={(cashAllocation) =>
-                      updateState({ cashAllocation })
+                      selectPredefinedField("cashAllocation", cashAllocation)
                     }
                   />
                   <OptionGroup
                     label="Target number of assets"
                     options={targetAssetOptions}
                     value={state.targetAssets}
-                    onChange={(targetAssets) => updateState({ targetAssets })}
+                    onChange={(targetAssets) =>
+                      selectPredefinedField("targetAssets", targetAssets)
+                    }
                   />
                 </>
               ) : null}
@@ -685,7 +827,7 @@ export function AllocationWizard() {
                             variant="outline"
                             size="sm"
                             onClick={() =>
-                              setSelectedStepIndex(section.stepIndex)
+                              goToStep(section.stepIndex, "summary")
                             }
                           >
                             Edit {steps[section.stepIndex].title}
@@ -736,7 +878,7 @@ export function AllocationWizard() {
                     key={step.title}
                     type="button"
                     className="flex min-w-0 items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left hover:bg-muted"
-                    onClick={() => setSelectedStepIndex(index)}
+                    onClick={() => goToStep(index, "summary")}
                   >
                     <span className="truncate">{step.title}</span>
                     <Badge
@@ -753,7 +895,7 @@ export function AllocationWizard() {
             <CardFooter className="flex-col items-stretch gap-3">
               <Button
                 disabled={errors.length > 0}
-                onClick={() => setSelectedStepIndex(steps.length - 1)}
+                onClick={() => goToStep(steps.length - 1, "review_button")}
               >
                 Review mandate
               </Button>
