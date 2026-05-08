@@ -139,9 +139,9 @@ function EquityCurveChart({ data }: { data: StrategyEquityPoint[] | null }) {
   }
 
   return (
-    <ChartContainer className="h-[320px] w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={chartData} margin={{ left: 0, right: 16, top: 10 }}>
+    <ChartContainer className="h-[260px] w-full min-w-0 overflow-hidden sm:h-[320px]">
+      <ResponsiveContainer width="99%" height="100%">
+        <AreaChart data={chartData} margin={{ left: -18, right: 2, top: 10 }}>
           <XAxis
             dataKey="date"
             tickFormatter={formatDate}
@@ -150,7 +150,7 @@ function EquityCurveChart({ data }: { data: StrategyEquityPoint[] | null }) {
           />
           <YAxis
             tickFormatter={(value) => formatCurrency(Number(value))}
-            width={82}
+            width={58}
             {...CHART_AXIS_PROPS}
           />
           <Tooltip
@@ -205,9 +205,9 @@ function DrawdownChart({ data }: { data: StrategyDrawdownPoint[] | null }) {
   }
 
   return (
-    <ChartContainer className="h-[320px] w-full">
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={chartData} margin={{ left: 0, right: 16, top: 10 }}>
+    <ChartContainer className="h-[260px] w-full min-w-0 overflow-hidden sm:h-[320px]">
+      <ResponsiveContainer width="99%" height="100%">
+        <AreaChart data={chartData} margin={{ left: -12, right: 2, top: 10 }}>
           <XAxis
             dataKey="date"
             tickFormatter={formatDate}
@@ -216,7 +216,7 @@ function DrawdownChart({ data }: { data: StrategyDrawdownPoint[] | null }) {
           />
           <YAxis
             tickFormatter={(value) => formatPercent(Number(value))}
-            width={64}
+            width={48}
             {...CHART_AXIS_PROPS}
           />
           <Tooltip
@@ -276,10 +276,10 @@ function AllocationChart({
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
+    <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
       <div className="sr-only">{label}</div>
-      <ChartContainer className="h-[260px] w-full">
-        <ResponsiveContainer width="100%" height="100%">
+      <ChartContainer className="h-[220px] w-full min-w-0 overflow-hidden sm:h-[260px]">
+        <ResponsiveContainer width="99%" height="100%">
           <PieChart>
             <Pie
               data={chartData}
@@ -302,11 +302,11 @@ function AllocationChart({
           </PieChart>
         </ResponsiveContainer>
       </ChartContainer>
-      <div className="space-y-2">
+      <div className="min-w-0 space-y-2">
         {chartData.map((item, index) => (
           <div
             key={item.asset}
-            className="flex items-center justify-between gap-3 text-sm"
+            className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 text-sm"
           >
             <div className="flex min-w-0 items-center gap-2">
               <span
@@ -315,9 +315,11 @@ function AllocationChart({
                   backgroundColor: CHART_COLORS[index % CHART_COLORS.length],
                 }}
               />
-              <span className="truncate">{item.asset}</span>
+              <span className="min-w-0 truncate">{item.asset}</span>
             </div>
-            <span className="font-medium">{formatPercent(item.weight)}</span>
+            <span className="shrink-0 font-medium">
+              {formatPercent(item.weight)}
+            </span>
           </div>
         ))}
       </div>
@@ -333,7 +335,7 @@ function ReportSection({
   children: ReactNode;
 }) {
   return (
-    <section className="space-y-3 rounded-xl border bg-card p-4 shadow-xs sm:p-5">
+    <section className="min-w-0 space-y-3 overflow-hidden rounded-xl border bg-card p-4 shadow-xs sm:p-5">
       <h2 className="font-heading text-base font-semibold tracking-tight">
         {title}
       </h2>
