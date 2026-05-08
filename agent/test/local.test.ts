@@ -32,31 +32,29 @@ async function withStorageRoot(
   }
 }
 
-test("local storage reads, writes, and deletes memory files", async () => {
+test("local storage reads, writes, and deletes objects", async () => {
   await withStorageRoot(async (storageRoot) => {
-    const userId = "user-123";
-    const strategyId = "strategy-456";
-    const memoryKey = storageLayout.strategyMemoryKey(userId, strategyId);
+    const objectKey = storageLayout.datasetKey("sample.json");
     const initialBody = "## tried\n\n- baseline\n";
 
-    assert.equal(await getObject(memoryKey), null);
+    assert.equal(await getObject(objectKey), null);
 
-    await putObject(memoryKey, initialBody);
-    const storedBody = await readFile(join(storageRoot, memoryKey), "utf8");
+    await putObject(objectKey, initialBody);
+    const storedBody = await readFile(join(storageRoot, objectKey), "utf8");
     assert.equal(storedBody, initialBody);
 
-    const fetched = await getObject(memoryKey);
+    const fetched = await getObject(objectKey);
     assert.equal(fetched, initialBody);
 
     const updatedBody = `${initialBody}- retry winner\n`;
-    await putObject(memoryKey, updatedBody);
-    assert.equal(await getObject(memoryKey), updatedBody);
+    await putObject(objectKey, updatedBody);
+    assert.equal(await getObject(objectKey), updatedBody);
 
     await assert.rejects(() =>
-      access(`${join(storageRoot, memoryKey)}.metadata.json`),
+      access(`${join(storageRoot, objectKey)}.metadata.json`),
     );
 
-    await deleteObject(memoryKey);
-    assert.equal(await getObject(memoryKey), null);
+    await deleteObject(objectKey);
+    assert.equal(await getObject(objectKey), null);
   });
 });

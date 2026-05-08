@@ -74,12 +74,6 @@ export const storageLayout = {
       "instructions.md",
     );
   },
-  strategyMemoryKey(userId: string, strategyId: string) {
-    return buildStorageKey(
-      this.strategyPrefix(userId, strategyId),
-      "memory.md",
-    );
-  },
   strategyArtifactsPrefix(userId: string, strategyId: string) {
     return buildStorageKey(
       this.strategyPrefix(userId, strategyId),

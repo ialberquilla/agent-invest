@@ -114,11 +114,6 @@ export const RESPONSE_POLICY = [
   "- The allocation passed to `finalize_strategy_result` must use the same coin_ids and weights as the final `run_backtest` allocation. Do not summarize, rename, or swap assets after backtesting.",
 ].join("\n");
 
-export const MEMORY_DISCIPLINE_GUIDANCE = [
-  "- Use opencode's built-in shell and file-edit tools for memory I/O. Read or update `users/<user_id>/profile.md` and `users/<user_id>/strategies/<strategy_id>/memory.md` under `STORAGE_ROOT` with `cat`, `tee`, or direct file edits instead of calling a dedicated memory script.",
-  "- Ask before changing `profile.md`. Strategy `memory.md` is working memory, so keep it concise and update it freely when it helps future turns.",
-].join("\n");
-
 export const AGENT_SCRIPT_REGISTRY: readonly AgentScriptDefinition[] = [
   {
     name: "list_universe",
@@ -266,9 +261,6 @@ export function buildToolManifestSection(): string {
       "",
       "## Scripts",
       scriptEntries,
-      "",
-      "## Memory discipline",
-      MEMORY_DISCIPLINE_GUIDANCE,
     ].join("\n"),
   );
 }
@@ -278,17 +270,15 @@ export async function buildSystemPrompt({
   strategyId,
   readSection = defaultReadSection,
 }: BuildSystemPromptOptions): Promise<string> {
-  const [profile, instructions, memory] = await Promise.all([
+  const [profile, instructions] = await Promise.all([
     readSection(storageLayout.userProfileKey(userId)),
     readSection(storageLayout.strategyInstructionsKey(userId, strategyId)),
-    readSection(storageLayout.strategyMemoryKey(userId, strategyId)),
   ]);
 
   return [
     renderSection("Response Policy", RESPONSE_POLICY),
     renderSection("User Profile", profile ?? ""),
     renderSection("Strategy Instructions", instructions ?? ""),
-    renderSection("Strategy Memory", memory ?? ""),
     buildToolManifestSection(),
   ].join("\n\n");
 }
