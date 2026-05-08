@@ -13,8 +13,8 @@ env:
   FRONTEND_IMAGE: agent-invest-frontend
   AGENT_APP_NAME: agent-invest-agent-prod
   FRONTEND_APP_NAME: agent-invest-frontend-prod
-  GMX_INGESTION_JOB_NAME: agent-invest-gmx-ingestion-daily
-  COINGECKO_INGESTION_JOB_NAME: agent-invest-coingecko-ingestion-daily
+  GMX_INGESTION_JOB_NAME: agent-invest-gmx-ingest
+  COINGECKO_INGESTION_JOB_NAME: agent-invest-coingecko-ingest
 
 jobs:
   deploy-agent:
