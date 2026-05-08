@@ -8,7 +8,6 @@ import {
   AGENT_SCRIPT_REGISTRY,
   buildSystemPrompt,
   buildToolManifestSection,
-  MEMORY_DISCIPLINE_GUIDANCE,
   RESPONSE_POLICY,
 } from "../src/agent/prompt.js";
 import { storageLayout } from "../src/storage/local.js";
@@ -46,7 +45,6 @@ test("buildSystemPrompt concatenates sections in stable order", async () => {
         storageLayout.strategyInstructionsKey(userId, strategyId),
         "Compare weekly and daily rebalances.",
       ],
-      [storageLayout.strategyMemoryKey(userId, strategyId), null],
     ]);
 
     const prompt = await buildSystemPrompt({
@@ -61,7 +59,6 @@ test("buildSystemPrompt concatenates sections in stable order", async () => {
     assert.deepEqual(seenKeys, [
       storageLayout.userProfileKey(userId),
       storageLayout.strategyInstructionsKey(userId, strategyId),
-      storageLayout.strategyMemoryKey(userId, strategyId),
     ]);
     assert.equal(
       prompt,
@@ -69,14 +66,13 @@ test("buildSystemPrompt concatenates sections in stable order", async () => {
         "# Response Policy\n" + RESPONSE_POLICY,
         "# User Profile\n# Preferences\n- prefers weekly rebalance",
         "# Strategy Instructions\nCompare weekly and daily rebalances.",
-        "# Strategy Memory\n",
         buildToolManifestSection(),
       ].join("\n\n"),
     );
   });
 });
 
-test("tool manifest is registry-driven and includes memory guidance", () => {
+test("tool manifest is registry-driven", () => {
   const manifest = buildToolManifestSection();
 
   for (const script of AGENT_SCRIPT_REGISTRY) {
@@ -99,15 +95,9 @@ test("tool manifest is registry-driven and includes memory guidance", () => {
       "Each script enforces its own per-call timeout and exits non-zero when it times out.",
     ),
   );
-  assert.ok(manifest.includes("## Memory discipline"));
-  assert.ok(manifest.includes(MEMORY_DISCIPLINE_GUIDANCE));
   assert.ok(!manifest.includes("`read_memory`"));
   assert.ok(!manifest.includes("`write_memory`"));
-  assert.ok(
-    manifest.includes(
-      "Use opencode's built-in shell and file-edit tools for memory I/O.",
-    ),
-  );
+  assert.ok(!manifest.includes("Memory discipline"));
   assert.ok(manifest.includes("`rank_universe`"));
   assert.ok(
     manifest.includes(

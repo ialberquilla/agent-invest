@@ -3,7 +3,6 @@ export {
   AGENT_SCRIPT_REGISTRY,
   buildSystemPrompt,
   buildToolManifestSection,
-  MEMORY_DISCIPLINE_GUIDANCE,
 } from "./agent/prompt";
 export {
   DEFAULT_OPENCODE_MODEL,
