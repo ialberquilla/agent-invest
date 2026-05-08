@@ -9,7 +9,11 @@ from typing import Any, Literal
 
 import pandas as pd
 
-from agent_invest_scripts._lib import asset_universe_features, print_json
+from agent_invest_scripts._lib import (
+    asset_universe_features,
+    compute_universe_features_as_of,
+    print_json,
+)
 from agent_invest_scripts._lib.cli import (
     add_timeout_argument,
     fail_json,
@@ -71,6 +75,11 @@ def build_parser() -> argparse.ArgumentParser:
         description="Rank the asset universe by materialized screening features."
     )
     parser.add_argument("--top-n", required=True, type=_positive_int)
+    parser.add_argument(
+        "--as-of",
+        type=_date,
+        help="Anchor screening features to this date instead of the latest snapshot. Required to avoid forward-peeking when the chosen coins will then be backtested over an overlapping window.",
+    )
     parser.add_argument("--max-market-cap-rank", type=_positive_int)
     parser.add_argument("--min-market-cap", type=float)
     parser.add_argument("--min-data-days-365d", type=_non_negative_int, default=180)
@@ -105,6 +114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         with script_timeout(resolve_timeout_seconds(args.timeout_seconds)):
             payload = run(
                 top_n=args.top_n,
+                as_of=args.as_of,
                 max_market_cap_rank=args.max_market_cap_rank,
                 min_market_cap=args.min_market_cap,
                 min_data_days_365d=args.min_data_days_365d,
@@ -131,6 +141,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 def run(
     *,
     top_n: int,
+    as_of: date | None = None,
     max_market_cap_rank: int | None = None,
     min_market_cap: float | None = None,
     min_data_days_365d: int = 180,
@@ -147,7 +158,11 @@ def run(
     sort: SortMode = "market_cap_rank",
     objective: Objective | None = None,
 ) -> list[dict[str, Any]]:
-    frame = asset_universe_features()
+    frame = (
+        compute_universe_features_as_of(as_of=as_of)
+        if as_of is not None
+        else asset_universe_features()
+    )
     return rank_universe(
         frame,
         top_n=top_n,
