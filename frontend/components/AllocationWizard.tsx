@@ -501,23 +501,23 @@ export function AllocationWizard() {
   return (
     <main className="min-h-dvh bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--primary)_16%,transparent),transparent_34%),linear-gradient(180deg,var(--background),color-mix(in_oklab,var(--accent)_38%,var(--background)))] px-3 py-4 sm:px-4 lg:px-6">
       <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
-        <section className="grid gap-5 overflow-hidden rounded-2xl border bg-background p-4 shadow-sm lg:grid-cols-[1fr_auto] lg:items-end">
+        <section className="grid gap-3 overflow-hidden rounded-2xl border bg-background p-3 shadow-sm sm:gap-5 sm:p-4 lg:grid-cols-[1fr_auto] lg:items-end">
           <div className="min-w-0">
             <div className="max-w-3xl space-y-2">
               <Badge variant="secondary" className="w-fit">
                 Pond3r agent
               </Badge>
-              <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
+              <h1 className="text-xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
                 DeFi allocation copilot for crypto portfolio research.
               </h1>
-              <p className="text-sm leading-6 text-muted-foreground sm:text-base">
+              <p className="text-sm leading-5 text-muted-foreground sm:text-base sm:leading-6">
                 Give Pond3r the core allocation inputs, review the mandate, and
                 launch an agent run grounded in portfolio constraints and
                 backtests.
               </p>
             </div>
           </div>
-          <div className="grid gap-2 rounded-xl bg-accent p-3 text-sm lg:min-w-60">
+          <div className="grid gap-2 rounded-xl bg-accent p-2.5 text-sm sm:p-3 lg:min-w-60">
             <div className="flex items-center justify-between gap-3">
               <span className="text-muted-foreground">Progress</span>
               <span className="font-medium">
@@ -533,8 +533,46 @@ export function AllocationWizard() {
           </div>
         </section>
 
+        <nav
+          className="-mx-3 overflow-hidden px-3 lg:hidden"
+          aria-label="Wizard steps"
+        >
+          <div className="flex gap-1.5 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {steps.map((step, index) => {
+              const isSelected = index === selectedStepIndex;
+
+              return (
+                <button
+                  key={step.title}
+                  type="button"
+                  className={`flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-sm transition-colors ${
+                    isSelected
+                      ? "border-primary bg-primary text-primary-foreground shadow-sm"
+                      : "border-border bg-background text-foreground hover:bg-muted"
+                  }`}
+                  aria-current={isSelected ? "step" : undefined}
+                  onClick={() => goToStep(index, "sidebar")}
+                >
+                  <span
+                    className={`flex size-5 items-center justify-center rounded-full text-[11px] font-bold ${
+                      isSelected
+                        ? "bg-primary-foreground text-primary"
+                        : "bg-muted text-foreground"
+                    }`}
+                  >
+                    {index + 1}
+                  </span>
+                  <span className="whitespace-nowrap font-medium">
+                    {step.title}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </nav>
+
         <section className="grid min-w-0 gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]">
-          <Card className="min-w-0 lg:sticky lg:top-4 lg:max-h-[calc(100dvh-2rem)]">
+          <Card className="hidden min-w-0 lg:sticky lg:top-4 lg:flex lg:max-h-[calc(100dvh-2rem)]">
             <CardHeader>
               <CardTitle>Guided steps</CardTitle>
               <CardDescription>Jump back to edit any answer.</CardDescription>
@@ -590,20 +628,25 @@ export function AllocationWizard() {
           </Card>
 
           <Card className="min-w-0">
-            <CardHeader className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0 space-y-2">
-                  <Badge variant="outline" className="w-fit">
-                    Step {selectedStepIndex + 1}
-                  </Badge>
-                  <CardTitle className="text-2xl">
-                    {steps[selectedStepIndex].title}
-                  </CardTitle>
-                  <CardDescription>
+            <CardHeader className="sticky top-0 z-10 gap-2 border-b bg-background/95 py-2 backdrop-blur supports-[backdrop-filter]:bg-background/80 sm:py-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="min-w-0 space-y-1 sm:space-y-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 px-2 py-0 text-[11px] sm:text-xs"
+                    >
+                      Step {selectedStepIndex + 1}
+                    </Badge>
+                    <CardTitle className="truncate text-lg sm:text-2xl">
+                      {steps[selectedStepIndex].title}
+                    </CardTitle>
+                  </div>
+                  <CardDescription className="hidden leading-5 min-[420px]:block">
                     {steps[selectedStepIndex].description}
                   </CardDescription>
                 </div>
-                <div className="flex shrink-0 flex-col gap-2 sm:flex-row lg:pt-1">
+                <div className="hidden shrink-0 flex-col gap-2 sm:flex-row lg:flex lg:pt-1">
                   <Button
                     variant="outline"
                     size="lg"
@@ -632,7 +675,7 @@ export function AllocationWizard() {
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="grid gap-5">
+            <CardContent className="grid gap-5 pb-2 lg:pb-0">
               {selectedStepIndex === 0 ? (
                 <>
                   <OptionGroup
@@ -844,9 +887,64 @@ export function AllocationWizard() {
                 </>
               ) : null}
             </CardContent>
+            <CardFooter className="sticky bottom-0 z-10 flex-col items-stretch gap-2 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85 lg:hidden">
+              <div className="grid grid-cols-2 gap-2">
+                <Button
+                  variant="outline"
+                  size="lg"
+                  disabled={selectedStepIndex === 0}
+                  onClick={() =>
+                    goToStep(Math.max(selectedStepIndex - 1, 0), "back")
+                  }
+                >
+                  Back
+                </Button>
+                {isReviewStep ? (
+                  <Button
+                    size="lg"
+                    disabled={errors.length > 0}
+                    onClick={runAllocationAgent}
+                  >
+                    Run agent
+                  </Button>
+                ) : (
+                  <Button size="lg" onClick={goNext}>
+                    Continue
+                  </Button>
+                )}
+              </div>
+            </CardFooter>
           </Card>
 
-          <Card className="min-w-0 lg:col-span-2 lg:sticky lg:top-4 lg:h-fit xl:col-span-1">
+          <details className="rounded-xl border bg-card p-4 text-card-foreground shadow-xs lg:hidden">
+            <summary className="cursor-pointer list-none text-sm font-medium marker:hidden">
+              Review draft brief
+            </summary>
+            <div className="mt-3 grid gap-3">
+              <div className="rounded-xl border bg-muted/40 p-3">
+                <div className="mb-1 text-sm font-medium">Draft brief</div>
+                <p className="text-sm leading-6 text-muted-foreground">
+                  Build a{" "}
+                  {getLabel(
+                    riskPreferenceOptions,
+                    state.riskPreference,
+                  ).toLowerCase()}{" "}
+                  crypto allocation for a{" "}
+                  {getLabel(horizonOptions, state.horizon).toLowerCase()}{" "}
+                  horizon using{" "}
+                  {getLabel(universeOptions, state.universe).toLowerCase()}.
+                </p>
+              </div>
+              <Button
+                disabled={errors.length > 0}
+                onClick={() => goToStep(steps.length - 1, "review_button")}
+              >
+                Review mandate
+              </Button>
+            </div>
+          </details>
+
+          <Card className="hidden min-w-0 lg:col-span-2 lg:sticky lg:top-4 lg:flex lg:h-fit xl:col-span-1">
             <CardHeader>
               <CardTitle>Review and Run</CardTitle>
               <CardDescription>
