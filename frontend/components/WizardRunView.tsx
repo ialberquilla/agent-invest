@@ -2,7 +2,7 @@
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { ArtifactGallery } from "@/components/ArtifactGallery";
 import { LiveActivity } from "@/components/LiveActivity";
@@ -127,6 +127,25 @@ function readStoredRun(id: string | null): StoredWizardRun | null {
   }
 }
 
+function writeStoredRun(id: string | null, storedRun: StoredWizardRun) {
+  if (!id) return;
+
+  const serialized = JSON.stringify(storedRun);
+  localStorage.setItem(`wizard-run:${id}`, serialized);
+  sessionStorage.setItem(`wizard-run:${id}`, serialized);
+}
+
+function getRunStartedId(data: string) {
+  try {
+    const payload = JSON.parse(data) as unknown;
+    return isRecord(payload) && typeof payload.run_id === "string"
+      ? payload.run_id
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function isStoredWizardRunResult(
   value: unknown,
 ): value is StoredWizardRunResult {
@@ -161,6 +180,7 @@ function writeStoredRunResult(id: string | null, strategyId: string, run: Run) {
 }
 
 export function WizardRunView() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const id = searchParams.get("id");
   const [storedRun, setStoredRun] = useState<StoredWizardRun | null>(null);
@@ -215,6 +235,7 @@ export function WizardRunView() {
 
     async function run() {
       setRunState({ ...initialRunState, status: "running" });
+      let storageId = id;
       trackEvent("wizard_run_started", {
         run_source: "allocation_wizard",
       });
@@ -296,6 +317,20 @@ export function WizardRunView() {
         let timeline: TimelineState = initialTimeline;
         try {
           for await (const sseMessage of readSse(response.body)) {
+            if (sseMessage.event === "run.started") {
+              const persistedRunId = getRunStartedId(sseMessage.data);
+              if (persistedRunId) {
+                storageId = persistedRunId;
+                writeStoredRun(persistedRunId, activeRun);
+                router.replace(
+                  `/wizard/run?id=${encodeURIComponent(persistedRunId)}`,
+                );
+                setRunState((current) => ({
+                  ...current,
+                  runId: persistedRunId,
+                }));
+              }
+            }
             timeline = reduceTimeline(timeline, sseMessage);
             setRunState((current) => ({ ...current, timeline }));
             if (timeline.done) break;
@@ -318,7 +353,7 @@ export function WizardRunView() {
         }
 
         const artifacts = runResult.artifacts ?? [];
-        writeStoredRunResult(id, strategyId, runResult);
+        writeStoredRunResult(storageId, strategyId, runResult);
         setMessages(strategyId, [
           { role: "user", text: userMessageText },
           {
@@ -362,7 +397,7 @@ export function WizardRunView() {
     }
 
     void run();
-  }, [id, storedRun]);
+  }, [id, router, storedRun]);
 
   const finalRun = runState.timeline.finalRun;
   const finalArtifacts = finalRun?.artifacts ?? [];
