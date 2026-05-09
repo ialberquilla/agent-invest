@@ -240,6 +240,60 @@ function createRepositoryDouble(state: ReturnType<typeof createState>) {
   };
 }
 
+test("agent API key rejects requests without the x-api-key header", async () => {
+  const previousApiKey = process.env.AGENT_API_KEY;
+  process.env.AGENT_API_KEY = "test-agent-key";
+  const app = buildServer({
+    repositories: createRepositoryDouble(createState()),
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: { user_id: "user-1" },
+      url: "/strategies",
+    });
+
+    assert.equal(response.statusCode, 401);
+    assert.deepEqual(response.json(), {
+      error: "Unauthorized",
+      message: "Unauthorized",
+      statusCode: 401,
+    });
+  } finally {
+    await app.close();
+    if (previousApiKey === undefined) delete process.env.AGENT_API_KEY;
+    else process.env.AGENT_API_KEY = previousApiKey;
+  }
+});
+
+test("agent API key accepts requests with a valid x-api-key header", async () => {
+  const previousApiKey = process.env.AGENT_API_KEY;
+  process.env.AGENT_API_KEY = "test-agent-key";
+  const app = buildServer({
+    repositories: createRepositoryDouble(createState()),
+  });
+
+  try {
+    const response = await app.inject({
+      headers: { "x-api-key": "test-agent-key" },
+      method: "POST",
+      payload: { user_id: "user-1" },
+      url: "/strategies",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(
+      response.json().strategy_id,
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+    );
+  } finally {
+    await app.close();
+    if (previousApiKey === undefined) delete process.env.AGENT_API_KEY;
+    else process.env.AGENT_API_KEY = previousApiKey;
+  }
+});
+
 test("POST /strategies creates a new strategy row and returns its id", async () => {
   const state = createState();
   const app = buildServer({

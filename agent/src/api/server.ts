@@ -1,5 +1,5 @@
 import "../env";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import {
   appendFile,
@@ -89,6 +89,27 @@ function getPort() {
 
 function httpError(statusCode: number, message: string) {
   return Object.assign(new Error(message), { statusCode });
+}
+
+function isProduction() {
+  return process.env.NODE_ENV === "production";
+}
+
+function configuredAgentApiKey() {
+  return process.env.AGENT_API_KEY?.trim();
+}
+
+function secureEquals(left: string, right: string) {
+  const leftBuffer = Buffer.from(left);
+  const rightBuffer = Buffer.from(right);
+  return (
+    leftBuffer.length === rightBuffer.length &&
+    timingSafeEqual(leftBuffer, rightBuffer)
+  );
+}
+
+function headerValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function errorMessage(error: unknown) {
@@ -943,6 +964,19 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   };
   const runningIngestions = new Set<string>();
   const app = Fastify({ loggerInstance: pino() });
+
+  app.addHook("onRequest", async (request) => {
+    const apiKey = configuredAgentApiKey();
+    if (!apiKey) {
+      if (isProduction()) throw httpError(500, "AGENT_API_KEY is not set");
+      return;
+    }
+
+    const requestApiKey = headerValue(request.headers["x-api-key"])?.trim();
+    if (!requestApiKey || !secureEquals(requestApiKey, apiKey)) {
+      throw httpError(401, "Unauthorized");
+    }
+  });
 
   app.get("/health", async () => ({ ok: true }));
 

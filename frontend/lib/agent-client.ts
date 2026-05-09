@@ -16,6 +16,14 @@ function buildAgentUrl(path: string) {
   return new URL(path, agentUrl);
 }
 
+function agentApiKey() {
+  const apiKey = process.env.AGENT_API_KEY?.trim();
+  if (!apiKey && process.env.NODE_ENV === "production") {
+    throw new Error("AGENT_API_KEY is not set");
+  }
+  return apiKey;
+}
+
 function isJsonBody(body: AgentFetchInit["body"]): body is JsonBody {
   if (body === null || body === undefined) return false;
   if (Array.isArray(body)) return true;
@@ -26,11 +34,14 @@ function isJsonBody(body: AgentFetchInit["body"]): body is JsonBody {
 }
 
 function withJsonBody(init: AgentFetchInit = {}): RequestInit {
+  const headers = new Headers(init.headers);
+  const apiKey = agentApiKey();
+  if (apiKey) headers.set("x-api-key", apiKey);
+
   if (init.body === undefined) {
-    return init as RequestInit;
+    return { ...init, headers } as RequestInit;
   }
 
-  const headers = new Headers(init.headers);
   const isJson = isJsonBody(init.body);
   if (isJson && !headers.has("content-type")) {
     headers.set("content-type", "application/json");
