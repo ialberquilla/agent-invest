@@ -169,7 +169,6 @@ jobs:
             --name "${{ env.GMX_INGESTION_JOB_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
-            --trigger-type Schedule \
             --cron-expression "0 2 * * *" \
             --replica-timeout 3600 \
             --replica-retry-limit 1 \
@@ -228,7 +227,6 @@ jobs:
             --name "${{ env.COINGECKO_INGESTION_JOB_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
-            --trigger-type Schedule \
             --cron-expression "0 3 * * *" \
             --replica-timeout 1800 \
             --replica-retry-limit 1 \
