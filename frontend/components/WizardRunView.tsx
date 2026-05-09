@@ -2,7 +2,7 @@
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 
 import { ArtifactGallery } from "@/components/ArtifactGallery";
 import { LiveActivity } from "@/components/LiveActivity";
@@ -32,6 +32,7 @@ import type { AllocationWizardState } from "@/lib/wizard-prompt";
 
 type StoredWizardRun = {
   state: AllocationWizardState;
+  strategyId: string;
 };
 
 type StoredWizardRunResult = {
@@ -78,7 +79,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isStoredWizardRun(value: unknown): value is StoredWizardRun {
-  return isRecord(value) && isRecord(value.state);
+  return (
+    isRecord(value) &&
+    isRecord(value.state) &&
+    typeof value.strategyId === "string" &&
+    value.strategyId.trim().length > 0
+  );
 }
 
 function wizardSubmissionText() {
@@ -127,14 +133,6 @@ function readStoredRun(id: string | null): StoredWizardRun | null {
   }
 }
 
-function writeStoredRun(id: string | null, storedRun: StoredWizardRun) {
-  if (!id) return;
-
-  const serialized = JSON.stringify(storedRun);
-  localStorage.setItem(`wizard-run:${id}`, serialized);
-  sessionStorage.setItem(`wizard-run:${id}`, serialized);
-}
-
 function getRunStartedId(data: string) {
   try {
     const payload = JSON.parse(data) as unknown;
@@ -180,7 +178,6 @@ function writeStoredRunResult(id: string | null, strategyId: string, run: Run) {
 }
 
 export function WizardRunView() {
-  const router = useRouter();
   const searchParams = useSearchParams();
   const id = searchParams.get("id");
   const [storedRun, setStoredRun] = useState<StoredWizardRun | null>(null);
@@ -235,45 +232,13 @@ export function WizardRunView() {
 
     async function run() {
       setRunState({ ...initialRunState, status: "running" });
-      let storageId = id;
+      const storageId = id;
       trackEvent("wizard_run_started", {
         run_source: "allocation_wizard",
       });
 
       try {
-        let strategyResponse: Response;
-        try {
-          strategyResponse = await fetch("/api/strategies", {
-            method: "POST",
-            cache: "no-store",
-          });
-        } catch (error) {
-          throw new WizardRunError(
-            error instanceof Error
-              ? error.message
-              : "Unable to create a strategy",
-            "strategy_create",
-          );
-        }
-        const strategyPayload = await readJson(strategyResponse);
-
-        if (!strategyResponse.ok) {
-          throw new WizardRunError(
-            getErrorMessage(strategyPayload, "Unable to create a strategy"),
-            "strategy_create",
-          );
-        }
-        if (
-          !isRecord(strategyPayload) ||
-          typeof strategyPayload.strategy_id !== "string"
-        ) {
-          throw new WizardRunError(
-            "Strategy creation returned an invalid response",
-            "strategy_create",
-          );
-        }
-
-        const strategyId = strategyPayload.strategy_id;
+        const strategyId = activeRun.strategyId;
         const userMessageText = wizardSubmissionText();
         setStrategyId(strategyId);
         upsertKnownStrategy({
@@ -320,11 +285,6 @@ export function WizardRunView() {
             if (sseMessage.event === "run.started") {
               const persistedRunId = getRunStartedId(sseMessage.data);
               if (persistedRunId) {
-                storageId = persistedRunId;
-                writeStoredRun(persistedRunId, activeRun);
-                router.replace(
-                  `/wizard/run?id=${encodeURIComponent(persistedRunId)}`,
-                );
                 setRunState((current) => ({
                   ...current,
                   runId: persistedRunId,
@@ -397,7 +357,7 @@ export function WizardRunView() {
     }
 
     void run();
-  }, [id, router, storedRun]);
+  }, [id, storedRun]);
 
   const finalRun = runState.timeline.finalRun;
   const finalArtifacts = finalRun?.artifacts ?? [];

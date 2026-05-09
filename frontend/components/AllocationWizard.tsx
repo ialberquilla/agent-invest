@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import type { StrategyCreateResponse } from "@/lib/types";
 import type { AllocationWizardState } from "@/lib/wizard-prompt";
 import { trackEvent } from "@/lib/analytics";
 
@@ -78,6 +79,48 @@ type ValidationResult = {
   messages: string[];
   codes: string[];
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+async function readJson(response: Response) {
+  try {
+    return (await response.json()) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function getStrategyCreateError(payload: unknown) {
+  if (
+    isRecord(payload) &&
+    typeof payload.message === "string" &&
+    payload.message.trim()
+  ) {
+    return payload.message.trim();
+  }
+
+  return "Unable to prepare the allocation agent";
+}
+
+async function requestStrategy() {
+  const response = await fetch("/api/strategies", {
+    method: "POST",
+    cache: "no-store",
+  });
+  const payload = await readJson(response);
+
+  if (!response.ok) {
+    throw new Error(getStrategyCreateError(payload));
+  }
+
+  if (!isRecord(payload) || typeof payload.strategy_id !== "string") {
+    throw new Error("Strategy creation returned an invalid response");
+  }
+
+  return payload as StrategyCreateResponse;
+}
 
 const universeOptions: Option<AllocationWizardState["universe"]>[] = [
   { value: "top10", label: "Top 10 by market cap" },
@@ -285,6 +328,8 @@ export function AllocationWizard() {
   const router = useRouter();
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [state, setState] = useState<AllocationWizardState>(defaultState);
+  const [isPreparingAgent, setIsPreparingAgent] = useState(false);
+  const [preparationError, setPreparationError] = useState<string | null>(null);
   const validation = useMemo(() => validateState(state), [state]);
   const errors = validation.messages;
   const navigationSourceRef = useRef<NavigationSource | undefined>(undefined);
@@ -381,7 +426,13 @@ export function AllocationWizard() {
     });
   }
 
-  function runAllocationAgent() {
+  async function runAllocationAgent() {
+    if (isPreparingAgent) {
+      return;
+    }
+
+    setPreparationError(null);
+
     if (errors.length > 0) {
       trackEvent("wizard_validation_failed", {
         error_count: validation.codes.length,
@@ -406,13 +457,26 @@ export function AllocationWizard() {
       ).initial_capital_provided,
     });
 
-    const runId = crypto.randomUUID();
-    const storedRun = JSON.stringify({
-      state,
-    });
-    localStorage.setItem(`wizard-run:${runId}`, storedRun);
-    sessionStorage.setItem(`wizard-run:${runId}`, storedRun);
-    router.push(`/wizard/run?id=${encodeURIComponent(runId)}`);
+    setIsPreparingAgent(true);
+
+    try {
+      const strategy = await requestStrategy();
+      const strategyId = strategy.strategy_id;
+      const storedRun = JSON.stringify({
+        state,
+        strategyId,
+      });
+      localStorage.setItem(`wizard-run:${strategyId}`, storedRun);
+      sessionStorage.setItem(`wizard-run:${strategyId}`, storedRun);
+      router.push(`/wizard/run?id=${encodeURIComponent(strategyId)}`);
+    } catch (error) {
+      setPreparationError(
+        error instanceof Error
+          ? error.message
+          : "Unable to prepare the allocation agent",
+      );
+      setIsPreparingAgent(false);
+    }
   }
 
   const summarySections: SummarySection[] = [
@@ -661,11 +725,13 @@ export function AllocationWizard() {
                   {isReviewStep ? (
                     <Button
                       size="lg"
-                      disabled={errors.length > 0}
+                      disabled={errors.length > 0 || isPreparingAgent}
                       className="sm:min-w-44"
                       onClick={runAllocationAgent}
                     >
-                      Run allocation agent
+                      {isPreparingAgent
+                        ? "Agent is preparing..."
+                        : "Run allocation agent"}
                     </Button>
                   ) : (
                     <Button size="lg" className="sm:min-w-52" onClick={goNext}>
@@ -902,10 +968,10 @@ export function AllocationWizard() {
                 {isReviewStep ? (
                   <Button
                     size="lg"
-                    disabled={errors.length > 0}
+                    disabled={errors.length > 0 || isPreparingAgent}
                     onClick={runAllocationAgent}
                   >
-                    Run agent
+                    {isPreparingAgent ? "Preparing..." : "Run agent"}
                   </Button>
                 ) : (
                   <Button size="lg" onClick={goNext}>
@@ -914,6 +980,16 @@ export function AllocationWizard() {
                 )}
               </div>
             </CardFooter>
+            {preparationError ? (
+              <div className="border-t px-4 py-3 text-sm text-destructive sm:px-6">
+                {preparationError}
+              </div>
+            ) : isPreparingAgent ? (
+              <div className="border-t px-4 py-3 text-sm text-muted-foreground sm:px-6">
+                Agent is preparing your strategy workspace. Live thinking and
+                tool calls will appear as soon as the strategy is ready.
+              </div>
+            ) : null}
           </Card>
 
           <details className="rounded-xl border bg-card p-4 text-card-foreground shadow-xs lg:hidden">
