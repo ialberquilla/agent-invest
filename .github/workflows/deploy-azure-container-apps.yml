@@ -75,6 +75,7 @@ jobs:
               coingecko-api-key="${{ secrets.COINGECKO_API_KEY }}" \
               azure-api-key="${{ secrets.AZURE_API_KEY }}" \
               azure-resource-name="${{ secrets.AZURE_RESOURCE_NAME }}" \
+              agent-api-key="${{ secrets.AGENT_API_KEY }}" \
               maintenance-token="${{ secrets.MAINTENANCE_TOKEN }}" \
             --env-vars \
               DATABASE_URL=secretref:database-url \
@@ -83,6 +84,7 @@ jobs:
               COINGECKO_API_KEY_HEADER=x-cg-demo-api-key \
               AZURE_API_KEY=secretref:azure-api-key \
               AZURE_RESOURCE_NAME=secretref:azure-resource-name \
+              AGENT_API_KEY=secretref:agent-api-key \
               OPENCODE_MODEL=azure/gpt-5.4 \
               OPENCODE_AUTH_PROVIDER=azure \
               MAINTENANCE_TOKEN=secretref:maintenance-token \
@@ -103,6 +105,7 @@ jobs:
               coingecko-api-key="${{ secrets.COINGECKO_API_KEY }}" \
               azure-api-key="${{ secrets.AZURE_API_KEY }}" \
               azure-resource-name="${{ secrets.AZURE_RESOURCE_NAME }}" \
+              agent-api-key="${{ secrets.AGENT_API_KEY }}" \
               maintenance-token="${{ secrets.MAINTENANCE_TOKEN }}"
           az containerapp update \
             --name "${{ env.AGENT_APP_NAME }}" \
@@ -117,6 +120,7 @@ jobs:
               COINGECKO_API_KEY_HEADER=x-cg-demo-api-key \
               AZURE_API_KEY=secretref:azure-api-key \
               AZURE_RESOURCE_NAME=secretref:azure-resource-name \
+              AGENT_API_KEY=secretref:agent-api-key \
               OPENCODE_MODEL=azure/gpt-5.4 \
               OPENCODE_AUTH_PROVIDER=azure \
               MAINTENANCE_TOKEN=secretref:maintenance-token \
@@ -304,14 +308,22 @@ jobs:
             --memory 1Gi \
             --min-replicas 1 \
             --max-replicas 3 \
+            --secrets \
+              agent-api-key="${{ secrets.AGENT_API_KEY }}" \
             --env-vars \
               AGENT_URL=${{ needs.deploy-agent.outputs.agent_url }} \
+              AGENT_API_KEY=secretref:agent-api-key \
               NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID }} \
               NODE_ENV=production
 
       - name: Update frontend container app
         if: steps.check-frontend.outputs.exists == 'true'
         run: |
+          az containerapp secret set \
+            --name "${{ env.FRONTEND_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --secrets \
+              agent-api-key="${{ secrets.AGENT_API_KEY }}"
           az containerapp update \
             --name "${{ env.FRONTEND_APP_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
@@ -320,5 +332,6 @@ jobs:
             --memory 1Gi \
             --set-env-vars \
               AGENT_URL=${{ needs.deploy-agent.outputs.agent_url }} \
+              AGENT_API_KEY=secretref:agent-api-key \
               NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID }} \
               NODE_ENV=production
