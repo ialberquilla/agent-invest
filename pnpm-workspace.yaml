@@ -1,3 +1,5 @@
 packages:
   - agent
   - frontend
+
+minimumReleaseAge: 10080

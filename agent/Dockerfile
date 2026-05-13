@@ -32,7 +32,7 @@ RUN arch="$(dpkg --print-architecture)" \
   && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 
 RUN pip install --no-cache-dir "uv==${UV_VERSION}"
-RUN npm install --global "opencode-ai@${OPENCODE_VERSION}"
+RUN pnpm add --global "opencode-ai@${OPENCODE_VERSION}"
 
 FROM base AS deps
 WORKDIR /app
@@ -47,9 +47,10 @@ RUN pnpm --filter @agent-invest/agent build
 
 FROM base AS python-deps
 WORKDIR /app/agent/scripts
-COPY agent/scripts/pyproject.toml agent/scripts/uv.lock ./
+COPY agent/scripts/pyproject.toml agent/scripts/uv.lock agent/scripts/uv-age-policy.sh ./
 COPY agent/scripts/agent_invest_scripts ./agent_invest_scripts
-RUN uv sync --frozen
+RUN chmod +x ./uv-age-policy.sh \
+  && ./uv-age-policy.sh sync --frozen
 
 FROM base AS runner
 WORKDIR /app

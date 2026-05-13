@@ -497,10 +497,10 @@ These can live inside `StrategyResultReport.tsx` initially if the implementation
 If using `recharts`, add it to the frontend package.
 
 ```sh
-npm install recharts
+pnpm add recharts
 ```
 
-Use the package manager already used by the repo if different.
+Use pnpm for all JavaScript dependency changes in this repo.
 
 ### 5. Formatting Helpers
 

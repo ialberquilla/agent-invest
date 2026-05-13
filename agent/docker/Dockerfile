@@ -32,7 +32,7 @@ RUN arch="$(dpkg --print-architecture)" \
   && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 
 RUN pip install --no-cache-dir "uv==${UV_VERSION}"
-RUN npm install --global "opencode-ai@${OPENCODE_VERSION}"
+RUN pnpm add --global "opencode-ai@${OPENCODE_VERSION}"
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY agent/package.json agent/package.json
