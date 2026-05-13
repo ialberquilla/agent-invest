@@ -23,9 +23,9 @@ STORAGE_ROOT/
 ## Local Development
 
 1. Install JavaScript dependencies with `pnpm install`.
-2. Install Python dependencies with `uv sync --project agent/scripts`.
+2. Sync Python dependencies with `pnpm py:sync`; this applies uv's 7-day package age gate via `--exclude-newer`.
 3. Run TypeScript tests with `pnpm test`.
-4. Run Python tests with `uv run --project agent/scripts pytest`.
+4. Run Python tests from `agent/scripts` with `uv run pytest`.
 
 ## Docker
 

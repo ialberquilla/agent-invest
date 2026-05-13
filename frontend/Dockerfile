@@ -4,7 +4,11 @@
 # docker build -f frontend/Dockerfile .
 
 FROM node:24-alpine AS base
-RUN npm install -g pnpm@10.19.0
+ARG PNPM_VERSION=10.19.0
+ENV PNPM_HOME=/pnpm
+ENV PATH=/pnpm:${PATH}
+RUN corepack enable \
+  && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 
 FROM base AS deps
 WORKDIR /app

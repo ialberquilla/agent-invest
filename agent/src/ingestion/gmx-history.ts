@@ -227,7 +227,24 @@ export async function getLatestGmxPriceTimestamp(
       and(eq(assetPrices.assetId, assetId), eq(assetPrices.source, "gmx")),
     );
 
-  return row?.lastTs ?? null;
+  return toDateOrNull(row?.lastTs ?? null);
+}
+
+function toDateOrNull(value: Date | string | null): Date | null {
+  if (value === null) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return value;
+  }
+
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Latest GMX price timestamp must be a valid date");
+  }
+
+  return date;
 }
 
 export function getNeededCandleDays(

@@ -212,6 +212,27 @@ test("getLatestGmxPriceTimestamp reads max GMX timestamp for an asset", async ()
   assert.ok(calls.where);
 });
 
+test("getLatestGmxPriceTimestamp normalizes aggregate timestamp strings", async () => {
+  const database = {
+    select() {
+      return {
+        from() {
+          return {
+            where() {
+              return Promise.resolve([{ lastTs: "2026-05-04T00:00:00.000Z" }]);
+            },
+          };
+        },
+      };
+    },
+  };
+
+  assert.deepEqual(
+    await getLatestGmxPriceTimestamp("BTC", database as never),
+    new Date("2026-05-04T00:00:00.000Z"),
+  );
+});
+
 test("upsertCandles skips empty candle batches", async () => {
   const database = {
     insert() {

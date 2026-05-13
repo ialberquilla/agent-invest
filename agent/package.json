@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "preinstall": "node ../scripts/enforce-pnpm.cjs",
     "typecheck": "tsc -p tsconfig.json",
     "build": "pnpm typecheck && tsup",
     "dev": "tsx watch src/api/server.ts",
