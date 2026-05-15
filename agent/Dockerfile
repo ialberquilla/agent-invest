@@ -37,6 +37,7 @@ RUN pnpm add --global "opencode-ai@${OPENCODE_VERSION}"
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY scripts/enforce-pnpm.cjs ./scripts/enforce-pnpm.cjs
 COPY agent/package.json ./agent/package.json
 RUN pnpm install --frozen-lockfile --filter @agent-invest/agent
 
