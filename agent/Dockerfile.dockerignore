@@ -3,6 +3,8 @@
 !package.json
 !pnpm-lock.yaml
 !pnpm-workspace.yaml
+!scripts
+!scripts/enforce-pnpm.cjs
 !agent
 !agent/**
 
