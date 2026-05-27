@@ -1,0 +1,26 @@
+{
+  "input": {
+    "run_id": "eval-reporter-growth-momentum",
+    "batch_id": "batch-reporter-growth-momentum",
+    "mock_output": {
+      "title": "Growth Momentum Winner",
+      "summary": "growth-a wins with total_return 0.42 and cagr 0.31.",
+      "reasoning": "The growth strategy is coherent because sharpe 1.05 supports risk-adjusted selection and max_drawdown -0.24 remains acceptable for the objective fit.",
+      "winner_candidate_id": "growth-a",
+      "kpis": {"total_return": 0.42, "cagr": 0.31, "sharpe": 1.05, "max_drawdown": -0.24},
+      "assumptions": ["Momentum behavior persists enough for the thesis."],
+      "risks": ["High growth exposure can reverse quickly."],
+      "next_steps": ["Review drawdown controls after launch."]
+    }
+  },
+  "expectations": {
+    "batch": {
+      "window": {"start": "2025-02-01", "end": "2025-11-30"},
+      "results": [
+        {"candidate_id": "growth-a", "metrics": {"total_return": 0.42, "cagr": 0.31, "sharpe": 1.05, "max_drawdown": -0.24}},
+        {"candidate_id": "growth-b", "metrics": {"total_return": 0.28, "cagr": 0.2, "sharpe": 0.7, "max_drawdown": -0.31}}
+      ]
+    },
+    "judge_criteria": "Growth strategy explanation cites total_return cagr sharpe max_drawdown selection objective fit."
+  }
+}

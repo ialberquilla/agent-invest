@@ -1,10 +1,5 @@
 export { buildServer, startServer } from "./api/server";
 export {
-  AGENT_SCRIPT_REGISTRY,
-  buildSystemPrompt,
-  buildToolManifestSection,
-} from "./agent/prompt";
-export {
   DEFAULT_OPENCODE_MODEL,
   createOpencodeClient,
   createSessionManager,

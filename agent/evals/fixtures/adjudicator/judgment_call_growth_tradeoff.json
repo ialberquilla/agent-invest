@@ -1,0 +1,26 @@
+{
+  "input": {
+    "run_id": "eval-adjudicator-judgment-growth-tradeoff",
+    "round": 2,
+    "batch_id": "batch-judgment-growth-tradeoff",
+    "thesis": {"objective": "high_growth", "constraints": {"max_drawdown": -0.35}},
+    "candidates": [
+      {"candidate_id": "tradeoff-a", "template_id": "momentum", "config": {}},
+      {"candidate_id": "tradeoff-b", "template_id": "periodic_rebalance", "config": {}}
+    ],
+    "kpis": {
+      "tradeoff-a": {"return": 0.48, "sharpe": 0.82, "max_drawdown": -0.31, "validated": true},
+      "tradeoff-b": {"return": 0.42, "sharpe": 0.94, "max_drawdown": -0.25, "validated": true}
+    },
+    "mock_output": {
+      "kind": "winner",
+      "candidate_id": "tradeoff-a",
+      "justification": "tradeoff-a should not refine this valid high_growth judgment call because it validates against the thesis, offers higher return, stays within the max_drawdown risk constraint, and the lower Sharpe is an explicit acceptable tradeoff rather than a refinement."
+    }
+  },
+  "expectations": {
+    "kind": "winner",
+    "acceptable_winners": ["tradeoff-a", "tradeoff-b"],
+    "justification_criteria": "Winner should not refine a valid high_growth judgment call. It should validate against thesis and explain return, Sharpe tradeoff, max_drawdown risk constraint, and acceptable tradeoff."
+  }
+}

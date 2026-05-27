@@ -55,7 +55,7 @@ type SessionManagerOptions = {
   updateStrategySession?: typeof updateStrategySession;
 };
 
-type ManagedOpencode = {
+export type ManagedOpencode = {
   client: OpencodeClient;
   close(): void;
 };
@@ -186,7 +186,7 @@ async function createManagedOpencode(
   };
 }
 
-async function getOrCreateManagedOpencode(
+export async function getOrCreateManagedOpencode(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ManagedOpencode> {
   if (!sharedOpencode) {

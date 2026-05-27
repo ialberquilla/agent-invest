@@ -1,6 +1,7 @@
 import { desc, sql } from "drizzle-orm";
 import {
   bigint,
+  boolean,
   check,
   date,
   index,
@@ -9,9 +10,12 @@ import {
   numeric,
   pgTable,
   primaryKey,
+  real,
+  smallint,
   text,
   timestamp,
   uniqueIndex,
+  uuid,
 } from "drizzle-orm/pg-core";
 
 export const users = pgTable("users", {
@@ -134,6 +138,10 @@ export const runs = pgTable(
     exitCode: integer("exit_code"),
     reply: text("reply"),
     error: text("error"),
+    winnerTemplateId: text("winner_template_id"),
+    winnersByDimension: jsonb("winners_by_dimension"),
+    roundHistory: jsonb("round_history"),
+    refinementReasons: jsonb("refinement_reasons"),
     metadata: jsonb("metadata").notNull().default({}),
   },
   (table) => [
@@ -145,6 +153,88 @@ export const runs = pgTable(
       table.threadId,
       desc(table.startedAt),
     ),
+  ],
+);
+
+export const stageRuns = pgTable(
+  "stage_runs",
+  {
+    stageRunId: text("stage_run_id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.runId, { onDelete: "cascade" }),
+    stage: text("stage").notNull(),
+    round: smallint("round").notNull(),
+    status: text("status").notNull(),
+    opencodeSessionId: text("opencode_session_id"),
+    model: text("model").notNull(),
+    input: jsonb("input").notNull(),
+    output: jsonb("output"),
+    error: text("error"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    endedAt: timestamp("ended_at", { withTimezone: true }),
+    tokensIn: integer("tokens_in"),
+    tokensOut: integer("tokens_out"),
+  },
+  (table) => [
+    index("stage_runs_run_id_idx").on(table.runId, table.stage, table.round),
+    index("stage_runs_status_idx").on(table.status),
+    check(
+      "stage_runs_stage_check",
+      sql`${table.stage} in ('thesis', 'designer', 'adjudicator', 'reporter')`,
+    ),
+    check("stage_runs_round_check", sql`${table.round} between 1 and 3`),
+  ],
+);
+
+export const stageEvalRuns = pgTable(
+  "stage_eval_runs",
+  {
+    evalRunId: text("eval_run_id").primaryKey(),
+    stage: text("stage").notNull(),
+    fixtureId: text("fixture_id").notNull(),
+    model: text("model").notNull(),
+    passed: boolean("passed").notNull(),
+    score: real("score"),
+    diagnostics: jsonb("diagnostics").notNull(),
+    output: jsonb("output").notNull(),
+    durationMs: integer("duration_ms").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("stage_eval_runs_fixture_idx").on(
+      table.stage,
+      table.fixtureId,
+      desc(table.createdAt),
+    ),
+    check(
+      "stage_eval_runs_stage_check",
+      sql`${table.stage} in ('thesis', 'designer', 'adjudicator', 'reporter')`,
+    ),
+  ],
+);
+
+export const investmentTheses = pgTable(
+  "investment_theses",
+  {
+    thesisId: uuid("thesis_id").primaryKey().defaultRandom(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.runId, { onDelete: "cascade" }),
+    objective: text("objective").notNull(),
+    payload: jsonb("payload").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("investment_theses_run_id_unique").on(table.runId),
+    index("idx_theses_run").on(table.runId),
+    index("idx_theses_objective").on(table.objective),
   ],
 );
 
@@ -415,6 +505,15 @@ export type NewConversationMessage = typeof conversationMessages.$inferInsert;
 
 export type Run = typeof runs.$inferSelect;
 export type NewRun = typeof runs.$inferInsert;
+
+export type StageRun = typeof stageRuns.$inferSelect;
+export type NewStageRun = typeof stageRuns.$inferInsert;
+
+export type StageEvalRun = typeof stageEvalRuns.$inferSelect;
+export type NewStageEvalRun = typeof stageEvalRuns.$inferInsert;
+
+export type InvestmentThesis = typeof investmentTheses.$inferSelect;
+export type NewInvestmentThesis = typeof investmentTheses.$inferInsert;
 
 export type AgentEvent = typeof agentEvents.$inferSelect;
 export type NewAgentEvent = typeof agentEvents.$inferInsert;

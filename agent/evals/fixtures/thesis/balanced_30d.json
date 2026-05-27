@@ -1,0 +1,17 @@
+{
+  "input": {
+    "request": "For the next month, balance upside and risk in BTC and ETH with no asset above 60%.",
+    "run_id": "eval-thesis-balanced-30d",
+    "expected_objective": "balanced",
+    "expected_primary_factor_ids": ["sharpe", "drawdown"],
+    "expected_constraints": {"max_allocation_pct": 60},
+    "expected_horizon_days": 30,
+    "expected_interpretation_notes": "Balanced one month BTC and ETH thesis should trade off upside and risk, using Sharpe and drawdown while limiting any asset to 60 percent."
+  },
+  "expectations": {
+    "objective": "balanced",
+    "primary_factor_ids": ["sharpe", "drawdown"],
+    "numeric_constraints": {"horizon_days": 30, "max_allocation_pct": 60},
+    "interpretation_notes": "Balanced one month BTC and ETH thesis should trade off upside and risk, using Sharpe and drawdown while limiting any asset to 60 percent."
+  }
+}

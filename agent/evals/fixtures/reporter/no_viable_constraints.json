@@ -1,0 +1,26 @@
+{
+  "input": {
+    "run_id": "eval-reporter-no-viable-constraints",
+    "batch_id": "batch-reporter-no-viable-constraints",
+    "mock_output": {
+      "result_type": "no_viable_strategy",
+      "title": "No Viable Strategy",
+      "summary": "No candidate is viable because the best max_drawdown is -0.32 against the required risk constraint.",
+      "reasoning": "The no viable strategy outcome is coherent because candidates breach risk constraints despite total_return 0.22 from the strongest return candidate.",
+      "round_history": [{"round": 1, "outcome": "refine"}, {"round": 2, "outcome": "no_viable_strategy"}],
+      "assumptions": ["The constraint is mandatory."],
+      "risks": ["Relaxing risk constraints could change the outcome."],
+      "next_steps": ["Ask for a broader universe or relaxed drawdown limit."]
+    }
+  },
+  "expectations": {
+    "batch": {
+      "window": {"start": "2025-01-01", "end": "2025-09-30"},
+      "results": [
+        {"candidate_id": "risk-a", "metrics": {"total_return": 0.22, "max_drawdown": -0.41, "sharpe": 0.5}},
+        {"candidate_id": "risk-b", "metrics": {"total_return": 0.08, "max_drawdown": -0.32, "sharpe": 0.4}}
+      ]
+    },
+    "judge_criteria": "No viable strategy explanation cites no viable strategy risk constraints max_drawdown total_return breach coherent outcome."
+  }
+}

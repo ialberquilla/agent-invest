@@ -425,8 +425,9 @@ export function WizardRunView() {
                       </div>
                     ) : null}
 
-                    {runState.timeline.parts.length > 0 ? (
+                    {runState.runId || runState.timeline.parts.length > 0 ? (
                       <LiveActivity
+                        runId={runState.runId ?? undefined}
                         parts={runState.timeline.parts}
                         fullWidth
                         includeText={false}
@@ -462,9 +463,10 @@ export function WizardRunView() {
                   {runState.error ?? "Unable to run allocation agent"}
                 </div>
 
-                {runState.timeline.parts.length > 0 ? (
+                {runState.runId || runState.timeline.parts.length > 0 ? (
                   <div className="rounded-2xl border bg-muted/20 p-4">
                     <LiveActivity
+                      runId={runState.runId ?? undefined}
                       parts={runState.timeline.parts}
                       fullWidth
                       includeText={false}

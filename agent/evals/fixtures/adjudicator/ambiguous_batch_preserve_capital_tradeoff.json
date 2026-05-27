@@ -1,0 +1,28 @@
+{
+  "input": {
+    "run_id": "eval-adjudicator-ambiguous-preserve-tradeoff",
+    "round": 2,
+    "batch_id": "batch-ambiguous-preserve-tradeoff",
+    "thesis": {"objective": "preserve_capital", "constraints": {"max_drawdown": -0.1}},
+    "candidates": [
+      {"candidate_id": "preserve-ambiguous-a", "template_id": "buy_and_hold", "config": {}},
+      {"candidate_id": "preserve-ambiguous-b", "template_id": "periodic_rebalance", "config": {}},
+      {"candidate_id": "preserve-ambiguous-c", "template_id": "dual_momentum", "config": {}}
+    ],
+    "kpis": {
+      "preserve-ambiguous-a": {"return": 0.09, "sharpe": 0.78, "max_drawdown": -0.055, "benchmark_excess_return": 0.012, "validated": true},
+      "preserve-ambiguous-b": {"return": 0.11, "sharpe": 0.8, "max_drawdown": -0.065, "benchmark_excess_return": 0.018, "validated": true},
+      "preserve-ambiguous-c": {"return": 0.08, "sharpe": 0.83, "max_drawdown": -0.05, "benchmark_excess_return": 0.01, "validated": true}
+    },
+    "mock_output": {
+      "kind": "winner",
+      "candidate_id": "preserve-ambiguous-c",
+      "justification": "preserve-ambiguous-c should not refine an ambiguous valid preserve_capital batch. It is an acceptable winner because each candidate validates against the thesis, return is close, Sharpe is modestly stronger, max_drawdown risk stays inside the constraint, and benchmark_excess_return is positive versus benchmark."
+    }
+  },
+  "expectations": {
+    "kind": "winner",
+    "acceptable_winners": ["preserve-ambiguous-a", "preserve-ambiguous-b", "preserve-ambiguous-c"],
+    "justification_criteria": "Winner should not refine an ambiguous valid preserve_capital batch. It should validate against thesis and explain close return, Sharpe, max_drawdown risk constraint, and positive benchmark_excess_return versus benchmark."
+  }
+}

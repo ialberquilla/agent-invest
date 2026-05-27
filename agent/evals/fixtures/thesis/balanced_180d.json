@@ -1,0 +1,17 @@
+{
+  "input": {
+    "request": "Create a balanced six month crypto strategy over top assets, rebalance monthly, max 10 holdings.",
+    "run_id": "eval-thesis-balanced-180d",
+    "expected_objective": "balanced",
+    "expected_primary_factor_ids": ["sharpe", "momentum"],
+    "expected_constraints": {"max_assets": 10},
+    "expected_horizon_days": 180,
+    "expected_interpretation_notes": "Balanced six month thesis should combine risk adjusted return and momentum across top assets, rebalance monthly, and keep the portfolio to no more than 10 holdings."
+  },
+  "expectations": {
+    "objective": "balanced",
+    "primary_factor_ids": ["sharpe", "momentum"],
+    "numeric_constraints": {"horizon_days": 180, "max_assets": 10},
+    "interpretation_notes": "Balanced six month thesis should combine risk adjusted return and momentum across top assets, rebalance monthly, and keep the portfolio to no more than 10 holdings."
+  }
+}

@@ -9,7 +9,7 @@
     "build": "pnpm typecheck && tsup",
     "dev": "tsx watch src/api/server.ts",
     "start": "node dist/server.js",
-    "test": "tsx --test test/**/*.test.ts",
+    "test": "NODE_ENV=test env -u AGENT_API_KEY tsx --test --test-concurrency=1 test/**/*.test.ts",
     "ingest:gmx": "tsx src/ingestion/gmx-history.ts",
     "ingest:coingecko-market-caps": "tsx src/ingestion/coingecko-market-caps.ts",
     "smoke:gmx:dry-run": "node scripts/smoke-gmx-dry-run.cjs",

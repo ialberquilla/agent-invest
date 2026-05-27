@@ -62,3 +62,38 @@ def test_run_backtest_rejects_costs_that_bankrupt_portfolio() -> None:
             cost_model=TradingCostModel(gas_usd_per_swap=200.0),
             initial_capital_usd=100.0,
         )
+
+
+def test_run_backtest_sets_survivorship_warning_for_old_windows() -> None:
+    prices = pl.DataFrame(
+        [
+            {"date": date(2024, 1, 1), "coin_id": "coin-a", "price": 100.0},
+            {"date": date(2024, 1, 2), "coin_id": "coin-a", "price": 101.0},
+        ]
+    )
+
+    result = run_backtest(
+        prices,
+        {date(2024, 1, 2): {"coin-a": 1.0}},
+        cost_model=ZERO_COST_MODEL,
+    )
+
+    assert result.summary["survivorship_warning"] is True
+
+
+def test_run_backtest_clears_survivorship_warning_for_recent_windows() -> None:
+    start = date.today() - timedelta(days=10)
+    prices = pl.DataFrame(
+        [
+            {"date": start, "coin_id": "coin-a", "price": 100.0},
+            {"date": start + timedelta(days=1), "coin_id": "coin-a", "price": 101.0},
+        ]
+    )
+
+    result = run_backtest(
+        prices,
+        {start + timedelta(days=1): {"coin-a": 1.0}},
+        cost_model=ZERO_COST_MODEL,
+    )
+
+    assert result.summary["survivorship_warning"] is False

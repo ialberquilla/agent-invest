@@ -1,0 +1,26 @@
+{
+  "input": {
+    "run_id": "eval-reporter-income-defensive",
+    "batch_id": "batch-reporter-income-defensive",
+    "mock_output": {
+      "title": "Income Defensive Winner",
+      "summary": "income-a is the income winner with yield 0.08 and total_return 0.14.",
+      "reasoning": "The income strategy is coherent because volatility 0.11 and max_drawdown -0.07 keep risk controlled while yield 0.08 supports the objective.",
+      "winner_candidate_id": "income-a",
+      "kpis": {"yield": 0.08, "total_return": 0.14, "volatility": 0.11, "max_drawdown": -0.07},
+      "assumptions": ["Yield estimates remain stable."],
+      "risks": ["Protocol income may decline."],
+      "next_steps": ["Track realized income monthly."]
+    }
+  },
+  "expectations": {
+    "batch": {
+      "window": {"start": "2025-03-01", "end": "2025-12-31"},
+      "results": [
+        {"candidate_id": "income-a", "metrics": {"yield": 0.08, "total_return": 0.14, "volatility": 0.11, "max_drawdown": -0.07}},
+        {"candidate_id": "income-b", "metrics": {"yield": 0.1, "total_return": 0.09, "volatility": 0.2, "max_drawdown": -0.18}}
+      ]
+    },
+    "judge_criteria": "Income strategy winner explanation should cite yield total_return volatility max_drawdown controlled risk and coherent objective fit."
+  }
+}

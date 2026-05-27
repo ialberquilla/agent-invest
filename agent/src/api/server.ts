@@ -2,7 +2,6 @@ import "../env";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
 import {
-  appendFile,
   mkdir,
   readFile,
   readdir,
@@ -13,21 +12,21 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
+import type { Notification } from "pg";
 import pino from "pino";
 
 import {
   buildAllocationWizardPrompt,
-  buildSystemPrompt as defaultBuildSystemPrompt,
   type AllocationWizardParams,
 } from "../agent/prompt";
+import { runPipeline, type PipelineBrief } from "../agent/pipeline";
+import type { StageName } from "../agent/stages/base";
+import { createOpencodeClient } from "../agent/session";
+import { pgPool } from "../db/client";
 import {
-  createOpencodeClient,
-  getOrCreateSession,
-  type DatabaseClient,
-  type OpencodePromptResult,
-  type OpencodeTurnClient,
-} from "../agent/session";
-import { parseStrategyResultBlock } from "../agent/strategy-result";
+  listStageEventsByRunId as defaultListStageEventsByRunId,
+  type ListStageEventsFilters,
+} from "../db/repositories/agent-events";
 import {
   createRun as defaultCreateRun,
   markRunCompleted as defaultMarkRunCompleted,
@@ -36,9 +35,17 @@ import {
   type RunRow,
 } from "../db/repositories/runs";
 import {
+  getStageRun as defaultGetStageRun,
+  listStageRunsByRunId as defaultListStageRunsByRunId,
+} from "../db/repositories/stage-runs";
+import {
+  getEvalRun as defaultGetEvalRun,
+  listEvalRuns as defaultListEvalRuns,
+} from "../db/repositories/stage-eval-runs";
+import type { StageRun } from "../db/schema";
+import {
   ensureStrategy as defaultEnsureStrategy,
   touchStrategy as defaultTouchStrategy,
-  updateStrategyTitleIfBlank as defaultUpdateStrategyTitleIfBlank,
 } from "../db/repositories/strategies";
 import {
   runCoinGeckoMarketCapIngestion,
@@ -58,9 +65,13 @@ type Repositories = {
   ensureStrategy: typeof defaultEnsureStrategy;
   markRunCompleted: typeof defaultMarkRunCompleted;
   markRunFailed: typeof defaultMarkRunFailed;
+  getStageRun: typeof defaultGetStageRun;
+  getEvalRun: typeof defaultGetEvalRun;
+  listEvalRuns: typeof defaultListEvalRuns;
+  listStageEventsByRunId: typeof defaultListStageEventsByRunId;
+  listStageRunsByRunId: typeof defaultListStageRunsByRunId;
   readRun: typeof defaultReadRun;
   touchStrategy: typeof defaultTouchStrategy;
-  updateStrategyTitleIfBlank: typeof defaultUpdateStrategyTitleIfBlank;
 };
 type IngestionRunners = {
   gmx: (options: GmxHistoryOptions) => Promise<GmxHistorySummary>;
@@ -68,15 +79,22 @@ type IngestionRunners = {
     options: CoinGeckoMarketCapOptions,
   ) => Promise<CoinGeckoMarketCapSummary>;
 };
+type StageRunNotification = {
+  round: number;
+  run_id: string;
+  stage: string;
+  stage_run_id: string;
+  status: string;
+};
+type SubscribeToStageRunChanges = (
+  onDelta: (delta: StageRunNotification) => void,
+) => Promise<() => Promise<void>>;
 type ServerDependencies = {
-  buildSystemPrompt?: typeof defaultBuildSystemPrompt;
-  getSessionId?: (
-    strategyId: string,
-    client?: DatabaseClient,
-  ) => Promise<string>;
-  getOpencodeClient?: () => Promise<OpencodeTurnClient>;
+  runPipeline?: typeof runPipeline;
+  apiKey?: string | null;
   ingestionRunners?: Partial<IngestionRunners>;
   repositories?: Partial<Repositories>;
+  subscribeToStageRunChanges?: SubscribeToStageRunChanges;
 };
 
 function getPort() {
@@ -356,30 +374,211 @@ function toIso(value: Date | string | null) {
   return value instanceof Date ? value.toISOString() : value;
 }
 
-function replyText(parts: OpencodePromptResult["parts"]) {
-  return parts.reduce(
-    (reply, part) =>
-      part.type === "text" && !part.ignored ? `${reply}${part.text}` : reply,
-    "",
-  );
+const STAGE_NAMES = ["thesis", "designer", "adjudicator", "reporter"] as const;
+
+function queryStringValue(
+  query: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = query[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string")
+    throw httpError(400, `Query param '${key}' is invalid`);
+  return value;
 }
 
-function promptFailure(result: OpencodePromptResult) {
-  for (const part of result.parts) {
-    if (part.type !== "tool" || part.state.status !== "error") continue;
-    if (typeof part.state.error === "string" && part.state.error.trim()) {
-      return part.state.error;
+function parseStageEventsFilters(
+  query: Record<string, unknown>,
+): ListStageEventsFilters {
+  const filters: ListStageEventsFilters = {};
+  const stage = queryStringValue(query, "stage");
+  if (stage !== undefined) {
+    if (!STAGE_NAMES.includes(stage as StageName)) {
+      throw httpError(400, "Query param 'stage' is invalid");
+    }
+    filters.stage = stage;
+  }
+
+  const rawRound = queryStringValue(query, "round");
+  if (rawRound !== undefined) {
+    const round = Number.parseInt(rawRound, 10);
+    if (!/^\d+$/.test(rawRound) || round < 1 || round > 3) {
+      throw httpError(400, "Query param 'round' is invalid");
+    }
+    filters.round = round;
+  }
+
+  return filters;
+}
+
+function parseEvalRunsFilters(query: Record<string, unknown>) {
+  const stage = queryStringValue(query, "stage");
+  if (stage !== undefined && !STAGE_NAMES.includes(stage as StageName)) {
+    throw httpError(400, "Query param 'stage' is invalid");
+  }
+
+  const fixtureId = queryStringValue(query, "fixture_id");
+  const rawLimit = queryStringValue(query, "limit");
+  let limit = 50;
+  if (rawLimit !== undefined) {
+    limit = Number.parseInt(rawLimit, 10);
+    if (!/^\d+$/.test(rawLimit) || limit < 1 || limit > 200) {
+      throw httpError(400, "Query param 'limit' is invalid");
     }
   }
 
-  const error = result.info.error;
-  if (!error) return undefined;
-  return typeof error.data?.message === "string" && error.data.message.trim()
-    ? error.data.message
-    : error.name;
+  return { stage, fixtureId, limit };
 }
 
-function runResponse(run: RunRow, structuredResult: unknown = null) {
+function evalRunSummaryResponse(
+  evalRun: Awaited<ReturnType<typeof defaultListEvalRuns>>[number],
+) {
+  return {
+    eval_run_id: evalRun.evalRunId,
+    stage: evalRun.stage,
+    fixture_id: evalRun.fixtureId,
+    model: evalRun.model,
+    passed: evalRun.passed,
+    score: evalRun.score,
+    duration_ms: evalRun.durationMs,
+    created_at: toIso(evalRun.createdAt),
+  };
+}
+
+async function fixtureExpectations(stage: string, fixtureId: string) {
+  let current = path.dirname(fileURLToPath(import.meta.url));
+  let fixturePath: string | null = null;
+  while (true) {
+    const candidate = path.join(
+      current,
+      "evals",
+      "fixtures",
+      stage,
+      `${fixtureId}.json`,
+    );
+    if (existsSync(candidate)) {
+      fixturePath = candidate;
+      break;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  if (!fixturePath) return null;
+  try {
+    const payload = JSON.parse(await readFile(fixturePath, "utf-8")) as unknown;
+    return isRecord(payload) ? (payload.expectations ?? null) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function evalRunDetailResponse(
+  evalRun: NonNullable<Awaited<ReturnType<typeof defaultGetEvalRun>>>,
+) {
+  return {
+    ...evalRunSummaryResponse(evalRun),
+    diagnostics: evalRun.diagnostics,
+    output: evalRun.output,
+    expectations: await fixtureExpectations(evalRun.stage, evalRun.fixtureId),
+  };
+}
+
+function stageEventResponse(
+  event: Awaited<ReturnType<typeof defaultListStageEventsByRunId>>[number],
+) {
+  return {
+    event_id: event.eventId,
+    event_type: event.eventType,
+    payload: event.payload,
+    created_at: toIso(event.createdAt),
+  };
+}
+
+function stageRunSummaryResponse(stageRun: StageRun) {
+  return {
+    stage_run_id: stageRun.stageRunId,
+    stage: stageRun.stage,
+    round: stageRun.round,
+    status: stageRun.status,
+    started_at: toIso(stageRun.startedAt),
+    ended_at: toIso(stageRun.endedAt),
+    model: stageRun.model,
+    tokens: {
+      input: stageRun.tokensIn,
+      output: stageRun.tokensOut,
+    },
+  };
+}
+
+function stageRunDetailResponse(stageRun: StageRun) {
+  return {
+    ...stageRunSummaryResponse(stageRun),
+    run_id: stageRun.runId,
+    opencode_session_id: stageRun.opencodeSessionId,
+    input: stageRun.input,
+    output: stageRun.output,
+    error: stageRun.error,
+  };
+}
+
+function isStageRunNotification(value: unknown): value is StageRunNotification {
+  return (
+    isRecord(value) &&
+    typeof value.run_id === "string" &&
+    typeof value.stage_run_id === "string" &&
+    typeof value.stage === "string" &&
+    typeof value.status === "string" &&
+    typeof value.round === "number"
+  );
+}
+
+function sseFrame(event: string, data: unknown) {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+async function subscribeToStageRunChanges(
+  onDelta: (delta: StageRunNotification) => void,
+) {
+  const client = await pgPool.connect();
+
+  const onNotification = (notification: Notification) => {
+    if (notification.channel !== "stage_runs_changed") return;
+    if (!notification.payload) return;
+
+    try {
+      const payload = JSON.parse(notification.payload) as unknown;
+      if (isStageRunNotification(payload)) onDelta(payload);
+    } catch {
+      // Ignore malformed notifications from this shared channel.
+    }
+  };
+
+  client.on("notification", onNotification);
+  try {
+    await client.query("LISTEN stage_runs_changed");
+  } catch (error) {
+    client.off("notification", onNotification);
+    client.release();
+    throw error;
+  }
+
+  return async () => {
+    client.off("notification", onNotification);
+    try {
+      await client.query("UNLISTEN stage_runs_changed");
+    } finally {
+      client.release();
+    }
+  };
+}
+
+function runResponse(
+  run: RunRow,
+  structuredResult: unknown = null,
+  stages?: StageRun[],
+) {
   const response = {
     run_id: run.runId,
     status: run.status,
@@ -389,10 +588,13 @@ function runResponse(run: RunRow, structuredResult: unknown = null) {
     reply: run.reply,
     error: run.error,
   };
+  const responseWithStages = stages
+    ? { ...response, stages: stages.map(stageRunSummaryResponse) }
+    : response;
 
   return structuredResult === null
-    ? response
-    : { ...response, structured_result: structuredResult };
+    ? responseWithStages
+    : { ...responseWithStages, structured_result: structuredResult };
 }
 
 type ArtifactRef = { kind: string; path: string };
@@ -469,64 +671,35 @@ function traceDir(runId: string) {
   return dir ? path.join(dir, "runs", runId) : undefined;
 }
 
-async function writePromptTrace(
+async function writeRunTrace(
   runId: string,
   payload: Record<string, unknown>,
 ): Promise<ArtifactRef[]> {
   const dir = traceDir(runId);
   if (!dir) return [];
   await mkdir(dir, { recursive: true });
-  const filePath = path.join(dir, "prompt_trace.json");
+  const filePath = path.join(dir, "pipeline_trace.json");
   await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
   const relative = relativeArtifactPath(filePath);
   return relative ? [{ kind: kindFromPath(relative), path: relative }] : [];
 }
 
-async function appendOpencodeEventTrace(
-  runId: string,
-  event: unknown,
-): Promise<void> {
-  const dir = traceDir(runId);
-  if (!dir) return;
-  await mkdir(dir, { recursive: true });
-  await appendFile(
-    path.join(dir, "opencode_events.jsonl"),
-    `${JSON.stringify(event)}\n`,
-    "utf-8",
-  );
-}
-
-function promptTracePayload(options: {
+function pipelineTracePayload(options: {
   runId: string;
   strategyId: string;
-  sessionId: string;
-  messageId: string;
-  userText: string;
-  system: string;
-  result?: OpencodePromptResult;
+  brief: PipelineBrief;
+  result?: unknown;
   error?: unknown;
-  eventCount?: number;
   startedAt: string;
   endedAt: string;
 }) {
   return {
     run_id: options.runId,
     strategy_id: options.strategyId,
-    session_id: options.sessionId,
     started_at: options.startedAt,
     ended_at: options.endedAt,
-    event_count: options.eventCount ?? null,
-    user_text: options.userText,
-    system_prompt: options.system,
-    agent_input: {
-      messageId: options.messageId,
-      sessionId: options.sessionId,
-      system: options.system,
-      text: options.userText,
-    },
-    assistant_message: options.result?.info ?? null,
-    parts: options.result?.parts ?? [],
-    reply: options.result?.parts ? replyText(options.result.parts) : null,
+    brief: options.brief,
+    result: options.result ?? null,
     error: options.error ? errorMessage(options.error) : null,
   };
 }
@@ -540,10 +713,6 @@ function relativeArtifactPath(absolute: string): string | null {
     return null;
   }
   return relative.split(path.sep).join("/");
-}
-
-function escapeRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function kindFromPath(relative: string): string {
@@ -873,6 +1042,26 @@ function artifactsForSelectedResult(
   );
 }
 
+function runSummaryFields(structuredResult: unknown) {
+  if (!isRecord(structuredResult)) return undefined;
+  return {
+    winnerTemplateId:
+      typeof structuredResult.template_id === "string"
+        ? structuredResult.template_id
+        : null,
+    winnersByDimension: structuredResult.winners_by_dimension ?? null,
+    roundHistory: structuredResult.round_history ?? null,
+    refinementReasons: structuredResult.refinement_reasons ?? null,
+    metadata: {
+      candidate_batch_id: isRecord(structuredResult.backtest)
+        ? (structuredResult.backtest.candidate_batch_id ?? null)
+        : null,
+      winner_candidate_id: structuredResult.winner_candidate_id ?? null,
+      result_id: selectedBacktestLabel(structuredResult),
+    },
+  };
+}
+
 async function structuredResultFromArtifacts(
   reply: string,
   artifacts: ArtifactRef[],
@@ -899,62 +1088,22 @@ async function structuredResultFromArtifacts(
   return enrichStructuredResultFromArtifacts(base, artifacts);
 }
 
-function extractArtifactsFromParts(
-  parts: OpencodePromptResult["parts"],
-): ArtifactRef[] {
-  const dir = artifactsDir();
-  if (!dir) return [];
-
-  const pattern = new RegExp(
-    `${escapeRegExp(dir)}/[\\w\\-./]+?\\.(?:${ARTIFACT_EXTENSIONS.join("|")})`,
-    "g",
-  );
-
-  const seen = new Set<string>();
-  const artifacts: ArtifactRef[] = [];
-
-  const recordPath = (absolutePath: string) => {
-    const relative = relativeArtifactPath(absolutePath);
-    if (!relative || seen.has(relative)) return;
-    seen.add(relative);
-    artifacts.push({ kind: kindFromPath(relative), path: relative });
-  };
-
-  const scan = (text: string) => {
-    for (const match of text.matchAll(pattern)) recordPath(match[0]);
-  };
-
-  for (const part of parts ?? []) {
-    if (part.type === "tool") {
-      const output = (
-        part.state as { metadata?: { output?: unknown } } | undefined
-      )?.metadata?.output;
-      if (typeof output === "string") scan(output);
-      continue;
-    }
-    if (part.type === "text" || part.type === "reasoning") {
-      const text = (part as { text?: unknown }).text;
-      if (typeof text === "string") scan(text);
-    }
-  }
-
-  return artifacts;
-}
-
 export function buildServer(dependencies: ServerDependencies = {}) {
-  const buildSystemPrompt =
-    dependencies.buildSystemPrompt ?? defaultBuildSystemPrompt;
-  const getSessionId = dependencies.getSessionId ?? getOrCreateSession;
-  const getOpencodeClient =
-    dependencies.getOpencodeClient ?? createOpencodeClient;
+  const executePipeline = dependencies.runPipeline ?? runPipeline;
+  const subscribeStageRunChanges =
+    dependencies.subscribeToStageRunChanges ?? subscribeToStageRunChanges;
   const repositories: Repositories = {
     createRun: defaultCreateRun,
     ensureStrategy: defaultEnsureStrategy,
     markRunCompleted: defaultMarkRunCompleted,
     markRunFailed: defaultMarkRunFailed,
+    getEvalRun: defaultGetEvalRun,
+    getStageRun: defaultGetStageRun,
+    listEvalRuns: defaultListEvalRuns,
+    listStageEventsByRunId: defaultListStageEventsByRunId,
+    listStageRunsByRunId: defaultListStageRunsByRunId,
     readRun: defaultReadRun,
     touchStrategy: defaultTouchStrategy,
-    updateStrategyTitleIfBlank: defaultUpdateStrategyTitleIfBlank,
     ...dependencies.repositories,
   };
   const ingestionRunners: IngestionRunners = {
@@ -964,9 +1113,14 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   };
   const runningIngestions = new Set<string>();
   const app = Fastify({ loggerInstance: pino() });
+  const apiKey =
+    dependencies.apiKey === undefined
+      ? process.env.NODE_ENV === "test"
+        ? undefined
+        : configuredAgentApiKey()
+      : (dependencies.apiKey ?? undefined);
 
   app.addHook("onRequest", async (request) => {
-    const apiKey = configuredAgentApiKey();
     if (!apiKey) {
       if (isProduction()) throw httpError(500, "AGENT_API_KEY is not set");
       return;
@@ -979,6 +1133,20 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   });
 
   app.get("/health", async () => ({ ok: true }));
+
+  app.get<{
+    Querystring: { stage?: string; fixture_id?: string; limit?: string };
+  }>("/dev/evals", async (request) => {
+    const filters = parseEvalRunsFilters(request.query);
+    const evalRuns = await repositories.listEvalRuns(filters);
+    return evalRuns.map(evalRunSummaryResponse);
+  });
+
+  app.get<{ Params: { id: string } }>("/dev/evals/:id", async (request) => {
+    const evalRun = await repositories.getEvalRun(request.params.id);
+    if (!evalRun) throw httpError(404, "Eval run not found");
+    return evalRunDetailResponse(evalRun);
+  });
 
   app.post<{ Params: { loader: string } }>(
     "/ingestion/:loader",
@@ -1056,103 +1224,171 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     await repositories.touchStrategy(strategyId);
     await repositories.createRun(runId, strategyId);
 
-    request.log.info({ runId, strategyId }, "resolving opencode session");
-    const sessionId = await getSessionId(strategyId);
-    request.log.info(
-      { runId, strategyId, sessionId },
-      "opencode session resolved",
-    );
+    const beforeSnapshot = await snapshotArtifacts().catch((error) => {
+      request.log.warn(
+        { error: errorMessage(error), runId },
+        "failed to snapshot artifacts before pipeline",
+      );
+      return new Map() as ArtifactSnapshot;
+    });
 
-    let promptError: unknown;
-    let result: OpencodePromptResult | undefined;
-    let system = "";
-    const messageId = `msg_${runId.replace(/-/g, "")}`;
+    let pipelineError: unknown;
+    let result: Awaited<ReturnType<typeof runPipeline>> | undefined;
     const traceStartedAt = new Date().toISOString();
     try {
-      system = await buildSystemPrompt({ userId, strategyId });
-      const opencode = await getOpencodeClient();
+      request.log.info({ runId, strategyId }, "calling pipeline");
+      result = await executePipeline(runId, text);
       request.log.info(
-        { runId, sessionId, textLength: text.length },
-        "calling opencode prompt",
+        { runId, resultId: result.result_id },
+        "pipeline returned",
       );
-      const promptStart = Date.now();
-      result = await opencode.prompt({
-        messageId,
-        sessionId,
-        system,
-        text,
-      });
-      request.log.info(
-        {
-          runId,
-          sessionId,
-          durationMs: Date.now() - promptStart,
-          parts: result.parts?.length,
-        },
-        "opencode prompt returned",
-      );
-      if (!result.parts) throw new Error("opencode prompt returned no parts");
-      const failure = promptFailure(result);
-      if (failure) throw new Error(failure);
-
-      try {
-        const session = await opencode.getSession(sessionId);
-        await repositories.updateStrategyTitleIfBlank(
-          strategyId,
-          session.title,
-        );
-      } catch (error) {
-        request.log.warn(
-          { error: errorMessage(error), runId, strategyId },
-          "Failed to refresh strategy title after run completion",
-        );
-      }
     } catch (error) {
-      promptError = error;
+      pipelineError = error;
     }
 
-    const traceArtifacts = await writePromptTrace(
+    const traceArtifacts = await writeRunTrace(
       runId,
-      promptTracePayload({
+      pipelineTracePayload({
         runId,
         strategyId,
-        sessionId,
-        messageId,
-        userText: text,
-        system,
+        brief: text,
         result,
-        error: promptError,
+        error: pipelineError,
         startedAt: traceStartedAt,
         endedAt: new Date().toISOString(),
       }),
     ).catch((error) => {
       request.log.warn(
         { error: errorMessage(error), runId },
-        "failed to write prompt trace",
+        "failed to write pipeline trace",
       );
       return [] as ArtifactRef[];
     });
 
-    if (promptError) {
-      await repositories.markRunFailed(runId, errorMessage(promptError));
+    const afterSnapshot = await snapshotArtifacts().catch((error) => {
+      request.log.warn(
+        { error: errorMessage(error), runId },
+        "failed to snapshot artifacts after pipeline",
+      );
+      return new Map() as ArtifactSnapshot;
+    });
+    const artifacts = mergeArtifacts(
+      artifactsFromAbsolutePaths(
+        diffArtifactSnapshots(beforeSnapshot, afterSnapshot),
+      ),
+      traceArtifacts,
+    );
+    const finalizedStructuredResult =
+      await readFinalizedStructuredResult(artifacts);
+    const structuredResult = finalizedStructuredResult
+      ? await enrichStructuredResultFromArtifacts(
+          finalizedStructuredResult,
+          artifactsForSelectedResult(finalizedStructuredResult, artifacts),
+        )
+      : null;
+
+    if (pipelineError) {
+      await repositories.markRunFailed(runId, errorMessage(pipelineError));
     } else {
-      await repositories.markRunCompleted(runId, replyText(result!.parts));
+      await repositories.markRunCompleted(
+        runId,
+        result!.result_id,
+        runSummaryFields(structuredResult),
+      );
     }
 
     const run = await repositories.readRun(runId);
     if (!run) throw new Error(`Run missing after execution: ${runId}`);
     if (traceArtifacts.length > 0) {
-      request.log.info({ runId, traceArtifacts }, "prompt trace written");
+      request.log.info({ runId, traceArtifacts }, "pipeline trace written");
     }
-    if (promptError) throw promptError;
-    return runResponse(run);
+    if (pipelineError) throw pipelineError;
+    return runResponse(run, structuredResult);
   });
 
   app.get<{ Params: { id: string } }>("/runs/:id", async (request) => {
     const run = await repositories.readRun(request.params.id);
     if (!run) throw httpError(404, "Run not found");
-    return runResponse(run);
+    const stages = await repositories.listStageRunsByRunId(request.params.id);
+    return runResponse(run, null, stages);
   });
+
+  app.get<{ Params: { id: string } }>(
+    "/runs/:id/stream",
+    async (request, reply) => {
+      const run = await repositories.readRun(request.params.id);
+      if (!run) throw httpError(404, "Run not found");
+
+      const stages = await repositories.listStageRunsByRunId(request.params.id);
+      const cleanup = await subscribeStageRunChanges(
+        (delta: StageRunNotification) => {
+          if (delta.run_id !== request.params.id) return;
+          reply.raw.write(sseFrame("delta", delta));
+        },
+      );
+      let cleanedUp = false;
+      const close = async () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        clearInterval(heartbeat);
+        await cleanup().catch((error: unknown) => {
+          request.log.warn(
+            { error },
+            "failed to clean up stage stream listener",
+          );
+        });
+      };
+      const heartbeat = setInterval(() => {
+        reply.raw.write(": heartbeat\n\n");
+      }, 15_000);
+
+      request.raw.on("aborted", close);
+      reply.raw.on("close", close);
+      reply.raw.on("error", close);
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "Content-Type": "text/event-stream",
+      });
+      reply.raw.write(
+        sseFrame("snapshot", stages.map(stageRunSummaryResponse)),
+      );
+    },
+  );
+
+  app.get<{
+    Params: { id: string };
+    Querystring: { stage?: string; round?: string };
+  }>("/runs/:id/events", async (request) => {
+    const run = await repositories.readRun(request.params.id);
+    if (!run) throw httpError(404, "Run not found");
+
+    const filters = parseStageEventsFilters(request.query);
+    const events = await repositories.listStageEventsByRunId(
+      request.params.id,
+      filters,
+    );
+    return events.map(stageEventResponse);
+  });
+
+  app.get<{ Params: { id: string; stage_run_id: string } }>(
+    "/runs/:id/stages/:stage_run_id",
+    async (request) => {
+      const run = await repositories.readRun(request.params.id);
+      if (!run) throw httpError(404, "Run not found");
+
+      const stageRun = await repositories.getStageRun(
+        request.params.stage_run_id,
+      );
+      if (!stageRun || stageRun.runId !== request.params.id) {
+        throw httpError(404, "Stage run not found");
+      }
+
+      return stageRunDetailResponse(stageRun);
+    },
+  );
 
   app.get<{ Params: { "*": string } }>(
     "/artifacts/*",
@@ -1235,16 +1471,6 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     await repositories.touchStrategy(strategyId);
     await repositories.createRun(runId, strategyId);
 
-    request.log.info(
-      { runId, strategyId },
-      "stream: resolving opencode session",
-    );
-    const sessionId = await getSessionId(strategyId);
-    request.log.info(
-      { runId, strategyId, sessionId },
-      "stream: opencode session resolved",
-    );
-
     reply.hijack();
     const raw = reply.raw;
     raw.setHeader("Content-Type", "text/event-stream");
@@ -1275,130 +1501,74 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       if (!clientGone && !raw.writableEnded) raw.end();
     };
 
-    send("run.started", { run_id: runId, session_id: sessionId });
+    send("run.started", { run_id: runId });
+
+    const sentStageEventIds = new Set<string>();
+    const flushStageEvents = async () => {
+      const events = await repositories.listStageEventsByRunId(runId);
+      for (const event of events) {
+        if (sentStageEventIds.has(event.eventId)) continue;
+        sentStageEventIds.add(event.eventId);
+        send(event.eventType, stageEventResponse(event));
+      }
+    };
+    const stageEventPoller = setInterval(() => {
+      void flushStageEvents().catch((error: unknown) => {
+        request.log.warn(
+          { error: errorMessage(error), runId },
+          "stream: failed to flush stage events",
+        );
+      });
+    }, 500);
 
     const beforeSnapshot = await snapshotArtifacts().catch((error) => {
       request.log.warn(
         { error: errorMessage(error), runId },
-        "stream: failed to snapshot artifacts before prompt",
+        "stream: failed to snapshot artifacts before pipeline",
       );
       return new Map() as ArtifactSnapshot;
     });
 
-    const opencode = await getOpencodeClient();
-    const eventsAbort = new AbortController();
-    let eventCount = 0;
-
-    const eventLoop = (async () => {
-      try {
-        const events = await opencode.subscribeEvents({
-          signal: eventsAbort.signal,
-        });
-        for await (const event of events) {
-          if (clientGone || eventsAbort.signal.aborted) break;
-          const properties = (event as { properties?: { sessionID?: string } })
-            .properties;
-          if (properties?.sessionID && properties.sessionID !== sessionId) {
-            continue;
-          }
-          eventCount += 1;
-          await appendOpencodeEventTrace(runId, event).catch((error) => {
-            request.log.warn(
-              { error: errorMessage(error), runId },
-              "stream: failed to append opencode event trace",
-            );
-          });
-          send(event.type, event);
-        }
-      } catch (error) {
-        if (eventsAbort.signal.aborted || clientGone) return;
-        request.log.warn(
-          { error: errorMessage(error), runId },
-          "stream: event loop failed",
-        );
-      }
-    })();
-
-    let promptError: unknown;
-    let result: OpencodePromptResult | undefined;
-    let system = "";
-    const messageId = `msg_${runId.replace(/-/g, "")}`;
+    let pipelineError: unknown;
+    let result: Awaited<ReturnType<typeof runPipeline>> | undefined;
     const traceStartedAt = new Date().toISOString();
     try {
-      system = await buildSystemPrompt({ userId, strategyId });
-      const promptStart = Date.now();
-      request.log.info({ runId, sessionId }, "stream: calling opencode prompt");
-      result = await opencode.prompt({
-        messageId,
-        sessionId,
-        system,
-        text,
-      });
+      request.log.info({ runId, strategyId }, "stream: calling pipeline");
+      result = await executePipeline(runId, text);
       request.log.info(
-        {
-          runId,
-          sessionId,
-          durationMs: Date.now() - promptStart,
-          parts: result.parts?.length,
-          eventCount,
-        },
-        "stream: prompt returned",
+        { runId, resultId: result.result_id },
+        "stream: pipeline returned",
       );
-      if (!result.parts) throw new Error("opencode prompt returned no parts");
-      const failure = promptFailure(result);
-      if (failure) throw new Error(failure);
-
-      try {
-        const session = await opencode.getSession(sessionId);
-        await repositories.updateStrategyTitleIfBlank(
-          strategyId,
-          session.title,
-        );
-      } catch (error) {
-        request.log.warn(
-          { error: errorMessage(error), runId, strategyId },
-          "stream: failed to refresh strategy title",
-        );
-      }
     } catch (error) {
-      promptError = error;
+      pipelineError = error;
+    } finally {
+      clearInterval(stageEventPoller);
+      await flushStageEvents().catch((error: unknown) => {
+        request.log.warn(
+          { error: errorMessage(error), runId },
+          "stream: failed to flush final stage events",
+        );
+      });
     }
 
-    eventsAbort.abort();
-    const eventLoopWithTimeout = Promise.race([
-      eventLoop,
-      new Promise<void>((resolve) => setTimeout(resolve, 1000)),
-    ]);
-    await eventLoopWithTimeout.catch(() => undefined);
-
-    const traceArtifacts = await writePromptTrace(
+    const traceArtifacts = await writeRunTrace(
       runId,
-      promptTracePayload({
+      pipelineTracePayload({
         runId,
         strategyId,
-        sessionId,
-        messageId,
-        userText: text,
-        system,
+        brief: text,
         result,
-        error: promptError,
-        eventCount,
+        error: pipelineError,
         startedAt: traceStartedAt,
         endedAt: new Date().toISOString(),
       }),
     ).catch((error) => {
       request.log.warn(
         { error: errorMessage(error), runId },
-        "stream: failed to write prompt trace",
+        "stream: failed to write pipeline trace",
       );
       return [] as ArtifactRef[];
     });
-
-    if (promptError) {
-      await repositories.markRunFailed(runId, errorMessage(promptError));
-    } else {
-      await repositories.markRunCompleted(runId, replyText(result!.parts));
-    }
 
     send("run.finalizing", {
       message: "Creating structured report and charts",
@@ -1408,7 +1578,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const afterSnapshot = await snapshotArtifacts().catch((error) => {
       request.log.warn(
         { error: errorMessage(error), runId },
-        "stream: failed to snapshot artifacts after prompt",
+        "stream: failed to snapshot artifacts after pipeline",
       );
       return new Map() as ArtifactSnapshot;
     });
@@ -1418,17 +1588,13 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     );
     const filesystemArtifacts =
       artifactsFromAbsolutePaths(changedAbsolutePaths);
-    const textArtifacts = result?.parts
-      ? extractArtifactsFromParts(result.parts)
-      : [];
-    const artifacts = mergeArtifacts(filesystemArtifacts, textArtifacts);
+    const artifacts = filesystemArtifacts;
     const allArtifacts = mergeArtifacts(artifacts, traceArtifacts);
     request.log.info(
       {
         runId,
         artifactCount: allArtifacts.length,
         filesystemArtifactCount: filesystemArtifacts.length,
-        textArtifactCount: textArtifacts.length,
         traceArtifactCount: traceArtifacts.length,
         storageRoot: process.env.STORAGE_ROOT ?? null,
         artifactsDir: artifactsDir() ?? null,
@@ -1436,22 +1602,34 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       "stream: extracted artifacts",
     );
 
+    const finalizedStructuredResult =
+      await readFinalizedStructuredResult(allArtifacts);
+    const structuredResult =
+      finalizedStructuredResult ??
+      (await structuredResultFromArtifacts(
+        result?.result_id ?? "",
+        allArtifacts,
+      ));
+    const enrichmentArtifacts = finalizedStructuredResult
+      ? artifactsForSelectedResult(finalizedStructuredResult, allArtifacts)
+      : allArtifacts;
+    const enrichedStructuredResult = await enrichStructuredResultFromArtifacts(
+      structuredResult,
+      enrichmentArtifacts,
+    );
+
+    if (pipelineError) {
+      await repositories.markRunFailed(runId, errorMessage(pipelineError));
+    } else {
+      await repositories.markRunCompleted(
+        runId,
+        result!.result_id,
+        runSummaryFields(enrichedStructuredResult),
+      );
+    }
+
     const run = await repositories.readRun(runId);
     if (run) {
-      const finalizedStructuredResult =
-        await readFinalizedStructuredResult(allArtifacts);
-      const structuredResult =
-        finalizedStructuredResult ??
-        parseStrategyResultBlock(run.reply ?? "") ??
-        (await structuredResultFromArtifacts(run.reply ?? "", allArtifacts));
-      const enrichmentArtifacts = finalizedStructuredResult
-        ? artifactsForSelectedResult(finalizedStructuredResult, allArtifacts)
-        : allArtifacts;
-      const enrichedStructuredResult =
-        await enrichStructuredResultFromArtifacts(
-          structuredResult,
-          enrichmentArtifacts,
-        );
       finalize(runResponse(run, enrichedStructuredResult), allArtifacts);
     } else {
       finalize(

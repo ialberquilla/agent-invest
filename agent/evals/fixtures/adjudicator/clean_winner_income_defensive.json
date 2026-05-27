@@ -1,0 +1,26 @@
+{
+  "input": {
+    "run_id": "eval-adjudicator-clean-income-defensive",
+    "round": 1,
+    "batch_id": "batch-clean-income-defensive",
+    "thesis": {"objective": "income", "constraints": {"max_drawdown": -0.15}},
+    "candidates": [
+      {"candidate_id": "income-a", "template_id": "periodic_rebalance", "config": {"weighting": "equal"}},
+      {"candidate_id": "income-b", "template_id": "buy_and_hold", "config": {"weighting": "market_cap"}}
+    ],
+    "kpis": {
+      "income-a": {"yield_score": 0.82, "volatility": 0.12, "max_drawdown": -0.1, "validated": true},
+      "income-b": {"yield_score": 0.45, "volatility": 0.28, "max_drawdown": -0.22, "validated": false}
+    },
+    "mock_output": {
+      "kind": "winner",
+      "candidate_id": "income-a",
+      "justification": "income-a is the income winner because it validates against the defensive income thesis, has higher yield_score, lower volatility, and remains within the max_drawdown risk constraint."
+    }
+  },
+  "expectations": {
+    "kind": "winner",
+    "acceptable_winners": ["income-a"],
+    "justification_criteria": "Winner should validate against defensive income thesis, cite higher yield_score, lower volatility, and max_drawdown risk constraint compliance."
+  }
+}

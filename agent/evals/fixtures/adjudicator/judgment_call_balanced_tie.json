@@ -1,0 +1,26 @@
+{
+  "input": {
+    "run_id": "eval-adjudicator-judgment-balanced-tie",
+    "round": 1,
+    "batch_id": "batch-judgment-balanced-tie",
+    "thesis": {"objective": "balanced", "constraints": {"max_drawdown": -0.25}},
+    "candidates": [
+      {"candidate_id": "tie-a", "template_id": "periodic_rebalance", "config": {}},
+      {"candidate_id": "tie-b", "template_id": "buy_and_hold", "config": {}}
+    ],
+    "kpis": {
+      "tie-a": {"sharpe": 0.91, "max_drawdown": -0.18, "benchmark_excess_return": 0.04, "validated": true},
+      "tie-b": {"sharpe": 0.9, "max_drawdown": -0.17, "benchmark_excess_return": 0.035, "validated": true}
+    },
+    "mock_output": {
+      "kind": "winner",
+      "candidate_id": "tie-b",
+      "justification": "tie-b is an acceptable balanced winner in this judgment call because both candidates validate against the thesis, Sharpe is near tie, max_drawdown risk is slightly better, and benchmark_excess_return remains positive versus benchmark."
+    }
+  },
+  "expectations": {
+    "kind": "winner",
+    "acceptable_winners": ["tie-a", "tie-b"],
+    "justification_criteria": "Winner should not refine a valid judgment call. It should validate against balanced thesis and cite near tie Sharpe, max_drawdown risk, and positive benchmark_excess_return versus benchmark."
+  }
+}

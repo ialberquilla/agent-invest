@@ -1,0 +1,17 @@
+{
+  "input": {
+    "request": "Put a small sleeve to work in high beta crypto for 90 days; I know it may be volatile and want maximum upside.",
+    "run_id": "eval-thesis-ambiguous-degen-small-size",
+    "expected_objective": "high_growth",
+    "expected_primary_factor_ids": ["momentum", "relative_strength"],
+    "expected_constraints": {"max_allocation_pct": 15},
+    "expected_horizon_days": 90,
+    "expected_interpretation_notes": "Small sleeve high beta request should map to high growth over 90 days, prioritizing momentum and relative strength while limiting the sleeve to 15 percent allocation."
+  },
+  "expectations": {
+    "objective": "high_growth",
+    "primary_factor_ids": ["momentum", "relative_strength"],
+    "numeric_constraints": {"horizon_days": 90, "max_allocation_pct": 15},
+    "interpretation_notes": "Small sleeve high beta request should map to high growth over 90 days, prioritizing momentum and relative strength while limiting the sleeve to 15 percent allocation."
+  }
+}

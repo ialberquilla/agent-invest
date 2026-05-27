@@ -1,0 +1,18 @@
+{
+  "input": {
+    "run_id": "eval-adjudicator-refine-weak-robustness",
+    "round": 2,
+    "batch_id": "batch-refine-weak-robustness",
+    "thesis": {"objective": "high_growth"},
+    "candidates": [{"candidate_id": "weak-a", "template_id": "momentum", "config": {}}],
+    "kpis": {"weak-a": {"return": 0.03, "sharpe": 0.1, "turnover": 4.8, "validated": true}},
+    "mock_output": {
+      "kind": "refine",
+      "reasons": [
+        {"candidate_id": "weak-a", "reason": "weak_performance", "detail": "Return and Sharpe are too weak for high_growth."},
+        {"candidate_id": "weak-a", "reason": "robustness_warning", "detail": "High turnover indicates poor robustness."}
+      ]
+    }
+  },
+  "expectations": {"kind": "refine", "expected_refinement_codes": ["weak_performance", "robustness_warning"]}
+}

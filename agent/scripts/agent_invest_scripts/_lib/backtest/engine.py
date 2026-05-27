@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import UTC, datetime, date
 import math
 
 import polars as pl
@@ -150,11 +150,18 @@ def run_backtest(
             "total_num_swaps": int(performance.get_column("num_swaps").sum()),
             "start_date": performance.get_column("date").min().isoformat(),
             "end_date": performance.get_column("date").max().isoformat(),
+            "survivorship_warning": _survivorship_warning(
+                performance.get_column("date").min()
+            ),
         }
     )
     return BacktestResult(
         summary=summary, performance=performance, weights=weights, selections=selections
     )
+
+
+def _survivorship_warning(start_date: date) -> bool:
+    return (datetime.now(UTC).date() - start_date).days > 365
 
 
 def _wide_prices(prices_long: pl.DataFrame, universe: list[str] | None) -> pl.DataFrame:

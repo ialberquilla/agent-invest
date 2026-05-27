@@ -2,7 +2,7 @@ node_modules/
 dist/
 .data/
 tasks
-tools
+/tools
 .claude
 plan.md
 task-decomposer.md

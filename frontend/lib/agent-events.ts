@@ -88,6 +88,10 @@ export function reduceTimeline(
     return state;
   }
 
+  if (message.event.startsWith("stage.")) {
+    return upsertPart(state, partFromStageEvent(message.event, payload));
+  }
+
   const payloadRecord = asRecord(payload);
   if (!payloadRecord) return state;
   const properties = asRecord(payloadRecord.properties) ?? payloadRecord;
@@ -107,6 +111,45 @@ export function reduceTimeline(
   }
 
   return state;
+}
+
+function partFromStageEvent(
+  eventName: string,
+  payload: unknown,
+): TimelinePart | null {
+  const event = asRecord(payload);
+  const eventId = getString(event?.event_id);
+  const eventType = getString(event?.event_type) ?? eventName;
+  const stagePayload = asRecord(event?.payload);
+  const stage = getString(stagePayload?.stage) ?? "stage";
+  const round =
+    typeof stagePayload?.round === "number" ? ` r${stagePayload.round}` : "";
+  const stageRunId =
+    getString(stagePayload?.stage_run_id) ?? eventId ?? eventType;
+  const toolName = getString(stagePayload?.tool_name);
+  const error = getString(stagePayload?.error);
+
+  if (eventType === "stage.tool_call") {
+    return {
+      kind: "tool",
+      id: eventId ?? `${stageRunId}:${toolName ?? "tool"}`,
+      name: toolName ?? "tool",
+      description: `${stage}${round}`,
+      status: error ? "error" : "running",
+      errorMessage: error,
+    };
+  }
+
+  const status = eventType === "stage.failed" ? "error" : "completed";
+  const label = eventType.replace("stage.", "").replace("_", " ");
+  return {
+    kind: "tool",
+    id: eventId ?? `${stageRunId}:${eventType}`,
+    name: stage,
+    description: `${label}${round}`,
+    status,
+    errorMessage: error,
+  };
 }
 
 function partFromUpdate(part: AnyRecord): TimelinePart | null {

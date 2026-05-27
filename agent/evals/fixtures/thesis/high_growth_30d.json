@@ -1,0 +1,17 @@
+{
+  "input": {
+    "request": "Seek aggressive crypto growth over the next 30 days with a 25% position cap and at least $500M market cap.",
+    "run_id": "eval-thesis-high-growth-30d",
+    "expected_objective": "high_growth",
+    "expected_primary_factor_ids": ["momentum", "volume"],
+    "expected_constraints": {"max_allocation_pct": 25, "min_market_cap_usd": 500000000},
+    "expected_horizon_days": 30,
+    "expected_interpretation_notes": "High growth brief prioritizes short horizon momentum and liquidity while respecting a 25 percent position cap and 500M minimum market cap."
+  },
+  "expectations": {
+    "objective": "high_growth",
+    "primary_factor_ids": ["momentum", "volume"],
+    "numeric_constraints": {"horizon_days": 30, "max_allocation_pct": 25, "min_market_cap_usd": 500000000},
+    "interpretation_notes": "High growth brief prioritizes short horizon momentum and liquidity while respecting a 25 percent position cap and 500M minimum market cap."
+  }
+}

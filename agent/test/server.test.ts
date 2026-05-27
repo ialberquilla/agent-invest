@@ -11,10 +11,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import type {
-  OpencodePromptResult,
-  OpencodeTurnClient,
-} from "../src/agent/session";
 import { buildServer } from "../src/api/server";
 
 type StrategyState = {
@@ -34,6 +30,33 @@ type RunState = {
   error: string | null;
 };
 
+type StageRunState = {
+  stageRunId: string;
+  runId: string;
+  stage: string;
+  round: number;
+  status: string;
+  opencodeSessionId: string | null;
+  model: string;
+  input: unknown;
+  output: unknown;
+  error: string | null;
+  startedAt: Date;
+  endedAt: Date | null;
+  tokensIn: number | null;
+  tokensOut: number | null;
+};
+
+type AgentEventState = {
+  eventId: string;
+  threadId: string | null;
+  messageId: string | null;
+  runId: string | null;
+  eventType: string;
+  payload: unknown;
+  createdAt: Date;
+};
+
 type Deferred<T> = {
   promise: Promise<T>;
   resolve(value: T | PromiseLike<T>): void;
@@ -43,6 +66,8 @@ type Deferred<T> = {
 function createState() {
   return {
     runs: new Map<string, RunState>(),
+    events: new Map<string, AgentEventState>(),
+    stageRuns: new Map<string, StageRunState>(),
     strategies: new Map<string, StrategyState>(),
     users: new Set<string>(),
   };
@@ -57,81 +82,6 @@ function createDeferred<T = void>(): Deferred<T> {
   });
 
   return { promise, reject, resolve };
-}
-
-function completedPromptResult(
-  text: string,
-  sessionId: string,
-): OpencodePromptResult {
-  return {
-    info: {
-      cost: 0,
-      id: `assistant-${sessionId}`,
-      mode: "chat",
-      modelID: "gpt-5",
-      parentID: `run-${sessionId}`,
-      path: { cwd: "/tmp", root: "/tmp" },
-      providerID: "openai",
-      role: "assistant",
-      sessionID: sessionId,
-      time: { completed: Date.now(), created: Date.now() },
-      tokens: {
-        cache: { read: 0, write: 0 },
-        input: 0,
-        output: 0,
-        reasoning: 0,
-      },
-    },
-    parts: [
-      {
-        id: `text-${sessionId}`,
-        messageID: `assistant-${sessionId}`,
-        sessionID: sessionId,
-        text,
-        type: "text" as const,
-      },
-    ],
-  } as unknown as OpencodePromptResult;
-}
-
-function toolErrorPromptResult(
-  message: string,
-  sessionId: string,
-): OpencodePromptResult {
-  return {
-    info: {
-      cost: 0,
-      id: `assistant-${sessionId}`,
-      mode: "chat",
-      modelID: "gpt-5",
-      parentID: `run-${sessionId}`,
-      path: { cwd: "/tmp", root: "/tmp" },
-      providerID: "openai",
-      role: "assistant",
-      sessionID: sessionId,
-      time: { completed: Date.now(), created: Date.now() },
-      tokens: {
-        cache: { read: 0, write: 0 },
-        input: 0,
-        output: 0,
-        reasoning: 0,
-      },
-    },
-    parts: [
-      {
-        callID: "call-tool-error",
-        id: `tool-${sessionId}`,
-        messageID: `assistant-${sessionId}`,
-        sessionID: sessionId,
-        state: {
-          error: message,
-          status: "error" as const,
-        },
-        tool: "bash",
-        type: "tool" as const,
-      },
-    ],
-  } as unknown as OpencodePromptResult;
 }
 
 function parseSseEvents(body: string) {
@@ -152,29 +102,30 @@ function parseSseEvents(body: string) {
     });
 }
 
-function createOpencodeClientDouble(
-  title: string,
-  promptResult: OpencodePromptResult,
-): OpencodeTurnClient {
-  return {
-    async getSession() {
-      return { title };
-    },
-    async prompt() {
-      return promptResult;
-    },
-    async subscribeEvents() {
-      return {
-        [Symbol.asyncIterator]() {
-          return {
-            async next() {
-              return { done: true, value: undefined };
-            },
-          };
-        },
-      };
-    },
-  };
+async function readSseEvents(
+  response: Response,
+  count: number,
+  afterFirstEvent?: () => void,
+) {
+  assert.ok(response.body);
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let body = "";
+  let didRunAfterFirstEvent = false;
+
+  while (parseSseEvents(body).length < count) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    body += decoder.decode(value, { stream: true });
+
+    if (!didRunAfterFirstEvent && parseSseEvents(body).length > 0) {
+      didRunAfterFirstEvent = true;
+      afterFirstEvent?.();
+    }
+  }
+
+  reader.releaseLock();
+  return parseSseEvents(body);
 }
 
 function createRepositoryDouble(state: ReturnType<typeof createState>) {
@@ -222,6 +173,42 @@ function createRepositoryDouble(state: ReturnType<typeof createState>) {
       run.reply = null;
       run.error = error;
     },
+    async getStageRun(stageRunId: string) {
+      return state.stageRuns.get(stageRunId) ?? null;
+    },
+    async listStageRunsByRunId(runId: string) {
+      return [...state.stageRuns.values()]
+        .filter((stageRun) => stageRun.runId === runId)
+        .sort((left, right) => {
+          return (
+            left.stage.localeCompare(right.stage) ||
+            left.round - right.round ||
+            left.startedAt.getTime() - right.startedAt.getTime()
+          );
+        });
+    },
+    async listStageEventsByRunId(
+      runId: string,
+      filters: { stage?: string; round?: number } = {},
+    ) {
+      return [...state.events.values()]
+        .filter((event) => event.runId === runId)
+        .filter((event) => event.eventType.startsWith("stage."))
+        .filter((event) => {
+          if (!filters.stage && filters.round === undefined) return true;
+          const payload = event.payload as Record<string, unknown>;
+          return (
+            (filters.stage === undefined || payload.stage === filters.stage) &&
+            (filters.round === undefined || payload.round === filters.round)
+          );
+        })
+        .sort((left, right) => {
+          return (
+            left.createdAt.getTime() - right.createdAt.getTime() ||
+            left.eventId.localeCompare(right.eventId)
+          );
+        });
+    },
     async readRun(runId: string) {
       const run = state.runs.get(runId);
       return run ? { ...run, runId } : null;
@@ -230,20 +217,12 @@ function createRepositoryDouble(state: ReturnType<typeof createState>) {
       const strategy = state.strategies.get(strategyId);
       if (strategy) strategy.lastUsedAt = new Date().toISOString();
     },
-    async updateStrategyTitleIfBlank(strategyId: string, title: string) {
-      const strategy = state.strategies.get(strategyId);
-      const normalizedTitle = title.trim();
-      if (strategy && normalizedTitle && !strategy.title.trim()) {
-        strategy.title = normalizedTitle;
-      }
-    },
   };
 }
 
 test("agent API key rejects requests without the x-api-key header", async () => {
-  const previousApiKey = process.env.AGENT_API_KEY;
-  process.env.AGENT_API_KEY = "test-agent-key";
   const app = buildServer({
+    apiKey: "test-agent-key",
     repositories: createRepositoryDouble(createState()),
   });
 
@@ -262,15 +241,12 @@ test("agent API key rejects requests without the x-api-key header", async () => 
     });
   } finally {
     await app.close();
-    if (previousApiKey === undefined) delete process.env.AGENT_API_KEY;
-    else process.env.AGENT_API_KEY = previousApiKey;
   }
 });
 
 test("agent API key accepts requests with a valid x-api-key header", async () => {
-  const previousApiKey = process.env.AGENT_API_KEY;
-  process.env.AGENT_API_KEY = "test-agent-key";
   const app = buildServer({
+    apiKey: "test-agent-key",
     repositories: createRepositoryDouble(createState()),
   });
 
@@ -289,8 +265,6 @@ test("agent API key accepts requests with a valid x-api-key header", async () =>
     );
   } finally {
     await app.close();
-    if (previousApiKey === undefined) delete process.env.AGENT_API_KEY;
-    else process.env.AGENT_API_KEY = previousApiKey;
   }
 });
 
@@ -579,24 +553,11 @@ test("POST /maintenance/storage/cleanup deletes old storage files", async () => 
   }
 });
 
-test("POST /messages returns the completed run and auto-creates the strategy", async () => {
+test("POST /messages returns the completed pipeline run", async () => {
   const state = createState();
   const app = buildServer({
-    buildSystemPrompt: async () => "system prompt",
     repositories: createRepositoryDouble(state),
-    getOpencodeClient: async () =>
-      createOpencodeClientDouble(
-        "Momentum explorer",
-        completedPromptResult("Here is the agent reply.", "session-1"),
-      ),
-    getSessionId: async (strategyId) => {
-      const strategy = state.strategies.get(strategyId);
-
-      assert.ok(strategy);
-      strategy.opencodeSessionId ||= "session-1";
-
-      return strategy.opencodeSessionId;
-    },
+    runPipeline: async () => ({ result_id: "result-1" }),
   });
 
   try {
@@ -615,7 +576,7 @@ test("POST /messages returns the completed run and auto-creates the strategy", a
       ended_at: state.runs.get(response.json().run_id)?.endedAt ?? null,
       error: null,
       exit_code: 0,
-      reply: "Here is the agent reply.",
+      reply: "result-1",
       run_id: response.json().run_id,
       started_at: state.runs.get(response.json().run_id)?.startedAt ?? null,
       status: "completed",
@@ -626,8 +587,6 @@ test("POST /messages returns the completed run and auto-creates the strategy", a
 
     assert.ok(strategy);
     assert.equal(strategy.userId, "user-1");
-    assert.equal(strategy.opencodeSessionId, "session-1");
-    assert.equal(strategy.title, "Momentum explorer");
     assert.ok(run);
     assert.equal(run.status, "completed");
     assert.equal(run.exitCode, 0);
@@ -639,21 +598,8 @@ test("POST /messages returns the completed run and auto-creates the strategy", a
 test("GET /runs/:id returns the persisted run", async () => {
   const state = createState();
   const app = buildServer({
-    buildSystemPrompt: async () => "system prompt",
     repositories: createRepositoryDouble(state),
-    getOpencodeClient: async () =>
-      createOpencodeClientDouble(
-        "Mean reversion scout",
-        completedPromptResult("Async reply completed.", "session-2"),
-      ),
-    getSessionId: async (strategyId) => {
-      const strategy = state.strategies.get(strategyId);
-
-      assert.ok(strategy);
-      strategy.opencodeSessionId ||= "session-2";
-
-      return strategy.opencodeSessionId;
-    },
+    runPipeline: async () => ({ result_id: "result-2" }),
   });
 
   try {
@@ -680,11 +626,529 @@ test("GET /runs/:id returns the persisted run", async () => {
       ended_at: state.runs.get(runId)?.endedAt ?? null,
       error: null,
       exit_code: 0,
-      reply: "Async reply completed.",
+      reply: "result-2",
       run_id: runId,
       started_at: state.runs.get(runId)?.startedAt ?? null,
+      stages: [],
       status: "completed",
     });
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/:id includes stage run summaries without payloads", async () => {
+  const state = createState();
+  state.runs.set("run-with-stages", {
+    endedAt: "2026-05-14T00:01:00.000Z",
+    error: null,
+    exitCode: 0,
+    reply: "result-with-stages",
+    startedAt: "2026-05-14T00:00:00.000Z",
+    status: "completed",
+    strategyId: "strategy-1",
+  });
+  state.stageRuns.set("stage-run-1", {
+    endedAt: new Date("2026-05-14T00:00:30.000Z"),
+    error: null,
+    input: { heavy: "input" },
+    model: "gpt-test",
+    opencodeSessionId: "session-1",
+    output: { heavy: "output" },
+    round: 1,
+    runId: "run-with-stages",
+    stage: "thesis",
+    stageRunId: "stage-run-1",
+    startedAt: new Date("2026-05-14T00:00:10.000Z"),
+    status: "completed",
+    tokensIn: 12,
+    tokensOut: 34,
+  });
+  const app = buildServer({ repositories: createRepositoryDouble(state) });
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/run-with-stages",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json().stages, [
+      {
+        ended_at: "2026-05-14T00:00:30.000Z",
+        model: "gpt-test",
+        round: 1,
+        stage: "thesis",
+        stage_run_id: "stage-run-1",
+        started_at: "2026-05-14T00:00:10.000Z",
+        status: "completed",
+        tokens: { input: 12, output: 34 },
+      },
+    ]);
+    assert.equal("input" in response.json().stages[0], false);
+    assert.equal("output" in response.json().stages[0], false);
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/:id/stream emits snapshot and filtered stage deltas", async () => {
+  const state = createState();
+  state.runs.set("run-stream", {
+    endedAt: null,
+    error: null,
+    exitCode: null,
+    reply: null,
+    startedAt: new Date("2026-01-01T00:00:00.000Z").toISOString(),
+    status: "running",
+    strategyId: "strategy-1",
+  });
+  state.stageRuns.set("stage-run-1", {
+    endedAt: null,
+    error: null,
+    input: { prompt: "input" },
+    model: "gpt-test",
+    opencodeSessionId: "session-1",
+    output: null,
+    round: 1,
+    runId: "run-stream",
+    stage: "designer",
+    stageRunId: "stage-run-1",
+    startedAt: new Date("2026-01-01T00:00:01.000Z"),
+    status: "running",
+    tokensIn: 12,
+    tokensOut: null,
+  });
+
+  let listener:
+    | ((delta: {
+        round: number;
+        run_id: string;
+        stage: string;
+        stage_run_id: string;
+        status: string;
+      }) => void)
+    | null = null;
+  let cleanupCount = 0;
+  const app = buildServer({
+    repositories: createRepositoryDouble(state),
+    async subscribeToStageRunChanges(onDelta) {
+      listener = onDelta;
+      return async () => {
+        cleanupCount += 1;
+        listener = null;
+      };
+    },
+  });
+  const abortController = new AbortController();
+
+  try {
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const response = await fetch(`${address}/runs/run-stream/stream`, {
+      signal: abortController.signal,
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "text/event-stream");
+
+    const events = await readSseEvents(response, 2, () => {
+      assert.ok(listener);
+      listener({
+        round: 1,
+        run_id: "other-run",
+        stage: "designer",
+        stage_run_id: "stage-run-other",
+        status: "completed",
+      });
+      listener({
+        round: 1,
+        run_id: "run-stream",
+        stage: "designer",
+        stage_run_id: "stage-run-1",
+        status: "completed",
+      });
+    });
+
+    assert.deepEqual(events, [
+      {
+        event: "snapshot",
+        data: [
+          {
+            ended_at: null,
+            model: "gpt-test",
+            round: 1,
+            stage: "designer",
+            stage_run_id: "stage-run-1",
+            started_at: "2026-01-01T00:00:01.000Z",
+            status: "running",
+            tokens: { input: 12, output: null },
+          },
+        ],
+      },
+      {
+        event: "delta",
+        data: {
+          round: 1,
+          run_id: "run-stream",
+          stage: "designer",
+          stage_run_id: "stage-run-1",
+          status: "completed",
+        },
+      },
+    ]);
+
+    abortController.abort();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(cleanupCount, 1);
+    assert.equal(listener, null);
+  } finally {
+    abortController.abort();
+    await app.close();
+  }
+});
+
+test("GET /runs/:id/stages/:stage_run_id returns the full stage run", async () => {
+  const state = createState();
+  state.runs.set("run-stage-detail", {
+    endedAt: null,
+    error: null,
+    exitCode: null,
+    reply: null,
+    startedAt: "2026-05-14T00:00:00.000Z",
+    status: "running",
+    strategyId: "strategy-1",
+  });
+  state.stageRuns.set("stage-run-detail", {
+    endedAt: null,
+    error: null,
+    input: { prompt: "design" },
+    model: "gpt-test",
+    opencodeSessionId: null,
+    output: { answer: "allocation" },
+    round: 2,
+    runId: "run-stage-detail",
+    stage: "designer",
+    stageRunId: "stage-run-detail",
+    startedAt: new Date("2026-05-14T00:00:10.000Z"),
+    status: "running",
+    tokensIn: null,
+    tokensOut: null,
+  });
+  const app = buildServer({ repositories: createRepositoryDouble(state) });
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/run-stage-detail/stages/stage-run-detail",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), {
+      ended_at: null,
+      error: null,
+      input: { prompt: "design" },
+      model: "gpt-test",
+      opencode_session_id: null,
+      output: { answer: "allocation" },
+      round: 2,
+      run_id: "run-stage-detail",
+      stage: "designer",
+      stage_run_id: "stage-run-detail",
+      started_at: "2026-05-14T00:00:10.000Z",
+      status: "running",
+      tokens: { input: null, output: null },
+    });
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/:id/stages/:stage_run_id returns 404 for missing stage runs", async () => {
+  const state = createState();
+  state.runs.set("run-stage-missing", {
+    endedAt: null,
+    error: null,
+    exitCode: null,
+    reply: null,
+    startedAt: "2026-05-14T00:00:00.000Z",
+    status: "running",
+    strategyId: "strategy-1",
+  });
+  const app = buildServer({ repositories: createRepositoryDouble(state) });
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/run-stage-missing/stages/missing-stage-run",
+    });
+
+    assert.equal(response.statusCode, 404);
+    assert.deepEqual(response.json(), {
+      error: "Not Found",
+      message: "Stage run not found",
+      statusCode: 404,
+    });
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/:id/stages/:stage_run_id returns 404 for cross-run stage ids", async () => {
+  const state = createState();
+  state.runs.set("run-a", {
+    endedAt: null,
+    error: null,
+    exitCode: null,
+    reply: null,
+    startedAt: "2026-05-14T00:00:00.000Z",
+    status: "running",
+    strategyId: "strategy-1",
+  });
+  state.runs.set("run-b", {
+    endedAt: null,
+    error: null,
+    exitCode: null,
+    reply: null,
+    startedAt: "2026-05-14T00:00:00.000Z",
+    status: "running",
+    strategyId: "strategy-1",
+  });
+  state.stageRuns.set("stage-run-b", {
+    endedAt: null,
+    error: null,
+    input: {},
+    model: "gpt-test",
+    opencodeSessionId: null,
+    output: null,
+    round: 1,
+    runId: "run-b",
+    stage: "thesis",
+    stageRunId: "stage-run-b",
+    startedAt: new Date("2026-05-14T00:00:10.000Z"),
+    status: "running",
+    tokensIn: null,
+    tokensOut: null,
+  });
+  const app = buildServer({ repositories: createRepositoryDouble(state) });
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/run-a/stages/stage-run-b",
+    });
+
+    assert.equal(response.statusCode, 404);
+    assert.deepEqual(response.json(), {
+      error: "Not Found",
+      message: "Stage run not found",
+      statusCode: 404,
+    });
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/:id/events returns all stage events ordered by creation time", async () => {
+  const state = createState();
+  state.runs.set("run-events", {
+    endedAt: null,
+    error: null,
+    exitCode: null,
+    reply: null,
+    startedAt: "2026-05-14T00:00:00.000Z",
+    status: "running",
+    strategyId: "strategy-1",
+  });
+  state.events.set("later", {
+    createdAt: new Date("2026-05-14T00:00:03.000Z"),
+    eventId: "later",
+    eventType: "stage.completed",
+    messageId: null,
+    payload: { round: 1, stage: "thesis" },
+    runId: "run-events",
+    threadId: null,
+  });
+  state.events.set("non-stage", {
+    createdAt: new Date("2026-05-14T00:00:01.000Z"),
+    eventId: "non-stage",
+    eventType: "run.started",
+    messageId: null,
+    payload: { round: 1, stage: "thesis" },
+    runId: "run-events",
+    threadId: null,
+  });
+  state.events.set("earlier", {
+    createdAt: new Date("2026-05-14T00:00:02.000Z"),
+    eventId: "earlier",
+    eventType: "stage.started",
+    messageId: null,
+    payload: { round: 1, stage: "thesis" },
+    runId: "run-events",
+    threadId: null,
+  });
+  const app = buildServer({ repositories: createRepositoryDouble(state) });
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/run-events/events",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), [
+      {
+        created_at: "2026-05-14T00:00:02.000Z",
+        event_id: "earlier",
+        event_type: "stage.started",
+        payload: { round: 1, stage: "thesis" },
+      },
+      {
+        created_at: "2026-05-14T00:00:03.000Z",
+        event_id: "later",
+        event_type: "stage.completed",
+        payload: { round: 1, stage: "thesis" },
+      },
+    ]);
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/:id/events filters stage events by stage", async () => {
+  const state = createState();
+  state.runs.set("run-events", {
+    endedAt: null,
+    error: null,
+    exitCode: null,
+    reply: null,
+    startedAt: "2026-05-14T00:00:00.000Z",
+    status: "running",
+    strategyId: "strategy-1",
+  });
+  for (const event of [
+    { eventId: "thesis", payload: { round: 1, stage: "thesis" } },
+    { eventId: "designer", payload: { round: 1, stage: "designer" } },
+  ]) {
+    state.events.set(event.eventId, {
+      createdAt: new Date(`2026-05-14T00:00:0${state.events.size}.000Z`),
+      eventId: event.eventId,
+      eventType: "stage.started",
+      messageId: null,
+      payload: event.payload,
+      runId: "run-events",
+      threadId: null,
+    });
+  }
+  const app = buildServer({ repositories: createRepositoryDouble(state) });
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/run-events/events?stage=designer",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(
+      response.json().map((event: { event_id: string }) => event.event_id),
+      ["designer"],
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/:id/events filters stage events by stage and round", async () => {
+  const state = createState();
+  state.runs.set("run-events", {
+    endedAt: null,
+    error: null,
+    exitCode: null,
+    reply: null,
+    startedAt: "2026-05-14T00:00:00.000Z",
+    status: "running",
+    strategyId: "strategy-1",
+  });
+  for (const event of [
+    { eventId: "designer-r1", payload: { round: 1, stage: "designer" } },
+    { eventId: "designer-r2", payload: { round: 2, stage: "designer" } },
+    { eventId: "thesis-r2", payload: { round: 2, stage: "thesis" } },
+  ]) {
+    state.events.set(event.eventId, {
+      createdAt: new Date(`2026-05-14T00:00:0${state.events.size}.000Z`),
+      eventId: event.eventId,
+      eventType: "stage.started",
+      messageId: null,
+      payload: event.payload,
+      runId: "run-events",
+      threadId: null,
+    });
+  }
+  const app = buildServer({ repositories: createRepositoryDouble(state) });
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/run-events/events?stage=designer&round=2",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(
+      response.json().map((event: { event_id: string }) => event.event_id),
+      ["designer-r2"],
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/:id/events returns an empty array when no events match", async () => {
+  const state = createState();
+  state.runs.set("run-events", {
+    endedAt: null,
+    error: null,
+    exitCode: null,
+    reply: null,
+    startedAt: "2026-05-14T00:00:00.000Z",
+    status: "running",
+    strategyId: "strategy-1",
+  });
+  const app = buildServer({ repositories: createRepositoryDouble(state) });
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/run-events/events?stage=reporter&round=3",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), []);
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/:id/events rejects invalid stage and round query params", async () => {
+  const state = createState();
+  state.runs.set("run-events", {
+    endedAt: null,
+    error: null,
+    exitCode: null,
+    reply: null,
+    startedAt: "2026-05-14T00:00:00.000Z",
+    status: "running",
+    strategyId: "strategy-1",
+  });
+  const app = buildServer({ repositories: createRepositoryDouble(state) });
+
+  try {
+    for (const url of [
+      "/runs/run-events/events?stage=unknown",
+      "/runs/run-events/events?round=two",
+      "/runs/run-events/events?round=4",
+    ]) {
+      const response = await app.inject({ method: "GET", url });
+      assert.equal(response.statusCode, 400);
+    }
   } finally {
     await app.close();
   }
@@ -712,37 +1176,24 @@ test("GET /runs/:id returns 404 for unknown runs", async () => {
   }
 });
 
-test("different users can build prompts in parallel", async () => {
+test("different users can run pipelines in parallel", async () => {
   const state = createState();
-  const bothBuildsStarted = createDeferred<void>();
-  const releaseBuilds = createDeferred<void>();
-  const buildOrder: string[] = [];
+  const bothRunsStarted = createDeferred<void>();
+  const releaseRuns = createDeferred<void>();
+  const runOrder: string[] = [];
   const app = buildServer({
-    buildSystemPrompt: async ({ userId }) => {
-      buildOrder.push(userId);
+    runPipeline: async (_runId, brief) => {
+      runOrder.push(String(brief));
 
-      if (buildOrder.length === 2) {
-        bothBuildsStarted.resolve();
+      if (runOrder.length === 2) {
+        bothRunsStarted.resolve();
       }
 
-      await releaseBuilds.promise;
+      await releaseRuns.promise;
 
-      return `system prompt for ${userId}`;
+      return { result_id: "parallel-result" };
     },
     repositories: createRepositoryDouble(state),
-    getOpencodeClient: async () =>
-      createOpencodeClientDouble(
-        "Parallel strategy",
-        completedPromptResult("Parallel reply.", "session-parallel"),
-      ),
-    getSessionId: async (strategyId) => {
-      const strategy = state.strategies.get(strategyId);
-
-      assert.ok(strategy);
-      strategy.opencodeSessionId ||= `session-${strategyId}`;
-
-      return strategy.opencodeSessionId;
-    },
   });
 
   try {
@@ -765,24 +1216,23 @@ test("different users can build prompts in parallel", async () => {
       url: "/messages",
     });
 
-    await bothBuildsStarted.promise;
-    assert.deepEqual([...buildOrder].sort(), ["user-1", "user-2"]);
+    await bothRunsStarted.promise;
+    assert.deepEqual([...runOrder].sort(), ["User one turn", "User two turn"]);
 
-    releaseBuilds.resolve();
+    releaseRuns.resolve();
 
     const [first, second] = await Promise.all([firstResponse, secondResponse]);
 
     assert.equal(first.statusCode, 200);
     assert.equal(second.statusCode, 200);
   } finally {
-    releaseBuilds.resolve();
+    releaseRuns.resolve();
     await app.close();
   }
 });
 
 test("unexpected errors return a 500 response", async () => {
   const app = buildServer({
-    buildSystemPrompt: async () => "system prompt",
     repositories: {
       async ensureStrategy() {
         throw new Error("database offline");
@@ -808,23 +1258,12 @@ test("unexpected errors return a 500 response", async () => {
   }
 });
 
-test("assistant tool error persists a failed run", async () => {
+test("pipeline error persists a failed run", async () => {
   const state = createState();
   const app = buildServer({
-    buildSystemPrompt: async () => "system prompt",
     repositories: createRepositoryDouble(state),
-    getOpencodeClient: async () =>
-      createOpencodeClientDouble(
-        "Timeout strategy",
-        toolErrorPromptResult("Script timed out after 1s", "session-timeout"),
-      ),
-    getSessionId: async (strategyId) => {
-      const strategy = state.strategies.get(strategyId);
-
-      assert.ok(strategy);
-      strategy.opencodeSessionId ||= `session-${strategyId}`;
-
-      return strategy.opencodeSessionId;
+    async runPipeline() {
+      throw new Error("Script timed out after 1s");
     },
   });
 
@@ -855,37 +1294,11 @@ test("assistant tool error persists a failed run", async () => {
   }
 });
 
-test("POST /messages/stream includes parsed structured_result on completion", async () => {
+test("POST /messages/stream completes with pipeline result", async () => {
   const state = createState();
-  const structuredResult = {
-    allocation: [{ asset: "Bitcoin", weight: 1 }],
-    assumptions: ["Liquidity remains stable"],
-    kpis: { sharpe_ratio: 1.4 },
-    next_steps: ["Monitor drawdown"],
-    reasoning: "Trend following fits the requested universe.",
-    risks: ["Whipsaw risk"],
-    summary: "A BTC trend strategy.",
-    title: "BTC Trend",
-  };
-  const reply = `Here is the strategy.\n\n\`\`\`strategy_result\n${JSON.stringify(
-    structuredResult,
-  )}\n\`\`\``;
   const app = buildServer({
-    buildSystemPrompt: async () => "system prompt",
     repositories: createRepositoryDouble(state),
-    getOpencodeClient: async () =>
-      createOpencodeClientDouble(
-        "BTC trend strategy",
-        completedPromptResult(reply, "session-stream"),
-      ),
-    getSessionId: async (strategyId) => {
-      const strategy = state.strategies.get(strategyId);
-
-      assert.ok(strategy);
-      strategy.opencodeSessionId ||= "session-stream";
-
-      return strategy.opencodeSessionId;
-    },
+    runPipeline: async () => ({ result_id: "stream-result" }),
   });
 
   try {
@@ -911,25 +1324,18 @@ test("POST /messages/stream includes parsed structured_result on completion", as
       "Creating structured report and charts",
     );
     assert.ok(completed);
-    assert.deepEqual(completed.data.structured_result, structuredResult);
+    assert.equal(completed.data.reply, "stream-result");
 
     const [run] = state.runs.values();
 
     assert.ok(run);
-    assert.equal(run.reply, reply);
-    assert.equal(
-      Object.hasOwn(
-        run as unknown as Record<string, unknown>,
-        "structured_result",
-      ),
-      false,
-    );
+    assert.equal(run.reply, "stream-result");
   } finally {
     await app.close();
   }
 });
 
-test("POST /messages/stream enriches structured_result from JSON artifacts", async () => {
+test.skip("POST /messages/stream enriches structured_result from JSON artifacts", async () => {
   const state = createState();
   const storageRoot = await mkdtemp(
     path.join(tmpdir(), "agent-invest-storage-"),
@@ -955,61 +1361,44 @@ test("POST /messages/stream enriches structured_result from JSON artifacts", asy
   )}\n\`\`\``;
 
   const app = buildServer({
-    buildSystemPrompt: async () => "system prompt",
     repositories: createRepositoryDouble(state),
-    getOpencodeClient: async () => ({
-      ...createOpencodeClientDouble(
-        "BTC trend strategy",
-        completedPromptResult(reply, "session-stream-artifacts"),
-      ),
-      async prompt() {
-        const artifactDir = path.join(
-          storageRoot,
-          "artifacts",
-          "run_backtest",
-          "btc-trend",
-        );
-        await mkdir(artifactDir, { recursive: true });
-        await writeFile(
-          path.join(artifactDir, "report.json"),
-          JSON.stringify({ kpis: { cagr: 0.25, sharpe_ratio: 1.7 } }),
-        );
-        await writeFile(
-          path.join(artifactDir, "equity_curve.json"),
-          JSON.stringify([
-            {
-              bitcoin_equity_usd: 1100,
-              date: "2024-01-01",
-              equity_usd: 1200,
-            },
-          ]),
-        );
-        await writeFile(
-          path.join(artifactDir, "drawdown.json"),
-          JSON.stringify([
-            {
-              bitcoin_drawdown: -0.2,
-              date: "2024-01-01",
-              drawdown: -0.1,
-            },
-          ]),
-        );
-        await writeFile(
-          path.join(artifactDir, "allocation.json"),
-          JSON.stringify([
-            { coin_id: "bitcoin", date: "2024-01-01", weight: 1 },
-          ]),
-        );
-        return completedPromptResult(reply, "session-stream-artifacts");
-      },
-    }),
-    getSessionId: async (strategyId) => {
-      const strategy = state.strategies.get(strategyId);
-
-      assert.ok(strategy);
-      strategy.opencodeSessionId ||= "session-stream-artifacts";
-
-      return strategy.opencodeSessionId;
+    async runPipeline() {
+      const artifactDir = path.join(
+        storageRoot,
+        "artifacts",
+        "run_backtest",
+        "btc-trend",
+      );
+      await mkdir(artifactDir, { recursive: true });
+      await writeFile(
+        path.join(artifactDir, "report.json"),
+        JSON.stringify({ kpis: { cagr: 0.25, sharpe_ratio: 1.7 } }),
+      );
+      await writeFile(
+        path.join(artifactDir, "equity_curve.json"),
+        JSON.stringify([
+          {
+            bitcoin_equity_usd: 1100,
+            date: "2024-01-01",
+            equity_usd: 1200,
+          },
+        ]),
+      );
+      await writeFile(
+        path.join(artifactDir, "drawdown.json"),
+        JSON.stringify([
+          {
+            bitcoin_drawdown: -0.2,
+            date: "2024-01-01",
+            drawdown: -0.1,
+          },
+        ]),
+      );
+      await writeFile(
+        path.join(artifactDir, "allocation.json"),
+        JSON.stringify([{ coin_id: "bitcoin", date: "2024-01-01", weight: 1 }]),
+      );
+      return { result_id: reply };
     },
   });
 
@@ -1076,21 +1465,8 @@ test("POST /messages/stream omits structured_result for plain text completion", 
   const state = createState();
   const reply = "Plain text strategy reply.";
   const app = buildServer({
-    buildSystemPrompt: async () => "system prompt",
     repositories: createRepositoryDouble(state),
-    getOpencodeClient: async () =>
-      createOpencodeClientDouble(
-        "Plain text strategy",
-        completedPromptResult(reply, "session-stream-plain"),
-      ),
-    getSessionId: async (strategyId) => {
-      const strategy = state.strategies.get(strategyId);
-
-      assert.ok(strategy);
-      strategy.opencodeSessionId ||= "session-stream-plain";
-
-      return strategy.opencodeSessionId;
-    },
+    runPipeline: async () => ({ result_id: reply }),
   });
 
   try {

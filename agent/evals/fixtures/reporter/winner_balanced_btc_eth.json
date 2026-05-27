@@ -1,0 +1,26 @@
+{
+  "input": {
+    "run_id": "eval-reporter-balanced-btc-eth",
+    "batch_id": "batch-reporter-balanced-btc-eth",
+    "mock_output": {
+      "title": "Balanced BTC ETH Winner",
+      "summary": "balanced-a is the winner with total_return 0.18 and sharpe 1.25.",
+      "reasoning": "The balanced strategy is coherent because max_drawdown -0.12 stays within the risk constraint while total_return 0.18 and sharpe 1.25 support selection.",
+      "winner_candidate_id": "balanced-a",
+      "kpis": {"total_return": 0.18, "sharpe": 1.25, "max_drawdown": -0.12},
+      "assumptions": ["The historical window remains representative."],
+      "risks": ["Future drawdowns may differ from the backtest."],
+      "next_steps": ["Monitor realized volatility before increasing size."]
+    }
+  },
+  "expectations": {
+    "batch": {
+      "window": {"start": "2025-01-01", "end": "2025-12-31"},
+      "results": [
+        {"candidate_id": "balanced-a", "metrics": {"total_return": 0.18, "sharpe": 1.25, "max_drawdown": -0.12}},
+        {"candidate_id": "balanced-b", "metrics": {"total_return": 0.11, "sharpe": 0.8, "max_drawdown": -0.16}}
+      ]
+    },
+    "judge_criteria": "Balanced strategy winner explanation cites total_return sharpe max_drawdown risk constraint and coherent selection."
+  }
+}

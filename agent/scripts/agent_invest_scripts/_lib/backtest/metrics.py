@@ -31,7 +31,8 @@ def calculate_summary_metrics(performance_frame: pl.DataFrame) -> dict[str, floa
     ]
 
     periods = len(returns)
-    years = max(periods / TRADING_DAYS_PER_YEAR, 1.0 / TRADING_DAYS_PER_YEAR)
+    days = max(_window_days(performance_frame), 1)
+    years = days / TRADING_DAYS_PER_YEAR
     mean_daily_return = sum(returns) / periods
     annualized_volatility = (
         statistics.pstdev(returns) * math.sqrt(TRADING_DAYS_PER_YEAR)
@@ -47,12 +48,15 @@ def calculate_summary_metrics(performance_frame: pl.DataFrame) -> dict[str, floa
         else 0.0
     )
 
-    cagr = equity_curve[-1] ** (1.0 / years) - 1.0 if equity_curve[-1] > 0 else -1.0
-    sharpe_ratio = (
-        (mean_daily_return * TRADING_DAYS_PER_YEAR / annualized_volatility)
-        if annualized_volatility
-        else 0.0
-    )
+    starting_equity = equity_curve[0]
+    ending_equity = equity_curve[-1]
+    if starting_equity > 0 and ending_equity > 0:
+        period_return = ending_equity / starting_equity - 1.0
+        cagr = (ending_equity / starting_equity) ** (1.0 / years) - 1.0
+    else:
+        period_return = -1.0
+        cagr = -1.0
+    sharpe_ratio = (cagr / annualized_volatility) if annualized_volatility else 0.0
     sortino_ratio = (
         (mean_daily_return * TRADING_DAYS_PER_YEAR / downside_deviation)
         if downside_deviation
@@ -64,6 +68,8 @@ def calculate_summary_metrics(performance_frame: pl.DataFrame) -> dict[str, floa
 
     return {
         "cagr": cagr,
+        "period_return": period_return,
+        "total_return": period_return,
         "annualized_volatility": annualized_volatility,
         "sharpe_ratio": sharpe_ratio,
         "sortino_ratio": sortino_ratio,
@@ -75,6 +81,13 @@ def calculate_summary_metrics(performance_frame: pl.DataFrame) -> dict[str, floa
         "worst_month": min(monthly_returns) if monthly_returns else 0.0,
         "best_month": max(monthly_returns) if monthly_returns else 0.0,
     }
+
+
+def _window_days(performance_frame: pl.DataFrame) -> int:
+    dates = performance_frame.get_column("date")
+    start = dates.min()
+    end = dates.max()
+    return (end - start).days if start is not None and end is not None else 0
 
 
 def _max_drawdown(equity_curve: list[float]) -> float:

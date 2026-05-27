@@ -1,0 +1,26 @@
+{
+  "input": {
+    "run_id": "eval-adjudicator-clean-growth-momentum",
+    "round": 1,
+    "batch_id": "batch-clean-growth-momentum",
+    "thesis": {"objective": "high_growth", "constraints": {"min_return": 0.25}},
+    "candidates": [
+      {"candidate_id": "growth-a", "template_id": "momentum", "config": {"lookback_days": 90}},
+      {"candidate_id": "growth-b", "template_id": "periodic_rebalance", "config": {"rebalance_frequency": "monthly"}}
+    ],
+    "kpis": {
+      "growth-a": {"return": 0.52, "sharpe": 1.05, "benchmark_excess_return": 0.19, "validated": true},
+      "growth-b": {"return": 0.31, "sharpe": 0.72, "benchmark_excess_return": 0.03, "validated": true}
+    },
+    "mock_output": {
+      "kind": "winner",
+      "candidate_id": "growth-a",
+      "justification": "growth-a is the high_growth winner because it validates against the thesis, has materially higher return, stronger Sharpe, and larger benchmark_excess_return than the benchmark."
+    }
+  },
+  "expectations": {
+    "kind": "winner",
+    "acceptable_winners": ["growth-a"],
+    "justification_criteria": "Winner should validate against high_growth thesis and cite materially higher return, stronger Sharpe, and benchmark_excess_return versus benchmark."
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "input": {
+    "run_id": "eval-adjudicator-clean-btc-eth-balanced",
+    "round": 1,
+    "batch_id": "batch-clean-btc-eth-balanced",
+    "thesis": {"objective": "balanced", "constraints": {"max_drawdown": -0.25}},
+    "candidates": [
+      {"candidate_id": "balanced-a", "template_id": "periodic_rebalance", "config": {"select_top": 2}},
+      {"candidate_id": "balanced-b", "template_id": "momentum", "config": {"select_top": 2}}
+    ],
+    "kpis": {
+      "balanced-a": {"sharpe": 1.2, "max_drawdown": -0.18, "benchmark_excess_return": 0.08, "validated": true},
+      "balanced-b": {"sharpe": 0.7, "max_drawdown": -0.27, "benchmark_excess_return": 0.01, "validated": false}
+    },
+    "mock_output": {
+      "kind": "winner",
+      "candidate_id": "balanced-a",
+      "justification": "balanced-a is the clear balanced winner because it validates against the thesis, has the stronger Sharpe, stays inside the max_drawdown risk constraint, and delivers benchmark_excess_return versus the benchmark."
+    }
+  },
+  "expectations": {
+    "kind": "winner",
+    "acceptable_winners": ["balanced-a"],
+    "justification_criteria": "Winner should validate against the balanced thesis, cite stronger Sharpe, respect max_drawdown risk constraint, and show benchmark_excess_return versus benchmark."
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "input": {
+    "request": "I want a 1 year balanced allocation for top 25 coins, exclude stablecoins, target 5 to 10 assets, and cap drawdown at 35%.",
+    "run_id": "eval-thesis-balanced-365d",
+    "expected_objective": "balanced",
+    "expected_primary_factor_ids": ["sharpe", "drawdown"],
+    "expected_constraints": {"min_assets": 5, "max_assets": 10, "max_drawdown": -0.35},
+    "expected_horizon_days": 365,
+    "expected_interpretation_notes": "Balanced one year allocation should use top 25 non-stablecoin assets, target 5 to 10 holdings, optimize risk adjusted returns, and respect a 35 percent max drawdown."
+  },
+  "expectations": {
+    "objective": "balanced",
+    "primary_factor_ids": ["sharpe", "drawdown"],
+    "numeric_constraints": {"horizon_days": 365, "min_assets": 5, "max_assets": 10, "max_drawdown": -0.35},
+    "interpretation_notes": "Balanced one year allocation should use top 25 non-stablecoin assets, target 5 to 10 holdings, optimize risk adjusted returns, and respect a 35 percent max drawdown."
+  }
+}

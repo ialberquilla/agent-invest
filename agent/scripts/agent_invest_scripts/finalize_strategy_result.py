@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Mapping, Sequence
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -37,9 +38,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         with script_timeout(resolve_timeout_seconds(args.timeout_seconds)):
             payload = _parse_json_object(args.payload, "--payload")
             result = _build_result(payload)
-            label = normalize_identifier(
-                str(payload["backtest_label"]), "backtest_label"
+            label_source = payload.get("backtest_label") or payload.get(
+                "candidate_batch_id"
             )
+            label = normalize_identifier(str(label_source), "result_label")
             output_dir = storage_root() / "artifacts" / "strategy_result" / label
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = output_dir / "strategy_result.json"
@@ -49,7 +51,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as error:
         fail_json(str(error), error_type=type(error).__name__)
 
-    print_json({"strategy_result_json": str(output_path), "structured_result": result})
+    print_json(
+        {
+            "result_id": label,
+            "strategy_result_json": str(output_path),
+            "structured_result": result,
+        }
+    )
     return 0
 
 
@@ -64,6 +72,9 @@ def _parse_json_object(raw: str, argument_name: str) -> dict[str, Any]:
 
 
 def _build_result(payload: Mapping[str, Any]) -> dict[str, Any]:
+    if "candidate_batch_id" in payload:
+        return _build_candidate_batch_result(payload)
+
     label = _read_text(payload, "backtest_label")
     backtest_dir = (
         storage_root()
@@ -81,7 +92,7 @@ def _build_result(payload: Mapping[str, Any]) -> dict[str, Any]:
         "summary": _read_text(payload, "summary"),
         "reasoning": _read_text(payload, "reasoning"),
         "allocation": allocation,
-        "kpis": _read_object(report, "kpis"),
+        "kpis": _result_kpis(report, spec),
         "assumptions": _read_text_list(payload.get("assumptions"), "assumptions"),
         "risks": _read_text_list(payload.get("risks"), "risks"),
         "next_steps": _read_text_list(payload.get("next_steps"), "next_steps"),
@@ -103,6 +114,155 @@ def _build_result(payload: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_candidate_batch_result(payload: Mapping[str, Any]) -> dict[str, Any]:
+    batch_id = normalize_identifier(
+        _read_text(payload, "candidate_batch_id"), "candidate_batch_id"
+    )
+    if payload.get("result_type") == "no_viable_strategy":
+        return _build_no_viable_strategy_result(payload, batch_id)
+
+    candidate_id = _read_text(payload, "winner_candidate_id")
+    batch_path = storage_root() / "candidate_batches" / f"{batch_id}.json"
+    batch = _read_json_object(batch_path)
+    results = batch.get("results") if isinstance(batch.get("results"), list) else []
+    winner = next(
+        (
+            result
+            for result in results
+            if isinstance(result, Mapping)
+            and result.get("candidate_id") == candidate_id
+        ),
+        None,
+    )
+    if not isinstance(winner, Mapping):
+        raise ValueError(
+            f"winner candidate not found in candidate batch: {candidate_id}"
+        )
+
+    return {
+        "title": _read_text(payload, "title"),
+        "summary": _read_text(payload, "summary"),
+        "reasoning": _read_text(payload, "reasoning"),
+        "template_id": winner.get("template_id"),
+        "winner_candidate_id": candidate_id,
+        "winners_by_dimension": _optional_json_list(
+            payload.get("winners_by_dimension"), "winners_by_dimension"
+        ),
+        "round_history": _read_text_or_json_list(payload.get("round_history"), results),
+        "refinement_reasons": _optional_json_list(
+            payload.get("refinement_reasons"), "refinement_reasons"
+        ),
+        "kpis": winner.get("metrics")
+        if isinstance(winner.get("metrics"), dict)
+        else {},
+        "robustness": winner.get("robustness")
+        if isinstance(winner.get("robustness"), dict)
+        else {},
+        "config": winner.get("config")
+        if isinstance(winner.get("config"), dict)
+        else {},
+        "assumptions": _read_text_list(payload.get("assumptions"), "assumptions"),
+        "risks": _read_text_list(payload.get("risks"), "risks"),
+        "next_steps": _read_text_list(payload.get("next_steps"), "next_steps"),
+        "constraint_violations": _read_text_list(
+            payload.get("constraint_violations"),
+            "constraint_violations",
+            required=False,
+        ),
+        "backtest": {
+            "candidate_batch_id": batch_id,
+            "round": batch.get("round"),
+            "window": winner.get("window"),
+        },
+        "charts": {
+            "equity_curve": winner.get("equity_curve")
+            if isinstance(winner.get("equity_curve"), list)
+            else [],
+            "benchmark_curve": winner.get("benchmark_curve")
+            if isinstance(winner.get("benchmark_curve"), list)
+            else [],
+            "drawdown": winner.get("drawdown_episodes")
+            if isinstance(winner.get("drawdown_episodes"), list)
+            else [],
+        },
+        "candidate_comparison": [
+            _candidate_summary(result)
+            for result in results
+            if isinstance(result, Mapping)
+        ],
+    }
+
+
+def _build_no_viable_strategy_result(
+    payload: Mapping[str, Any], batch_id: str
+) -> dict[str, Any]:
+    batch_path = storage_root() / "candidate_batches" / f"{batch_id}.json"
+    batch = _read_json_object(batch_path)
+    results = batch.get("results") if isinstance(batch.get("results"), list) else []
+    round_history = _read_text_or_json_list(payload.get("round_history"), [])
+    if not round_history:
+        raise ValueError("round_history must include full no-viable history")
+
+    return {
+        "result_type": "no_viable_strategy",
+        "title": _read_text(payload, "title"),
+        "summary": _read_text(payload, "summary"),
+        "reasoning": _read_text(payload, "reasoning"),
+        "round_history": round_history,
+        "refinement_reasons": _optional_json_list(
+            payload.get("refinement_reasons"), "refinement_reasons"
+        ),
+        "assumptions": _read_text_list(payload.get("assumptions"), "assumptions"),
+        "risks": _read_text_list(payload.get("risks"), "risks"),
+        "next_steps": _read_text_list(payload.get("next_steps"), "next_steps"),
+        "constraint_violations": _read_text_list(
+            payload.get("constraint_violations"),
+            "constraint_violations",
+            required=False,
+        ),
+        "backtest": {
+            "candidate_batch_id": batch_id,
+            "round": batch.get("round"),
+        },
+        "candidate_comparison": [
+            _candidate_summary(result)
+            for result in results
+            if isinstance(result, Mapping)
+        ],
+    }
+
+
+def _candidate_summary(result: Mapping[str, Any]) -> dict[str, Any]:
+    metrics = (
+        result.get("metrics") if isinstance(result.get("metrics"), Mapping) else {}
+    )
+    return {
+        "candidate_id": result.get("candidate_id"),
+        "template_id": result.get("template_id"),
+        "composite_score": result.get("composite_score"),
+        "total_return": metrics.get("total_return"),
+        "cagr": metrics.get("cagr"),
+        "max_drawdown": metrics.get("max_drawdown"),
+        "sharpe": metrics.get("sharpe"),
+    }
+
+
+def _optional_json_list(value: Any, name: str) -> list[Any]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{name} must be an array")
+    return list(value)
+
+
+def _read_text_or_json_list(value: Any, fallback: list[Any]) -> list[Any]:
+    if value is None:
+        return fallback
+    if not isinstance(value, list):
+        raise ValueError("round_history must be an array")
+    return list(value)
+
+
 def _read_json(path: Path) -> Any:
     if not path.is_file():
         raise ValueError(f"required backtest artifact is missing: {path}")
@@ -121,6 +281,50 @@ def _read_object(payload: Mapping[str, Any], key: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{key} must be an object")
     return dict(value)
+
+
+def _result_kpis(report: Mapping[str, Any], spec: Mapping[str, Any]) -> dict[str, Any]:
+    kpis = _read_object(report, "kpis")
+    start, end = _backtest_window(spec)
+    if (
+        start is not None
+        and end is not None
+        and (end - start).days < 365
+        and isinstance(kpis.get("period_return"), int | float)
+    ):
+        kpis["reported_return"] = float(kpis["period_return"])
+        kpis["reported_return_source"] = "period_return"
+    return kpis
+
+
+def _backtest_window(spec: Mapping[str, Any]) -> tuple[date | None, date | None]:
+    allocation = (
+        spec.get("allocation") if isinstance(spec.get("allocation"), dict) else {}
+    )
+    if allocation.get("type") == "static":
+        return _optional_date(allocation.get("start")), _optional_date(
+            allocation.get("end")
+        )
+    if allocation.get("type") == "weights" and isinstance(allocation.get("rows"), list):
+        dates = [
+            parsed
+            for row in allocation["rows"]
+            if isinstance(row, Mapping)
+            for parsed in [_optional_date(row.get("date"))]
+            if parsed is not None
+        ]
+        if dates:
+            return min(dates), max(dates)
+    return None, None
+
+
+def _optional_date(value: Any) -> date | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def _read_text(payload: Mapping[str, Any], key: str) -> str:
