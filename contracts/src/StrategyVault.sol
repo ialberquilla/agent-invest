@@ -22,14 +22,26 @@ contract StrategyVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuardTransi
 
     event Executed(address indexed target, uint256 value, bytes result);
     event GmxMarketIncreaseOrderCreated(
+        bytes32 indexed orderKey,
         address indexed exchangeRouter,
         address indexed market,
-        address indexed collateralToken,
+        address collateralToken,
         bool isLong,
         uint256 sizeDeltaUsd,
         uint256 collateralAmount,
         uint256 executionFee
     );
+    event GmxMarketDecreaseOrderCreated(
+        bytes32 indexed orderKey,
+        address indexed exchangeRouter,
+        address indexed market,
+        address collateralToken,
+        bool isLong,
+        uint256 sizeDeltaUsd,
+        uint256 collateralWithdrawalAmount,
+        uint256 executionFee
+    );
+    event GmxOrderCancelled(bytes32 indexed orderKey, address indexed exchangeRouter, uint256 executionFee);
 
     struct GmxMarketIncreaseOrder {
         address exchangeRouter;
@@ -48,6 +60,27 @@ contract StrategyVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuardTransi
         uint256 acceptablePrice;
         uint256 executionFee;
         uint256 callbackGasLimit;
+        bytes32 referralCode;
+    }
+
+    struct GmxMarketDecreaseOrder {
+        address exchangeRouter;
+        address orderVault;
+        address market;
+        address collateralToken;
+        address receiver;
+        address cancellationReceiver;
+        address callbackContract;
+        address uiFeeReceiver;
+        bool isLong;
+        bool shouldUnwrapNativeToken;
+        uint256 sizeDeltaUsd;
+        uint256 collateralWithdrawalAmount;
+        uint256 acceptablePrice;
+        uint256 executionFee;
+        uint256 callbackGasLimit;
+        uint256 minOutputAmount;
+        IGmxV2ExchangeRouter.DecreasePositionSwapType decreasePositionSwapType;
         bytes32 referralCode;
     }
 
@@ -101,7 +134,7 @@ contract StrategyVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuardTransi
         onlyOwner
         nonReentrant
         whenNotPaused
-        returns (bytes[] memory results)
+        returns (bytes32 orderKey)
     {
         _validateGmxOrder(order);
         if (msg.value != order.executionFee) revert StrategyVault__InvalidExecutionFee();
@@ -115,9 +148,11 @@ contract StrategyVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuardTransi
         );
         calls[2] = abi.encodeCall(IGmxV2ExchangeRouter.createOrder, (_buildGmxCreateOrderParams(order)));
 
-        results = IGmxV2ExchangeRouter(order.exchangeRouter).multicall{value: msg.value}(calls);
+        bytes[] memory results = IGmxV2ExchangeRouter(order.exchangeRouter).multicall{value: msg.value}(calls);
+        orderKey = abi.decode(results[2], (bytes32));
 
         emit GmxMarketIncreaseOrderCreated(
+            orderKey,
             order.exchangeRouter,
             order.market,
             order.collateralToken,
@@ -126,6 +161,51 @@ contract StrategyVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuardTransi
             order.collateralAmount,
             order.executionFee
         );
+    }
+
+    function createGmxMarketDecreaseOrder(GmxMarketDecreaseOrder calldata order)
+        external
+        payable
+        onlyOwner
+        nonReentrant
+        whenNotPaused
+        returns (bytes32 orderKey)
+    {
+        _validateGmxDecreaseOrder(order);
+        if (msg.value != order.executionFee) revert StrategyVault__InvalidExecutionFee();
+
+        bytes[] memory calls = new bytes[](2);
+        calls[0] = abi.encodeCall(IGmxV2ExchangeRouter.sendWnt, (order.orderVault, order.executionFee));
+        calls[1] = abi.encodeCall(IGmxV2ExchangeRouter.createOrder, (_buildGmxDecreaseOrderParams(order)));
+
+        bytes[] memory results = IGmxV2ExchangeRouter(order.exchangeRouter).multicall{value: msg.value}(calls);
+        orderKey = abi.decode(results[1], (bytes32));
+
+        emit GmxMarketDecreaseOrderCreated(
+            orderKey,
+            order.exchangeRouter,
+            order.market,
+            order.collateralToken,
+            order.isLong,
+            order.sizeDeltaUsd,
+            order.collateralWithdrawalAmount,
+            order.executionFee
+        );
+    }
+
+    function cancelGmxOrder(address exchangeRouter, bytes32 orderKey, uint256 executionFee)
+        external
+        payable
+        onlyOwner
+        nonReentrant
+        whenNotPaused
+    {
+        if (exchangeRouter == address(0)) revert StrategyVault__ZeroAddress();
+        if (msg.value != executionFee) revert StrategyVault__InvalidExecutionFee();
+
+        IGmxV2ExchangeRouter(exchangeRouter).cancelOrder{value: msg.value}(orderKey);
+
+        emit GmxOrderCancelled(orderKey, exchangeRouter, executionFee);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -140,6 +220,13 @@ contract StrategyVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuardTransi
         if (
             order.exchangeRouter == address(0) || order.router == address(0) || order.orderVault == address(0)
                 || order.market == address(0) || order.collateralToken == address(0)
+        ) revert StrategyVault__ZeroAddress();
+    }
+
+    function _validateGmxDecreaseOrder(GmxMarketDecreaseOrder calldata order) internal pure {
+        if (
+            order.exchangeRouter == address(0) || order.orderVault == address(0) || order.market == address(0)
+                || order.collateralToken == address(0)
         ) revert StrategyVault__ZeroAddress();
     }
 
@@ -175,6 +262,46 @@ contract StrategyVault is ERC4626, Ownable2Step, Pausable, ReentrancyGuardTransi
             }),
             orderType: IGmxV2ExchangeRouter.OrderType.MarketIncrease,
             decreasePositionSwapType: IGmxV2ExchangeRouter.DecreasePositionSwapType.NoSwap,
+            isLong: order.isLong,
+            shouldUnwrapNativeToken: order.shouldUnwrapNativeToken,
+            autoCancel: false,
+            referralCode: order.referralCode,
+            dataList: dataList
+        });
+    }
+
+    function _buildGmxDecreaseOrderParams(GmxMarketDecreaseOrder calldata order)
+        internal
+        view
+        returns (IGmxV2ExchangeRouter.CreateOrderParams memory params)
+    {
+        address receiver = order.receiver == address(0) ? address(this) : order.receiver;
+        address cancellationReceiver = order.cancellationReceiver == address(0) ? receiver : order.cancellationReceiver;
+        address[] memory swapPath = new address[](0);
+        bytes32[] memory dataList = new bytes32[](0);
+
+        params = IGmxV2ExchangeRouter.CreateOrderParams({
+            addresses: IGmxV2ExchangeRouter.CreateOrderParamsAddresses({
+                receiver: receiver,
+                cancellationReceiver: cancellationReceiver,
+                callbackContract: order.callbackContract,
+                uiFeeReceiver: order.uiFeeReceiver,
+                market: order.market,
+                initialCollateralToken: order.collateralToken,
+                swapPath: swapPath
+            }),
+            numbers: IGmxV2ExchangeRouter.CreateOrderParamsNumbers({
+                sizeDeltaUsd: order.sizeDeltaUsd,
+                initialCollateralDeltaAmount: order.collateralWithdrawalAmount,
+                triggerPrice: 0,
+                acceptablePrice: order.acceptablePrice,
+                executionFee: order.executionFee,
+                callbackGasLimit: order.callbackGasLimit,
+                minOutputAmount: order.minOutputAmount,
+                validFromTime: 0
+            }),
+            orderType: IGmxV2ExchangeRouter.OrderType.MarketDecrease,
+            decreasePositionSwapType: order.decreasePositionSwapType,
             isLong: order.isLong,
             shouldUnwrapNativeToken: order.shouldUnwrapNativeToken,
             autoCancel: false,

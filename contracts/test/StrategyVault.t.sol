@@ -39,6 +39,8 @@ contract MockGmxExchangeRouter is IGmxV2ExchangeRouter {
     uint256 public lastWntAmount;
     uint256 public lastTokenAmount;
     uint256 public lastMsgValue;
+    bytes32 public lastCancelledOrderKey;
+    uint256 public lastCancelMsgValue;
     CreateOrderParams public lastOrder;
 
     constructor(address router_) {
@@ -97,6 +99,11 @@ contract MockGmxExchangeRouter is IGmxV2ExchangeRouter {
         lastOrder.referralCode = params.referralCode;
 
         return keccak256("order-key");
+    }
+
+    function cancelOrder(bytes32 key) external payable {
+        lastCancelledOrderKey = key;
+        lastCancelMsgValue = msg.value;
     }
 }
 
@@ -194,7 +201,9 @@ contract StrategyVaultTest is Test {
         });
 
         vm.prank(owner);
-        vault.createGmxMarketIncreaseOrder{value: executionFee}(order);
+        bytes32 orderKey = vault.createGmxMarketIncreaseOrder{value: executionFee}(order);
+
+        assertEq(orderKey, keccak256("order-key"));
 
         assertEq(exchangeRouter.lastMsgValue(), executionFee);
         assertEq(exchangeRouter.lastWntReceiver(), orderVault);
@@ -221,5 +230,78 @@ contract StrategyVaultTest is Test {
         assertEq(numbers.executionFee, executionFee);
         assertEq(uint8(orderType), uint8(IGmxV2ExchangeRouter.OrderType.MarketIncrease));
         assertEq(actualIsLong, isLong);
+    }
+
+    function test_CreateGmxMarketDecreaseOrder() external {
+        address orderVault = address(0x5678);
+        address market = address(0xBEEF);
+        uint256 executionFee = 0.01 ether;
+        MockGmxExchangeRouter exchangeRouter = new MockGmxExchangeRouter(address(new MockGmxRouter()));
+
+        vm.deal(owner, executionFee);
+
+        StrategyVault.GmxMarketDecreaseOrder memory order = StrategyVault.GmxMarketDecreaseOrder({
+            exchangeRouter: address(exchangeRouter),
+            orderVault: orderVault,
+            market: market,
+            collateralToken: address(asset),
+            receiver: address(0),
+            cancellationReceiver: address(0),
+            callbackContract: address(0),
+            uiFeeReceiver: address(0),
+            isLong: true,
+            shouldUnwrapNativeToken: false,
+            sizeDeltaUsd: 500e30,
+            collateralWithdrawalAmount: 100e18,
+            acceptablePrice: 49_000e30,
+            executionFee: executionFee,
+            callbackGasLimit: 0,
+            minOutputAmount: 95e18,
+            decreasePositionSwapType: IGmxV2ExchangeRouter.DecreasePositionSwapType.NoSwap,
+            referralCode: bytes32("agent-invest")
+        });
+
+        vm.prank(owner);
+        bytes32 orderKey = vault.createGmxMarketDecreaseOrder{value: executionFee}(order);
+
+        assertEq(orderKey, keccak256("order-key"));
+        assertEq(exchangeRouter.lastMsgValue(), executionFee);
+        assertEq(exchangeRouter.lastWntReceiver(), orderVault);
+        assertEq(exchangeRouter.lastWntAmount(), executionFee);
+        assertEq(exchangeRouter.lastTokenAmount(), 0);
+
+        (
+            IGmxV2ExchangeRouter.CreateOrderParamsAddresses memory addresses,
+            IGmxV2ExchangeRouter.CreateOrderParamsNumbers memory numbers,
+            IGmxV2ExchangeRouter.OrderType orderType,
+            IGmxV2ExchangeRouter.DecreasePositionSwapType decreaseSwapType,
+            bool actualIsLong,,,
+        ) = exchangeRouter.lastOrder();
+
+        assertEq(addresses.receiver, address(vault));
+        assertEq(addresses.cancellationReceiver, address(vault));
+        assertEq(addresses.market, market);
+        assertEq(addresses.initialCollateralToken, address(asset));
+        assertEq(numbers.sizeDeltaUsd, 500e30);
+        assertEq(numbers.initialCollateralDeltaAmount, 100e18);
+        assertEq(numbers.acceptablePrice, order.acceptablePrice);
+        assertEq(numbers.minOutputAmount, 95e18);
+        assertEq(uint8(orderType), uint8(IGmxV2ExchangeRouter.OrderType.MarketDecrease));
+        assertEq(uint8(decreaseSwapType), uint8(IGmxV2ExchangeRouter.DecreasePositionSwapType.NoSwap));
+        assertEq(actualIsLong, true);
+    }
+
+    function test_CancelGmxOrder() external {
+        uint256 executionFee = 0.01 ether;
+        bytes32 orderKey = keccak256("order-key");
+        MockGmxExchangeRouter exchangeRouter = new MockGmxExchangeRouter(address(new MockGmxRouter()));
+
+        vm.deal(owner, executionFee);
+
+        vm.prank(owner);
+        vault.cancelGmxOrder{value: executionFee}(address(exchangeRouter), orderKey, executionFee);
+
+        assertEq(exchangeRouter.lastCancelledOrderKey(), orderKey);
+        assertEq(exchangeRouter.lastCancelMsgValue(), executionFee);
     }
 }
