@@ -127,7 +127,26 @@ function trackingRunners(
       async interpretBrief(input) {
         calls.push(`interpret_brief(${input.hint ? "with-hint" : "cold"})`);
         maybeFail("interpret_brief");
-        return { delta: { thesis: THESIS }, next: "select_universe" };
+        return { delta: { thesis: THESIS }, next: "select_templates" };
+      },
+      async selectTemplates() {
+        calls.push("select_templates");
+        maybeFail("select_templates");
+        return {
+          delta: {
+            template_selection: {
+              rationale: "fixture",
+              selected: [
+                {
+                  family: "periodic_rebalanced_allocation",
+                  rank: 1,
+                  rationale: "fixture",
+                },
+              ],
+            },
+          },
+          next: "select_universe",
+        };
       },
       async selectUniverse(input) {
         calls.push(
@@ -260,6 +279,7 @@ test("workflow runs the happy path through to FinalWinner", async () => {
   assert.equal((state.final as FinalWinner).winner_candidate_id, "c1");
   assert.deepEqual(calls, [
     "interpret_brief(cold)",
+    "select_templates",
     "select_universe(cold)",
     "select_window",
     "propose_candidates(attempts=0)",
@@ -269,14 +289,14 @@ test("workflow runs the happy path through to FinalWinner", async () => {
   ]);
 
   // Event stream the frontend will see: the workflow-level stage.started,
-  // one stage.started+stage.completed per step (7 of each), and the
+  // one stage.started+stage.completed per step (8 of each), and the
   // final workflow-level stage.completed. The frontend's existing
   // filter for `stage.*` events picks them up.
   const types = appendEvent.events.map((e) => e.event_type);
   assert.equal(types[0], "stage.started");
   assert.equal(types.at(-1), "stage.completed");
-  assert.equal(types.filter((t) => t === "stage.started").length, 1 + 7);
-  assert.equal(types.filter((t) => t === "stage.completed").length, 7 + 1);
+  assert.equal(types.filter((t) => t === "stage.started").length, 1 + 8);
+  assert.equal(types.filter((t) => t === "stage.completed").length, 8 + 1);
 
   // The first event identifies the workflow as a whole; per-step
   // events carry the step name in payload.stage.
@@ -288,6 +308,7 @@ test("workflow runs the happy path through to FinalWinner", async () => {
     .map((e) => (e.payload as { stage?: string }).stage);
   assert.deepEqual(perStepStages, [
     "interpret_brief",
+    "select_templates",
     "select_universe",
     "select_window",
     "propose_candidates",
@@ -405,6 +426,7 @@ test("refine_candidates re-enters propose_candidates with attempts growing", asy
   assert.equal(state.final?.kind, "winner");
   assert.deepEqual(calls, [
     "interpret_brief(cold)",
+    "select_templates",
     "select_universe(cold)",
     "select_window",
     "propose_candidates(attempts=0)",
@@ -461,6 +483,7 @@ test("broaden_universe re-enters select_universe and bumps the counter", async (
   assert.equal(state.counters.broaden_universe, 1);
   assert.deepEqual(calls, [
     "interpret_brief(cold)",
+    "select_templates",
     "select_universe(cold)",
     "select_window",
     "propose_candidates(attempts=0)",
@@ -498,12 +521,14 @@ test("reinterpret_brief re-enters interpret_brief and bumps the counter", async 
   assert.equal(state.counters.reinterpret_brief, 1);
   assert.deepEqual(calls, [
     "interpret_brief(cold)",
+    "select_templates",
     "select_universe(cold)",
     "select_window",
     "propose_candidates(attempts=0)",
     "run_and_validate",
     "decide(attempts=1,counters=0/0)",
     "interpret_brief(with-hint)",
+    "select_templates",
     "select_universe(cold)",
     "select_window",
     "propose_candidates(attempts=1)",
@@ -532,8 +557,8 @@ test("max_step_transitions cap short-circuits to FinalNoViable", async () => {
     },
   ]);
 
-  // 4 transitions: interpret -> select_universe -> select_window
-  // -> propose_candidates. The 5th transition would be run_and_validate,
+  // 4 transitions: interpret -> select_templates -> select_universe
+  // -> select_window. The 5th transition would be propose_candidates,
   // which the cap blocks.
   const state = await runWorkflowQuiet("run-cap-transitions", "x", {
     runners,
@@ -556,8 +581,8 @@ test("max_llm_calls cap short-circuits when an LLM step is next", async () => {
     },
   ]);
 
-  // Cap at 2 LLM calls: interpret_brief (1) -> propose_candidates (2)
-  // -> decide is blocked before invocation.
+  // Cap at 2 LLM calls: interpret_brief (1) -> select_templates (2)
+  // -> propose_candidates is blocked before invocation.
   const state = await runWorkflowQuiet("run-cap-llm", "x", {
     runners,
     caps: { max_llm_calls: 2 },

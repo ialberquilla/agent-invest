@@ -27,6 +27,7 @@ import { finalize as defaultFinalize } from "./steps/finalize.ts";
 import { interpretBrief as defaultInterpretBrief } from "./steps/interpret_brief.ts";
 import { proposeCandidates as defaultProposeCandidates } from "./steps/propose_candidates.ts";
 import { runAndValidate as defaultRunAndValidate } from "./steps/run_and_validate.ts";
+import { selectTemplates as defaultSelectTemplates } from "./steps/select_templates.ts";
 import { selectUniverse as defaultSelectUniverse } from "./steps/select_universe.ts";
 import { selectWindow as defaultSelectWindow } from "./steps/select_window.ts";
 
@@ -42,6 +43,7 @@ const baseLogger = pino({
 
 const LLM_STEPS: ReadonlySet<StepName> = new Set([
   "interpret_brief",
+  "select_templates",
   "propose_candidates",
   "decide",
   "finalize",
@@ -49,6 +51,7 @@ const LLM_STEPS: ReadonlySet<StepName> = new Set([
 
 export type StepRunners = {
   interpretBrief: typeof defaultInterpretBrief;
+  selectTemplates: typeof defaultSelectTemplates;
   selectUniverse: typeof defaultSelectUniverse;
   selectWindow: typeof defaultSelectWindow;
   proposeCandidates: typeof defaultProposeCandidates;
@@ -59,6 +62,7 @@ export type StepRunners = {
 
 export const DEFAULT_RUNNERS: StepRunners = {
   interpretBrief: defaultInterpretBrief,
+  selectTemplates: defaultSelectTemplates,
   selectUniverse: defaultSelectUniverse,
   selectWindow: defaultSelectWindow,
   proposeCandidates: defaultProposeCandidates,
@@ -260,6 +264,14 @@ function transitionDigest(
             interpretation_notes: excerpt(state.thesis.interpretation_notes, 220),
           }
         : {};
+    case "select_templates":
+      return state.template_selection
+        ? {
+            families: state.template_selection.selected.map((s) => s.family),
+            top_family: state.template_selection.selected[0]?.family ?? null,
+            rationale: excerpt(state.template_selection.rationale, 220),
+          }
+        : {};
     case "select_universe":
       return state.universe
         ? {
@@ -431,6 +443,17 @@ async function dispatch(
       state.thesis = result.delta.thesis;
       return result.next;
     }
+    case "select_templates": {
+      if (!state.thesis) {
+        throw new Error("select_templates entered without a thesis");
+      }
+      const result = await runners.selectTemplates(
+        { run_id: state.run_id, thesis: state.thesis },
+        { llm: resolveLLM(llm) },
+      );
+      state.template_selection = result.delta.template_selection;
+      return result.next;
+    }
     case "select_universe": {
       if (!state.thesis) {
         throw new Error("select_universe entered without a thesis");
@@ -472,6 +495,7 @@ async function dispatch(
           thesis: state.thesis,
           universe: state.universe,
           window: state.window,
+          template_selection: state.template_selection,
           attempts: state.attempts,
         },
         { llm: resolveLLM(llm) },

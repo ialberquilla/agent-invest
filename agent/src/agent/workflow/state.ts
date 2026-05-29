@@ -6,6 +6,7 @@
 
 export const STEP_NAMES = [
   "interpret_brief",
+  "select_templates",
   "select_universe",
   "select_window",
   "propose_candidates",
@@ -67,6 +68,63 @@ export type Thesis = {
   constraints: ThesisConstraints;
   rebalance_frequency: RebalanceFrequency;
   interpretation_notes: string;
+};
+
+// The strategy-family catalog mirrors spec.md section 9. select_templates
+// classifies a Thesis onto a ranked shortlist of these families before
+// propose_candidates parameterizes concrete candidates. Note that only the
+// allocation families currently compile to executable candidates
+// (buy_and_hold / periodic_rebalance); the long/short, hedge, and signal
+// families are catalogued here so the routing decision is explicit and
+// auditable, and so propose_candidates can approximate them with the
+// closest executable template until their own candidate schemas land.
+export const STRATEGY_FAMILIES = [
+  "synthetic_long_allocation", // 9.1
+  "periodic_rebalanced_allocation", // 9.2
+  "threshold_rebalanced_allocation", // 9.3
+  "core_satellite_allocation", // 9.4
+  "barbell_allocation", // 9.5
+  "partial_hedge_overlay", // 9.6
+  "trend_following_long_neutral", // 9.7
+  "trend_following_long_short", // 9.8
+  "relative_momentum_rotation", // 9.9
+  "relative_value_pair_trade", // 9.10
+  "beta_hedged_alt_exposure", // 9.11
+  "drawdown_based_hedge", // 9.12
+  "volatility_targeted_exposure", // 9.13
+] as const;
+export type StrategyFamily = (typeof STRATEGY_FAMILIES)[number];
+
+// Families that require short exposure. Until the Thesis carries an
+// explicit allowed_sides field, select_templates only shortlists these
+// when the brief/interpretation_notes opt into shorts or hedging.
+export const SHORT_REQUIRING_FAMILIES: ReadonlySet<StrategyFamily> = new Set([
+  "partial_hedge_overlay",
+  "trend_following_long_short",
+  "relative_value_pair_trade",
+  "beta_hedged_alt_exposure",
+  "drawdown_based_hedge",
+]);
+
+export type SelectedFamily = {
+  family: StrategyFamily;
+  // 1-based rank; ranks across the shortlist must be unique and
+  // contiguous starting at 1 (best fit first).
+  rank: number;
+  rationale: string;
+};
+
+// Output of select_templates: a ranked shortlist of strategy families
+// that fit the thesis, with an overall rationale. propose_candidates
+// reads this to bias which template configurations it parameterizes.
+export type TemplateSelection = {
+  rationale: string;
+  selected: SelectedFamily[];
+};
+
+export type SelectTemplatesInput = {
+  run_id: string;
+  thesis: Thesis;
 };
 
 export type ReinterpretHint = {
@@ -263,6 +321,9 @@ export type ProposeCandidatesInput = {
   thesis: Thesis;
   universe: Universe;
   window: Window;
+  // Ranked strategy-family shortlist from select_templates. Advisory:
+  // biases which template configurations to parameterize.
+  template_selection?: TemplateSelection;
   attempts?: Attempt[];
 };
 
@@ -374,6 +435,7 @@ export type WorkflowState = {
   run_id: string;
   brief: string | WizardBrief;
   thesis?: Thesis;
+  template_selection?: TemplateSelection;
   universe?: Universe;
   window?: Window;
   attempts: Attempt[];
@@ -621,6 +683,99 @@ function validateReinterpretHint(hint: unknown): void {
     );
   }
   requireString(hint.rationale, "hint.rationale");
+}
+
+export class TemplateSelectionValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "TemplateSelectionValidationError";
+  }
+}
+
+// Pure validation for select_templates output. Throws on any schema or
+// structural violation (unknown family, duplicate/non-contiguous ranks,
+// shortlist out of bounds). After this returns, value is a
+// TemplateSelection.
+export function validateTemplateSelection(
+  value: unknown,
+): asserts value is TemplateSelection {
+  if (!isRecord(value)) {
+    throw new TemplateSelectionValidationError(
+      "template_selection must be an object",
+    );
+  }
+  if (
+    typeof value.rationale !== "string" ||
+    !value.rationale.trim()
+  ) {
+    throw new TemplateSelectionValidationError(
+      "rationale must be a non-empty string",
+    );
+  }
+  if (!Array.isArray(value.selected)) {
+    throw new TemplateSelectionValidationError("selected must be an array");
+  }
+  if (value.selected.length < 1 || value.selected.length > 3) {
+    throw new TemplateSelectionValidationError(
+      `selected must contain between 1 and 3 entries (got ${value.selected.length})`,
+    );
+  }
+
+  const seenFamilies = new Set<string>();
+  const seenRanks = new Set<number>();
+  for (const [index, entry] of value.selected.entries()) {
+    if (!isRecord(entry)) {
+      throw new TemplateSelectionValidationError(
+        `selected[${index}] must be an object`,
+      );
+    }
+    if (
+      typeof entry.family !== "string" ||
+      !STRATEGY_FAMILIES.includes(entry.family as StrategyFamily)
+    ) {
+      throw new TemplateSelectionValidationError(
+        `selected[${index}].family must be one of: ${STRATEGY_FAMILIES.join(", ")}`,
+      );
+    }
+    if (seenFamilies.has(entry.family)) {
+      throw new TemplateSelectionValidationError(
+        `selected[${index}].family "${entry.family}" is duplicated`,
+      );
+    }
+    seenFamilies.add(entry.family);
+
+    if (
+      typeof entry.rank !== "number" ||
+      !Number.isInteger(entry.rank) ||
+      entry.rank < 1
+    ) {
+      throw new TemplateSelectionValidationError(
+        `selected[${index}].rank must be a positive integer`,
+      );
+    }
+    if (seenRanks.has(entry.rank)) {
+      throw new TemplateSelectionValidationError(
+        `selected[${index}].rank ${entry.rank} is duplicated`,
+      );
+    }
+    seenRanks.add(entry.rank);
+
+    if (typeof entry.rationale !== "string" || !entry.rationale.trim()) {
+      throw new TemplateSelectionValidationError(
+        `selected[${index}].rationale must be a non-empty string`,
+      );
+    }
+  }
+
+  // Ranks must be the contiguous set {1..n} so the shortlist is a clean
+  // ordering with no gaps.
+  for (let rank = 1; rank <= value.selected.length; rank += 1) {
+    if (!seenRanks.has(rank)) {
+      throw new TemplateSelectionValidationError(
+        `ranks must be contiguous from 1 to ${value.selected.length}; missing rank ${rank}`,
+      );
+    }
+  }
 }
 
 export class ProposalValidationError extends Error {
