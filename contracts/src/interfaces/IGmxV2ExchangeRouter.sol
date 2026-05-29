@@ -57,4 +57,5 @@ interface IGmxV2ExchangeRouter {
     function sendWnt(address receiver, uint256 amount) external payable;
     function sendTokens(address token, address receiver, uint256 amount) external payable;
     function createOrder(CreateOrderParams calldata params) external payable returns (bytes32);
+    function cancelOrder(bytes32 key) external payable;
 }
