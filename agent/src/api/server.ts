@@ -1,14 +1,7 @@
 import "../env";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { createReadStream, existsSync } from "node:fs";
-import {
-  mkdir,
-  readFile,
-  readdir,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Fastify from "fastify";
@@ -19,12 +12,19 @@ import {
   buildAllocationWizardPrompt,
   type AllocationWizardParams,
 } from "../agent/prompt";
-import { runPipeline, type PipelineBrief } from "../agent/pipeline";
-import type { StageName } from "../agent/stages/base";
+import { chatAgent, type ChatAgentResponse } from "../agent/chat";
 import { createOpencodeClient } from "../agent/session";
+import { runWorkflow } from "../agent/workflow/controller";
+import { createOpencodeLLMClient, type LLMClient } from "../agent/workflow/llm";
+import { workflowStateToStructuredResult } from "../agent/workflow/persist";
+import type {
+  WizardBrief,
+  WorkflowState,
+} from "../agent/workflow/state";
 import { pgPool } from "../db/client";
 import {
   listStageEventsByRunId as defaultListStageEventsByRunId,
+  subscribeAgentEvents as defaultSubscribeAgentEvents,
   type ListStageEventsFilters,
 } from "../db/repositories/agent-events";
 import {
@@ -90,7 +90,16 @@ type SubscribeToStageRunChanges = (
   onDelta: (delta: StageRunNotification) => void,
 ) => Promise<() => Promise<void>>;
 type ServerDependencies = {
-  runPipeline?: typeof runPipeline;
+  runWorkflow?: typeof runWorkflow;
+  llm?: LLMClient;
+  subscribeAgentEvents?: typeof defaultSubscribeAgentEvents;
+  chatAgent?: {
+    run(input: {
+      chatSessionId: string;
+      userId: string;
+      message: string;
+    }): Promise<ChatAgentResponse>;
+  };
   apiKey?: string | null;
   ingestionRunners?: Partial<IngestionRunners>;
   repositories?: Partial<Repositories>;
@@ -375,6 +384,7 @@ function toIso(value: Date | string | null) {
 }
 
 const STAGE_NAMES = ["thesis", "designer", "adjudicator", "reporter"] as const;
+type StageName = (typeof STAGE_NAMES)[number];
 
 function queryStringValue(
   query: Record<string, unknown>,
@@ -597,19 +607,10 @@ function runResponse(
     : { ...responseWithStages, structured_result: structuredResult };
 }
 
-type ArtifactRef = { kind: string; path: string };
-
-const ARTIFACT_EXTENSIONS = [
-  "png",
-  "jpg",
-  "jpeg",
-  "svg",
-  "gif",
-  "webp",
-  "json",
-  "csv",
-];
-
+// Content types for artifacts served from disk via GET /artifacts/*.
+// The workflow no longer writes new artifacts, but pre-existing
+// artifacts (e.g. from older runs) can still be served as long as the
+// storage dir is mounted.
 const ARTIFACT_CONTENT_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -620,26 +621,6 @@ const ARTIFACT_CONTENT_TYPES: Record<string, string> = {
   ".json": "application/json; charset=utf-8",
   ".csv": "text/csv; charset=utf-8",
 };
-
-const KNOWN_ARTIFACT_KINDS: Record<string, string> = {
-  "equity_curve.png": "equity_curve_png",
-  "equity_curve.json": "equity_curve_json",
-  "drawdown.png": "drawdown_png",
-  "drawdown.json": "drawdown_json",
-  "allocation.json": "allocation_json",
-  "target_allocation.json": "target_allocation_json",
-  "report.json": "report_json",
-  "strategy_result.json": "strategy_result_json",
-};
-
-const JSON_ARTIFACT_FILENAMES = new Set([
-  "report.json",
-  "equity_curve.json",
-  "drawdown.json",
-  "allocation.json",
-  "target_allocation.json",
-  "strategy_result.json",
-]);
 
 function resolveStorageRoot() {
   if (isStorageDisabled()) return undefined;
@@ -666,97 +647,20 @@ function storageRootDir() {
   return resolveStorageRoot();
 }
 
-function traceDir(runId: string) {
-  const dir = artifactsDir();
-  return dir ? path.join(dir, "runs", runId) : undefined;
-}
-
-async function writeRunTrace(
-  runId: string,
-  payload: Record<string, unknown>,
-): Promise<ArtifactRef[]> {
-  const dir = traceDir(runId);
-  if (!dir) return [];
-  await mkdir(dir, { recursive: true });
-  const filePath = path.join(dir, "pipeline_trace.json");
-  await writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf-8");
-  const relative = relativeArtifactPath(filePath);
-  return relative ? [{ kind: kindFromPath(relative), path: relative }] : [];
-}
-
-function pipelineTracePayload(options: {
-  runId: string;
-  strategyId: string;
-  brief: PipelineBrief;
-  result?: unknown;
-  error?: unknown;
-  startedAt: string;
-  endedAt: string;
-}) {
-  return {
-    run_id: options.runId,
-    strategy_id: options.strategyId,
-    started_at: options.startedAt,
-    ended_at: options.endedAt,
-    brief: options.brief,
-    result: options.result ?? null,
-    error: options.error ? errorMessage(options.error) : null,
-  };
-}
-
-function relativeArtifactPath(absolute: string): string | null {
-  const dir = artifactsDir();
-  if (!dir) return null;
-  const resolved = path.resolve(absolute);
-  const relative = path.relative(dir, resolved);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-    return null;
+// Pulls a short user-facing reply out of the structured workflow
+// result. Used as the `reply` column on the runs row when marking the
+// run completed. Falls back to a stable placeholder when no
+// structured result is available.
+function replyFromStructuredResult(structuredResult: unknown): string {
+  if (!isRecord(structuredResult)) return "Strategy run completed.";
+  const parts: string[] = [];
+  if (typeof structuredResult.title === "string" && structuredResult.title) {
+    parts.push(structuredResult.title);
   }
-  return relative.split(path.sep).join("/");
-}
-
-function kindFromPath(relative: string): string {
-  const basename = relative.split("/").pop() ?? relative;
-  return KNOWN_ARTIFACT_KINDS[basename] ?? basename;
-}
-
-type ArtifactSnapshot = Map<string, number>;
-
-const ARTIFACT_EXTENSION_SET = new Set(
-  ARTIFACT_EXTENSIONS.map((extension) => `.${extension}`),
-);
-
-async function walkArtifacts(
-  current: string,
-  out: ArtifactSnapshot,
-): Promise<void> {
-  let entries;
-  try {
-    entries = await readdir(current, { withFileTypes: true });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw error;
+  if (typeof structuredResult.summary === "string" && structuredResult.summary) {
+    parts.push(structuredResult.summary);
   }
-  for (const entry of entries) {
-    const full = path.join(current, entry.name);
-    if (entry.isDirectory()) {
-      await walkArtifacts(full, out);
-      continue;
-    }
-    if (!entry.isFile()) continue;
-    const extension = path.extname(entry.name).toLowerCase();
-    if (!ARTIFACT_EXTENSION_SET.has(extension)) continue;
-    const info = await stat(full).catch(() => null);
-    if (info) out.set(full, info.mtimeMs);
-  }
-}
-
-async function snapshotArtifacts(): Promise<ArtifactSnapshot> {
-  const dir = artifactsDir();
-  const snapshot: ArtifactSnapshot = new Map();
-  if (!dir) return snapshot;
-  await walkArtifacts(dir, snapshot);
-  return snapshot;
+  return parts.join("\n\n") || "Strategy run completed.";
 }
 
 async function cleanupArtifactDirectory(
@@ -816,230 +720,8 @@ async function cleanupArtifactDirectory(
   return { deletedBytes, deletedFiles };
 }
 
-function diffArtifactSnapshots(
-  before: ArtifactSnapshot,
-  after: ArtifactSnapshot,
-): string[] {
-  const changed: string[] = [];
-  for (const [absolutePath, mtime] of after) {
-    const previous = before.get(absolutePath);
-    if (previous === undefined || previous !== mtime) {
-      changed.push(absolutePath);
-    }
-  }
-  return changed.sort();
-}
-
-function artifactsFromAbsolutePaths(absolutePaths: string[]): ArtifactRef[] {
-  const seen = new Set<string>();
-  const artifacts: ArtifactRef[] = [];
-  for (const absolutePath of absolutePaths) {
-    const relative = relativeArtifactPath(absolutePath);
-    if (!relative || seen.has(relative)) continue;
-    seen.add(relative);
-    artifacts.push({ kind: kindFromPath(relative), path: relative });
-  }
-  return artifacts;
-}
-
-function mergeArtifacts(...sources: ArtifactRef[][]): ArtifactRef[] {
-  const seen = new Set<string>();
-  const merged: ArtifactRef[] = [];
-  for (const source of sources) {
-    for (const artifact of source) {
-      if (seen.has(artifact.path)) continue;
-      seen.add(artifact.path);
-      merged.push(artifact);
-    }
-  }
-  return merged;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function toNumber(value: unknown): number | null {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function normalizeEquityPoint(value: unknown) {
-  if (!isRecord(value) || typeof value.date !== "string") return null;
-  const strategyEquity = toNumber(value.equity_usd) ?? toNumber(value.equity);
-  if (strategyEquity === null) return null;
-
-  return {
-    date: value.date,
-    strategy_equity: strategyEquity,
-    benchmark_equity:
-      toNumber(value.bitcoin_equity_usd) ?? toNumber(value.bitcoin_equity),
-  };
-}
-
-function normalizeDrawdownPoint(value: unknown) {
-  if (!isRecord(value) || typeof value.date !== "string") return null;
-  const strategyDrawdown = toNumber(value.drawdown);
-  if (strategyDrawdown === null) return null;
-
-  return {
-    date: value.date,
-    strategy_drawdown: strategyDrawdown,
-    benchmark_drawdown: toNumber(value.bitcoin_drawdown),
-  };
-}
-
-function normalizeAllocationPoint(value: unknown) {
-  if (!isRecord(value)) return null;
-  const weight = toNumber(value.weight);
-  if (weight === null) return null;
-  const asset =
-    typeof value.asset === "string"
-      ? value.asset
-      : typeof value.coin_id === "string"
-        ? value.coin_id
-        : null;
-  if (!asset) return null;
-
-  return { asset, weight };
-}
-
-function normalizeArray<T>(
-  value: unknown,
-  normalize: (item: unknown) => T | null,
-): T[] | null {
-  if (!Array.isArray(value)) return null;
-  const normalized = value.flatMap((item) => {
-    const next = normalize(item);
-    return next ? [next] : [];
-  });
-
-  return normalized.length > 0 ? normalized : null;
-}
-
-function mergeArtifactPayload(
-  structuredResult: unknown,
-  filename: string,
-  payload: unknown,
-): unknown {
-  if (!isRecord(structuredResult)) return structuredResult;
-  const enriched: Record<string, unknown> = { ...structuredResult };
-
-  if (filename === "report.json" && isRecord(payload)) {
-    if (isRecord(payload.kpis)) {
-      enriched.kpis = {
-        ...(isRecord(enriched.kpis) ? enriched.kpis : {}),
-        ...payload.kpis,
-      };
-    }
-    if (isRecord(payload.summary)) {
-      enriched.backtest = {
-        ...(isRecord(enriched.backtest) ? enriched.backtest : {}),
-        ...payload.summary,
-      };
-    }
-  }
-
-  const charts = isRecord(enriched.charts) ? { ...enriched.charts } : {};
-
-  if (filename === "equity_curve.json") {
-    const equity = normalizeArray(payload, normalizeEquityPoint);
-    if (equity) charts.equity_curve = equity;
-  }
-
-  if (filename === "drawdown.json") {
-    const drawdown = normalizeArray(payload, normalizeDrawdownPoint);
-    if (drawdown) charts.drawdown = drawdown;
-  }
-
-  if (filename === "allocation.json") {
-    const allocation = normalizeArray(payload, normalizeAllocationPoint);
-    if (allocation) charts.final_allocation = allocation;
-  }
-
-  if (filename === "target_allocation.json") {
-    const allocation = normalizeArray(payload, normalizeAllocationPoint);
-    if (allocation) charts.allocation = allocation;
-  }
-
-  if (Object.keys(charts).length > 0) enriched.charts = charts;
-  return enriched;
-}
-
-async function enrichStructuredResultFromArtifacts(
-  structuredResult: unknown,
-  artifacts: ArtifactRef[],
-): Promise<unknown> {
-  if (!isRecord(structuredResult)) return structuredResult;
-  const dir = artifactsDir();
-  if (!dir) return structuredResult;
-
-  let enriched: unknown = structuredResult;
-  for (const artifact of artifacts) {
-    const filename = artifact.path.split("/").pop() ?? artifact.path;
-    if (!JSON_ARTIFACT_FILENAMES.has(filename)) continue;
-
-    try {
-      const absolutePath = path.resolve(dir, artifact.path);
-      const dirWithSeparator = dir.endsWith(path.sep)
-        ? dir
-        : `${dir}${path.sep}`;
-      if (!absolutePath.startsWith(dirWithSeparator)) continue;
-      const payload: unknown = JSON.parse(
-        await readFile(absolutePath, "utf-8"),
-      );
-      enriched = mergeArtifactPayload(enriched, filename, payload);
-    } catch {
-      continue;
-    }
-  }
-
-  return enriched;
-}
-
-async function readFinalizedStructuredResult(
-  artifacts: ArtifactRef[],
-): Promise<unknown> {
-  const dir = artifactsDir();
-  if (!dir) return null;
-
-  const finalized = artifacts.find(
-    (artifact) =>
-      (artifact.path.split("/").pop() ?? artifact.path) ===
-      "strategy_result.json",
-  );
-  if (!finalized) return null;
-
-  try {
-    const absolutePath = path.resolve(dir, finalized.path);
-    const dirWithSeparator = dir.endsWith(path.sep) ? dir : `${dir}${path.sep}`;
-    if (!absolutePath.startsWith(dirWithSeparator)) return null;
-    return JSON.parse(await readFile(absolutePath, "utf-8"));
-  } catch {
-    return null;
-  }
-}
-
-function selectedBacktestLabel(structuredResult: unknown): string | null {
-  if (!isRecord(structuredResult)) return null;
-  const backtest = structuredResult.backtest;
-  if (isRecord(backtest) && typeof backtest.label === "string") {
-    return backtest.label;
-  }
-  return null;
-}
-
-function artifactsForSelectedResult(
-  structuredResult: unknown,
-  artifacts: ArtifactRef[],
-): ArtifactRef[] {
-  const label = selectedBacktestLabel(structuredResult);
-  if (!label) return artifacts;
-  return artifacts.filter(
-    (artifact) =>
-      artifact.path.includes(`/strategy_result/${label}/`) ||
-      artifact.path.includes(`/run_backtest/${label}/`) ||
-      artifact.path.includes("/runs/"),
-  );
 }
 
 function runSummaryFields(structuredResult: unknown) {
@@ -1057,39 +739,16 @@ function runSummaryFields(structuredResult: unknown) {
         ? (structuredResult.backtest.candidate_batch_id ?? null)
         : null,
       winner_candidate_id: structuredResult.winner_candidate_id ?? null,
-      result_id: selectedBacktestLabel(structuredResult),
     },
   };
 }
 
-async function structuredResultFromArtifacts(
-  reply: string,
-  artifacts: ArtifactRef[],
-): Promise<unknown> {
-  const hasStructuredArtifact = artifacts.some((artifact) =>
-    JSON_ARTIFACT_FILENAMES.has(
-      artifact.path.split("/").pop() ?? artifact.path,
-    ),
-  );
-  if (!hasStructuredArtifact) return null;
-
-  const summary = reply.trim().split("\n").find(Boolean) ?? "Strategy result";
-  const base = {
-    title: "Strategy result",
-    summary,
-    reasoning: summary,
-    allocation: [],
-    kpis: {},
-    assumptions: [],
-    risks: [],
-    next_steps: [],
-  };
-
-  return enrichStructuredResultFromArtifacts(base, artifacts);
-}
-
 export function buildServer(dependencies: ServerDependencies = {}) {
-  const executePipeline = dependencies.runPipeline ?? runPipeline;
+  const executeWorkflow = dependencies.runWorkflow ?? runWorkflow;
+  const workflowLLM = dependencies.llm ?? createOpencodeLLMClient();
+  const subscribeAgentEvents =
+    dependencies.subscribeAgentEvents ?? defaultSubscribeAgentEvents;
+  const executeChatAgent = dependencies.chatAgent ?? chatAgent;
   const subscribeStageRunChanges =
     dependencies.subscribeToStageRunChanges ?? subscribeToStageRunChanges;
   const repositories: Repositories = {
@@ -1224,86 +883,66 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     await repositories.touchStrategy(strategyId);
     await repositories.createRun(runId, strategyId);
 
-    const beforeSnapshot = await snapshotArtifacts().catch((error) => {
-      request.log.warn(
-        { error: errorMessage(error), runId },
-        "failed to snapshot artifacts before pipeline",
-      );
-      return new Map() as ArtifactSnapshot;
-    });
-
-    let pipelineError: unknown;
-    let result: Awaited<ReturnType<typeof runPipeline>> | undefined;
-    const traceStartedAt = new Date().toISOString();
+    let workflowError: unknown;
+    let workflowState: WorkflowState | undefined;
     try {
-      request.log.info({ runId, strategyId }, "calling pipeline");
-      result = await executePipeline(runId, text);
+      request.log.info({ runId, strategyId }, "calling workflow");
+      workflowState = await executeWorkflow(runId, text as string | WizardBrief, {
+        llm: workflowLLM,
+      });
       request.log.info(
-        { runId, resultId: result.result_id },
-        "pipeline returned",
+        { runId, final_kind: workflowState.final?.kind ?? null },
+        "workflow returned",
       );
     } catch (error) {
-      pipelineError = error;
+      workflowError = error;
     }
 
-    const traceArtifacts = await writeRunTrace(
-      runId,
-      pipelineTracePayload({
-        runId,
-        strategyId,
-        brief: text,
-        result,
-        error: pipelineError,
-        startedAt: traceStartedAt,
-        endedAt: new Date().toISOString(),
-      }),
-    ).catch((error) => {
-      request.log.warn(
-        { error: errorMessage(error), runId },
-        "failed to write pipeline trace",
-      );
-      return [] as ArtifactRef[];
-    });
-
-    const afterSnapshot = await snapshotArtifacts().catch((error) => {
-      request.log.warn(
-        { error: errorMessage(error), runId },
-        "failed to snapshot artifacts after pipeline",
-      );
-      return new Map() as ArtifactSnapshot;
-    });
-    const artifacts = mergeArtifacts(
-      artifactsFromAbsolutePaths(
-        diffArtifactSnapshots(beforeSnapshot, afterSnapshot),
-      ),
-      traceArtifacts,
-    );
-    const finalizedStructuredResult =
-      await readFinalizedStructuredResult(artifacts);
-    const structuredResult = finalizedStructuredResult
-      ? await enrichStructuredResultFromArtifacts(
-          finalizedStructuredResult,
-          artifactsForSelectedResult(finalizedStructuredResult, artifacts),
-        )
+    const structuredResult = workflowState
+      ? workflowStateToStructuredResult(workflowState)
       : null;
 
-    if (pipelineError) {
-      await repositories.markRunFailed(runId, errorMessage(pipelineError));
+    if (workflowError) {
+      await repositories.markRunFailed(runId, errorMessage(workflowError));
     } else {
       await repositories.markRunCompleted(
         runId,
-        result!.result_id,
+        replyFromStructuredResult(structuredResult),
         runSummaryFields(structuredResult),
       );
     }
 
     const run = await repositories.readRun(runId);
     if (!run) throw new Error(`Run missing after execution: ${runId}`);
-    if (traceArtifacts.length > 0) {
-      request.log.info({ runId, traceArtifacts }, "pipeline trace written");
-    }
-    if (pipelineError) throw pipelineError;
+    if (workflowError) throw workflowError;
     return runResponse(run, structuredResult);
+  });
+
+  app.post("/chat/messages", async (request) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    if (!isRecord(body)) {
+      throw httpError(400, "Request body must be a JSON object");
+    }
+
+    const chatSessionId = requiredText(body, "chat_session_id");
+    const message = requiredText(body, "message");
+    const userId =
+      typeof body.user_id === "string" && body.user_id.trim()
+        ? body.user_id.trim()
+        : chatSessionId;
+
+    const response = await executeChatAgent.run({
+      chatSessionId,
+      message,
+      userId,
+    });
+
+    return {
+      chat_session_id: chatSessionId,
+      content: response.content,
+      opencode_session_id: response.opencode_session_id,
+      ...(response.run_id ? { run_id: response.run_id } : {}),
+    };
   });
 
   app.get<{ Params: { id: string } }>("/runs/:id", async (request) => {
@@ -1372,6 +1011,52 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     );
     return events.map(stageEventResponse);
   });
+
+  // SSE channel for agent_events writes. The frontend opens one of
+  // these per run page and stops polling /events entirely. We send a
+  // `snapshot` event with everything written so far, then `event`
+  // frames as new rows are appended via the in-process emitter in
+  // agent-events.ts.
+  app.get<{ Params: { id: string } }>(
+    "/runs/:id/events/stream",
+    async (request, reply) => {
+      const runId = request.params.id;
+      const run = await repositories.readRun(runId);
+      if (!run) throw httpError(404, "Run not found");
+
+      const snapshot = await repositories.listStageEventsByRunId(runId, {});
+
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        "Content-Type": "text/event-stream",
+        "X-Accel-Buffering": "no",
+      });
+      reply.raw.write(sseFrame("snapshot", snapshot.map(stageEventResponse)));
+
+      const heartbeat = setInterval(() => {
+        if (!reply.raw.writableEnded) reply.raw.write(": heartbeat\n\n");
+      }, 15_000);
+
+      const unsubscribe = subscribeAgentEvents(runId, (event) => {
+        if (reply.raw.writableEnded) return;
+        reply.raw.write(sseFrame("event", stageEventResponse(event)));
+      });
+
+      let cleanedUp = false;
+      const close = () => {
+        if (cleanedUp) return;
+        cleanedUp = true;
+        clearInterval(heartbeat);
+        unsubscribe();
+      };
+
+      request.raw.on("aborted", close);
+      reply.raw.on("close", close);
+      reply.raw.on("error", close);
+    },
+  );
 
   app.get<{ Params: { id: string; stage_run_id: string } }>(
     "/runs/:id/stages/:stage_run_id",
@@ -1491,13 +1176,10 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       raw.write(`data: ${JSON.stringify(payload)}\n\n`);
     };
 
-    const finalize = (
-      runPayload: Record<string, unknown>,
-      artifacts: ArtifactRef[],
-    ) => {
+    const finalize = (runPayload: Record<string, unknown>) => {
       if (runCompletedSent) return;
       runCompletedSent = true;
-      send("run.completed", { ...runPayload, artifacts });
+      send("run.completed", { ...runPayload, artifacts: [] });
       if (!clientGone && !raw.writableEnded) raw.end();
     };
 
@@ -1521,26 +1203,19 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       });
     }, 500);
 
-    const beforeSnapshot = await snapshotArtifacts().catch((error) => {
-      request.log.warn(
-        { error: errorMessage(error), runId },
-        "stream: failed to snapshot artifacts before pipeline",
-      );
-      return new Map() as ArtifactSnapshot;
-    });
-
-    let pipelineError: unknown;
-    let result: Awaited<ReturnType<typeof runPipeline>> | undefined;
-    const traceStartedAt = new Date().toISOString();
+    let workflowError: unknown;
+    let workflowState: WorkflowState | undefined;
     try {
-      request.log.info({ runId, strategyId }, "stream: calling pipeline");
-      result = await executePipeline(runId, text);
+      request.log.info({ runId, strategyId }, "stream: calling workflow");
+      workflowState = await executeWorkflow(runId, text as string | WizardBrief, {
+        llm: workflowLLM,
+      });
       request.log.info(
-        { runId, resultId: result.result_id },
-        "stream: pipeline returned",
+        { runId, final_kind: workflowState.final?.kind ?? null },
+        "stream: workflow returned",
       );
     } catch (error) {
-      pipelineError = error;
+      workflowError = error;
     } finally {
       clearInterval(stageEventPoller);
       await flushStageEvents().catch((error: unknown) => {
@@ -1551,95 +1226,34 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       });
     }
 
-    const traceArtifacts = await writeRunTrace(
-      runId,
-      pipelineTracePayload({
-        runId,
-        strategyId,
-        brief: text,
-        result,
-        error: pipelineError,
-        startedAt: traceStartedAt,
-        endedAt: new Date().toISOString(),
-      }),
-    ).catch((error) => {
-      request.log.warn(
-        { error: errorMessage(error), runId },
-        "stream: failed to write pipeline trace",
-      );
-      return [] as ArtifactRef[];
-    });
-
     send("run.finalizing", {
-      message: "Creating structured report and charts",
+      message: "Assembling structured result",
       run_id: runId,
     });
 
-    const afterSnapshot = await snapshotArtifacts().catch((error) => {
-      request.log.warn(
-        { error: errorMessage(error), runId },
-        "stream: failed to snapshot artifacts after pipeline",
-      );
-      return new Map() as ArtifactSnapshot;
-    });
-    const changedAbsolutePaths = diffArtifactSnapshots(
-      beforeSnapshot,
-      afterSnapshot,
-    );
-    const filesystemArtifacts =
-      artifactsFromAbsolutePaths(changedAbsolutePaths);
-    const artifacts = filesystemArtifacts;
-    const allArtifacts = mergeArtifacts(artifacts, traceArtifacts);
-    request.log.info(
-      {
-        runId,
-        artifactCount: allArtifacts.length,
-        filesystemArtifactCount: filesystemArtifacts.length,
-        traceArtifactCount: traceArtifacts.length,
-        storageRoot: process.env.STORAGE_ROOT ?? null,
-        artifactsDir: artifactsDir() ?? null,
-      },
-      "stream: extracted artifacts",
-    );
+    const structuredResult = workflowState
+      ? workflowStateToStructuredResult(workflowState)
+      : null;
 
-    const finalizedStructuredResult =
-      await readFinalizedStructuredResult(allArtifacts);
-    const structuredResult =
-      finalizedStructuredResult ??
-      (await structuredResultFromArtifacts(
-        result?.result_id ?? "",
-        allArtifacts,
-      ));
-    const enrichmentArtifacts = finalizedStructuredResult
-      ? artifactsForSelectedResult(finalizedStructuredResult, allArtifacts)
-      : allArtifacts;
-    const enrichedStructuredResult = await enrichStructuredResultFromArtifacts(
-      structuredResult,
-      enrichmentArtifacts,
-    );
-
-    if (pipelineError) {
-      await repositories.markRunFailed(runId, errorMessage(pipelineError));
+    if (workflowError) {
+      await repositories.markRunFailed(runId, errorMessage(workflowError));
     } else {
       await repositories.markRunCompleted(
         runId,
-        result!.result_id,
-        runSummaryFields(enrichedStructuredResult),
+        replyFromStructuredResult(structuredResult),
+        runSummaryFields(structuredResult),
       );
     }
 
     const run = await repositories.readRun(runId);
     if (run) {
-      finalize(runResponse(run, enrichedStructuredResult), allArtifacts);
+      finalize(runResponse(run, structuredResult));
     } else {
-      finalize(
-        {
-          run_id: runId,
-          status: "failed",
-          error: "Run missing after execution",
-        },
-        artifacts,
-      );
+      finalize({
+        run_id: runId,
+        status: "failed",
+        error: "Run missing after execution",
+      });
     }
   });
 

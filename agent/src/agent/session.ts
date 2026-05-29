@@ -16,6 +16,33 @@ import {
 
 export const DEFAULT_OPENCODE_MODEL = "azure/gpt-5.4";
 
+export const OPENCODE_BUILTIN_TOOLS = [
+  "bash",
+  "edit",
+  "glob",
+  "google_search",
+  "grep",
+  "list",
+  "lsp",
+  "patch",
+  "read",
+  "skill",
+  "task",
+  "todowrite",
+  "webfetch",
+  "websearch",
+  "write",
+] as const;
+
+export function disabledOpencodeBuiltinsTools(
+  options: { except?: readonly string[] } = {},
+): Record<string, boolean> {
+  const except = new Set(options.except ?? []);
+  return Object.fromEntries(
+    OPENCODE_BUILTIN_TOOLS.map((tool) => [tool, except.has(tool)]),
+  );
+}
+
 type SessionDb = Parameters<typeof readStrategySession>[2];
 
 export type DatabaseClient = NonNullable<SessionDb>;
@@ -168,6 +195,17 @@ async function createManagedOpencode(
     port: 0,
     config: {
       model: resolveOpencodeModel(env),
+      permission: {
+        bash: {
+          "./agent-invest *": "allow",
+          "./agent-invest": "allow",
+          "agent-invest *": "allow",
+          "agent-invest": "allow",
+          "*": "deny",
+        },
+        edit: "deny",
+        webfetch: "deny",
+      },
     },
   });
 

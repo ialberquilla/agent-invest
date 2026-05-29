@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -45,6 +46,12 @@ def test_runs_batch_and_persists_results(
     assert output["batch_id"].startswith("candidate_batch_")
     assert len(output["results"]) == 3
     assert (tmp_path / "candidate_batches" / f"{output['batch_id']}.json").is_file()
+    persisted = json.loads(
+        (tmp_path / "candidate_batches" / f"{output['batch_id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "iteration_hypothesis" not in persisted
     for result in output["results"]:
         assert (result["allocation_metrics"] is None) != (
             result["tactical_metrics"] is None
@@ -53,8 +60,87 @@ def test_runs_batch_and_persists_results(
         assert result["robustness"]["sample_size_warning"] is True
 
 
+def test_persists_iteration_hypothesis_when_provided(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(run_candidate_batch, "daily_prices", _daily_prices)
+    monkeypatch.setattr(run_candidate_batch, "asset_universe_features", _features)
+
+    output = run_candidate_batch.run(
+        {
+            "run_id": "run-1",
+            "round": 1,
+            "iteration_hypothesis": "Test lower turnover equal weighting.",
+            "candidates": [_candidate(f"c{i}") for i in range(3)],
+        }
+    )
+
+    persisted = json.loads(
+        (tmp_path / "candidate_batches" / f"{output['batch_id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert output["iteration_hypothesis"] == "Test lower turnover equal weighting."
+    assert persisted["iteration_hypothesis"] == "Test lower turnover equal weighting."
+
+
+def test_batch_level_overrides_apply_to_candidates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(run_candidate_batch, "daily_prices", _daily_prices)
+    monkeypatch.setattr(run_candidate_batch, "asset_universe_features", _features)
+
+    output = run_candidate_batch.run(
+        {
+            "run_id": "run-1",
+            "round": 1,
+            "universe_override": {"id": "top_n_by_mcap", "params": {"n": 3}},
+            "filters": [
+                {"id": "exclude_stablecoins"},
+                {"id": "market_cap_floor", "params": {"usd": 1_000_000_000}},
+            ],
+            "window_override": {"start_date": "2024-01-01", "end_date": "2024-01-20"},
+            "candidates": [
+                {
+                    key: value
+                    for key, value in _candidate(f"c{i}").items()
+                    if key != "window_override"
+                }
+                for i in range(3)
+            ],
+        }
+    )
+
+    for result in output["results"]:
+        assert result["window"] == {"start": "2024-01-01", "end": "2024-01-20"}
+        history = result["allocation_metrics"]["holdings_history"]
+        assert set(history[0]["weights"]) == {"bitcoin"}
+
+
+def test_top_level_basket_becomes_hand_picked_universe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+    monkeypatch.setattr(run_candidate_batch, "daily_prices", _daily_prices)
+    monkeypatch.setattr(run_candidate_batch, "asset_universe_features", _features)
+
+    output = run_candidate_batch.run(
+        {
+            "run_id": "run-1",
+            "round": 1,
+            "basket": [{"coin_id": "bitcoin", "weight": 1.0}],
+            "candidates": [_candidate(f"c{i}") for i in range(3)],
+        }
+    )
+
+    for result in output["results"]:
+        history = result["allocation_metrics"]["holdings_history"]
+        assert set(history[0]["weights"]) == {"bitcoin"}
+
+
 def test_warning_thresholds_flip_on_bad_case() -> None:
-    start = date(2024, 1, 1)
     equity = pd.Series(
         [1.0, 2.0, 2.02, 0.5],
         index=pd.Index(

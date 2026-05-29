@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -77,46 +77,97 @@ export function LiveActivity({
   useEffect(() => {
     if (!runId) return;
 
-    const controller = new AbortController();
-    let stopped = false;
+    // SSE-only: the backend sends a `snapshot` frame with everything
+    // appended so far, then `event` frames as new rows arrive. The old
+    // 1Hz polling against /events is gone.
+    setStatus("loading");
+    const source = new EventSource(
+      `/api/runs/${encodeURIComponent(runId)}/events/stream`,
+    );
 
-    const load = async () => {
-      const query = new URLSearchParams();
-      if (filters.stage) query.set("stage", filters.stage);
-      if (filters.round) query.set("round", filters.round);
+    const isTerminalEvent = (event: StageEvent): boolean => {
+      if (
+        event.event_type !== "stage.completed" &&
+        event.event_type !== "stage.failed"
+      ) {
+        return false;
+      }
+      const payload = event.payload;
+      return (
+        typeof payload === "object" &&
+        payload !== null &&
+        (payload as { stage?: unknown }).stage === "workflow"
+      );
+    };
 
-      if (!stopped) setStatus("loading");
+    const onSnapshot = (frame: MessageEvent) => {
       try {
-        const response = await fetch(
-          `/api/runs/${encodeURIComponent(runId)}/events${query.toString() ? `?${query.toString()}` : ""}`,
-          { signal: controller.signal },
-        );
-        if (!response.ok) throw new Error("Unable to load activity events");
-        const payload = (await response.json()) as unknown;
-        if (!Array.isArray(payload)) throw new Error("Invalid activity events");
-        if (!stopped) {
-          setEvents(payload.filter(isStageEvent));
-          setStatus("idle");
-        }
-      } catch (error: unknown) {
-        if (error instanceof DOMException && error.name === "AbortError")
-          return;
-        if (!stopped) setStatus("error");
+        const payload = JSON.parse(frame.data) as unknown;
+        if (!Array.isArray(payload)) throw new Error("Invalid snapshot");
+        const filtered = payload.filter(isStageEvent);
+        setEvents(filtered);
+        setStatus("idle");
+        if (filtered.some(isTerminalEvent)) source.close();
+      } catch {
+        setStatus("error");
       }
     };
 
-    void load();
-    const interval = setInterval(() => void load(), 1000);
+    const onEvent = (frame: MessageEvent) => {
+      try {
+        const payload = JSON.parse(frame.data) as unknown;
+        if (!isStageEvent(payload)) return;
+        setEvents((prev) =>
+          prev.some((e) => e.event_id === payload.event_id)
+            ? prev
+            : [...prev, payload],
+        );
+        if (isTerminalEvent(payload)) source.close();
+      } catch {
+        // Non-stage frames are ignored.
+      }
+    };
+
+    source.addEventListener("snapshot", onSnapshot);
+    source.addEventListener("event", onEvent);
+    source.addEventListener("error", () => {
+      // EventSource auto-reconnects unless we close it explicitly.
+      // We only mark status=error when the connection is in CLOSED state.
+      if (source.readyState === EventSource.CLOSED) setStatus("error");
+    });
 
     return () => {
-      stopped = true;
-      clearInterval(interval);
-      controller.abort();
+      source.removeEventListener("snapshot", onSnapshot);
+      source.removeEventListener("event", onEvent);
+      source.close();
     };
-  }, [filters.round, filters.stage, runId]);
+  }, [runId]);
 
-  const groups = useMemo(() => groupEvents(events), [events]);
-  const rawParts = useMemo(() => rawTimelineParts(events), [events]);
+  // The SSE feed delivers every event for the run; we apply the
+  // stage/round filter client-side now that the backend is push-only.
+  const filteredEvents = useMemo(() => {
+    if (!filters.stage && !filters.round) return events;
+    return events.filter((event) => {
+      const payload =
+        typeof event.payload === "object" && event.payload !== null
+          ? (event.payload as { stage?: unknown; round?: unknown })
+          : undefined;
+      if (filters.stage && payload?.stage !== filters.stage) return false;
+      if (filters.round && String(payload?.round ?? "") !== filters.round) {
+        return false;
+      }
+      return true;
+    });
+  }, [events, filters.stage, filters.round]);
+
+  const groups = useMemo(
+    () => groupEvents(filteredEvents),
+    [filteredEvents],
+  );
+  const rawParts = useMemo(
+    () => rawTimelineParts(filteredEvents),
+    [filteredEvents],
+  );
 
   const visibleParts = [...parts, ...rawParts].filter((part) =>
     isVisible(part, includeText),
@@ -323,8 +374,81 @@ function StageEventView({
         </time>
       </div>
       {error ? <p className="mt-1 text-xs text-destructive">{error}</p> : null}
+      <StagePayloadDetails payload={event.payload} skip={error ? ["error"] : []} />
     </li>
   );
+}
+
+// Renders the non-metadata fields of a stage event's payload as a
+// compact key/value grid, so the user can see what each workflow step
+// actually produced (universe size, window length, candidate counts,
+// decide action, etc.) without opening devtools.
+const PAYLOAD_SKIP_KEYS = new Set([
+  "stage",
+  "round",
+  "stage_run_id",
+  "transition_n",
+  "tool_name",
+]);
+
+function StagePayloadDetails({
+  payload,
+  skip = [],
+}: {
+  payload: StageEvent["payload"];
+  skip?: string[];
+}) {
+  const skipSet = useMemo(
+    () => new Set([...PAYLOAD_SKIP_KEYS, ...skip]),
+    [skip],
+  );
+  const entries = useMemo(() => {
+    if (typeof payload !== "object" || payload === null) return [];
+    return Object.entries(payload).filter(
+      ([key, value]) => !skipSet.has(key) && value !== undefined,
+    );
+  }, [payload, skipSet]);
+
+  if (entries.length === 0) return null;
+
+  return (
+    <dl className="mt-1.5 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-0.5 text-[11px]">
+      {entries.map(([key, value]) => (
+        <Fragment key={key}>
+          <dt className="self-start whitespace-nowrap font-mono text-muted-foreground">
+            {key}
+          </dt>
+          <dd className="whitespace-pre-wrap break-words font-mono leading-relaxed text-foreground/80">
+            {formatPayloadValue(value)}
+          </dd>
+        </Fragment>
+      ))}
+    </dl>
+  );
+}
+
+function formatPayloadValue(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) =>
+        typeof item === "string" ||
+        typeof item === "number" ||
+        typeof item === "boolean"
+          ? String(item)
+          : JSON.stringify(item),
+      )
+      .join(", ");
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function isVisible(part: TimelinePart, includeText: boolean): boolean {

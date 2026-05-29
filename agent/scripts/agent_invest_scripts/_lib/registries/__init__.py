@@ -98,6 +98,8 @@ _FILTERS = [
         {"description": "Require market cap above a USD floor."},
         _schema({"usd": {"type": "number", "minimum": 0}}, ["usd"]),
     ),
+    _stub("exclude_stablecoins", {"description": "Exclude stablecoin assets."}),
+    _stub("exclude_wrapped", {"description": "Exclude wrapped-token assets."}),
     _stub(
         "volume_floor",
         {"description": "Require average daily USD volume above a floor."},

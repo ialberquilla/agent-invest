@@ -611,7 +611,7 @@ def _apply_registered_filters(
         filter_id = item.get("id")
         if filter_id not in valid_filter_ids:
             raise ValueError(f"Unknown filter '{filter_id}' in filters registry")
-        value = item.get("value")
+        value = item.get("value", item.get("params"))
         filtered = _apply_registered_filter(
             filtered, prices, str(filter_id), value, as_of=as_of
         )
@@ -645,6 +645,10 @@ def _apply_registered_filter(
             )
         market_cap = pd.to_numeric(filtered["market_cap"], errors="coerce")
         return filtered[market_cap.notna() & (market_cap >= usd)]
+    if filter_id == "exclude_stablecoins":
+        return filtered[~filtered.apply(_is_stablecoin, axis=1)]
+    if filter_id == "exclude_wrapped":
+        return filtered[~filtered.apply(_is_wrapped_asset, axis=1)]
     if filter_id == "max_drawdown_full_le":
         threshold = value.get("threshold") if isinstance(value, dict) else value
         if not isinstance(threshold, int | float):

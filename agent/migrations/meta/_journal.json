@@ -64,6 +64,13 @@
       "when": 1777998600000,
       "tag": "0008_stage_eval_runs",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1777999200000,
+      "tag": "0009_agent_tool_calls",
+      "breakpoints": true
     }
   ]
 }

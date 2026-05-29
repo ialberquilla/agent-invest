@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -16,12 +17,33 @@ from agent_invest_scripts._lib.cli import (
 )
 from agent_invest_scripts._lib.storage import normalize_identifier, storage_root
 
+THESIS_EXAMPLE: dict[str, Any] = {
+    "objective": "balanced_growth",
+    "horizon_days": 365,
+    "constraints": {
+        "max_drawdown": 0.35,
+        "asset_count_min": 5,
+        "asset_count_max": 10,
+        "max_weight_per_asset": 0.20,
+        "max_cash_weight": 0.10,
+    },
+    "primary_factors": ["sharpe_365d", "max_drawdown"],
+}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Validate candidates against thesis constraints."
     )
-    parser.add_argument("--batch-id", required=True, help="candidate_batch_* id")
+    # Either pass --input with the full candidate-batch JSON inline
+    # (preferred: no filesystem coupling), or --batch-id to read a
+    # previously-persisted batch by id (legacy path; will be removed
+    # once the old strategist pipeline is retired).
+    source = parser.add_mutually_exclusive_group(required=True)
+    source.add_argument(
+        "--input", dest="input_json", help="Inline candidate batch JSON"
+    )
+    source.add_argument("--batch-id", help="candidate_batch_* id (legacy)")
     parser.add_argument("--thesis", required=True, help="Structured thesis JSON")
     add_timeout_argument(parser)
     return parser
@@ -31,7 +53,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         with script_timeout(resolve_timeout_seconds(args.timeout_seconds)):
-            payload = validate(args.batch_id, _json_object(args.thesis, "--thesis"))
+            thesis = _json_object(args.thesis, "--thesis")
+            if args.input_json is not None:
+                raw = (
+                    sys.stdin.read() if args.input_json == "-" else args.input_json
+                )
+                batch = _json_object(raw, "--input")
+                payload = validate_batch(batch, thesis)
+            else:
+                payload = validate(args.batch_id, thesis)
     except Exception as error:
         fail_json(str(error), error_type=type(error).__name__)
     print_json(payload)
@@ -39,17 +69,23 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def validate(batch_id: str, thesis: Mapping[str, Any]) -> dict[str, Any]:
-    batch = _read_batch(batch_id)
+    return validate_batch(_read_batch(batch_id), thesis)
+
+
+def validate_batch(
+    batch: Mapping[str, Any], thesis: Mapping[str, Any]
+) -> dict[str, Any]:
     constraints = (
         thesis.get("constraints") if isinstance(thesis.get("constraints"), dict) else {}
     )
     results = [
-        _validate_result(result, constraints) for result in batch.get("results", [])
+        _validate_result(result, constraints, thesis)
+        for result in batch.get("results", [])
     ]
     return {
-        "batch_id": batch["batch_id"],
-        "run_id": batch["run_id"],
-        "round": batch["round"],
+        "batch_id": batch.get("batch_id"),
+        "run_id": batch.get("run_id"),
+        "round": batch.get("round"),
         "results": results,
         "passing_candidate_ids": [
             row["candidate_id"] for row in results if row["passed"]
@@ -58,10 +94,15 @@ def validate(batch_id: str, thesis: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _validate_result(
-    result: Mapping[str, Any], constraints: Mapping[str, Any]
+    result: Mapping[str, Any], constraints: Mapping[str, Any], thesis: Mapping[str, Any]
 ) -> dict[str, Any]:
     metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
     config = result.get("config") if isinstance(result.get("config"), dict) else {}
+    allocation = (
+        result.get("allocation_metrics")
+        if isinstance(result.get("allocation_metrics"), dict)
+        else {}
+    )
     violations: list[dict[str, Any]] = []
 
     if "max_drawdown" in constraints:
@@ -85,6 +126,20 @@ def _validate_result(
             config.get("select_top"),
             constraints["asset_count_max"],
         )
+    if "max_weight_per_asset" in constraints:
+        _check_maximum_ceiling(
+            violations,
+            "max_weight_per_asset",
+            allocation.get("max_single_weight"),
+            constraints["max_weight_per_asset"],
+        )
+    # horizon_days is the forward-looking holding period, NOT a backtest
+    # length floor. The window recommender already targets enough history
+    # automatically (max(2 * horizon_days, 1460) days), and select_window
+    # surfaces below_horizon to decide when the realised window falls
+    # short of the requested horizon. Validating it again here as a
+    # per-candidate floor would conflate "hold for 1 year" with "must
+    # have >= 1 year of history".
 
     return {
         "candidate_id": result.get("candidate_id"),

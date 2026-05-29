@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { and, asc, eq, like, sql } from "drizzle-orm";
 
 import { db as defaultDb } from "../client";
@@ -15,6 +16,13 @@ export type ListStageEventsFilters = {
   round?: number;
 };
 
+// In-process pub/sub so SSE consumers (the frontend's LiveActivity)
+// see events the instant they're written without polling the DB.
+// Single-process only -- swap for pg LISTEN/NOTIFY if we ever scale
+// the API server horizontally.
+const eventEmitter = new EventEmitter();
+eventEmitter.setMaxListeners(0); // unbounded; one listener per active SSE client
+
 export async function appendEvent(
   input: AppendEventInput,
   db: Db = defaultDb,
@@ -25,7 +33,22 @@ export async function appendEvent(
     .returning();
 
   if (!event) throw new Error("Failed to append agent event");
+  eventEmitter.emit("event", event);
   return event;
+}
+
+// Subscribe to newly-appended events for a single run_id. Returns
+// an unsubscribe function. Caller is responsible for invoking it
+// when the SSE client disconnects.
+export function subscribeAgentEvents(
+  runId: string,
+  onEvent: (event: AgentEvent) => void,
+): () => void {
+  const handler = (event: AgentEvent) => {
+    if (event.runId === runId) onEvent(event);
+  };
+  eventEmitter.on("event", handler);
+  return () => eventEmitter.off("event", handler);
 }
 
 export async function listStageEventsByRunId(

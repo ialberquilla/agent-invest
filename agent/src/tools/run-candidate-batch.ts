@@ -29,6 +29,7 @@ export type Candidate = {
 export type RunCandidateBatchInput = {
   run_id: string;
   round: 1 | 2 | 3;
+  iteration_hypothesis?: string;
   candidates: Candidate[];
   timeoutSeconds?: number;
 };
@@ -37,6 +38,7 @@ export type RunCandidateBatchOutput = {
   batch_id: string;
   run_id: string;
   round: 1 | 2 | 3;
+  iteration_hypothesis?: string;
   results: Array<Record<string, unknown>>;
 };
 
@@ -68,6 +70,12 @@ export function parseRunCandidateBatchOutput(
   if (parsed.round !== 1 && parsed.round !== 2 && parsed.round !== 3) {
     throw new Error("round must be 1, 2, or 3");
   }
+  if (
+    parsed.iteration_hypothesis !== undefined &&
+    typeof parsed.iteration_hypothesis !== "string"
+  ) {
+    throw new Error("iteration_hypothesis must be a string");
+  }
   if (!Array.isArray(parsed.results))
     throw new Error("results must be an array");
   for (const [index, result] of parsed.results.entries()) {
@@ -96,6 +104,12 @@ function validateInput(input: RunCandidateBatchInput) {
   if (!input.run_id) throw new Error("run_id is required");
   if (input.round !== 1 && input.round !== 2 && input.round !== 3) {
     throw new Error("round must be 1, 2, or 3");
+  }
+  if (
+    input.iteration_hypothesis !== undefined &&
+    typeof input.iteration_hypothesis !== "string"
+  ) {
+    throw new Error("iteration_hypothesis must be a string");
   }
   if (!Array.isArray(input.candidates))
     throw new Error("candidates must be an array");

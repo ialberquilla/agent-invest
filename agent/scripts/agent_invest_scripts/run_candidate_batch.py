@@ -6,17 +6,15 @@ import argparse
 import json
 import math
 import os
-import tempfile
 from concurrent.futures import ProcessPoolExecutor
 from datetime import date
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 import pandas as pd
 import polars as pl
 
-from agent_invest_scripts._lib import daily_prices, print_json, storage_root
+from agent_invest_scripts._lib import daily_prices, print_json
 from agent_invest_scripts._lib.backtest.benchmarks import benchmark_for
 from agent_invest_scripts._lib.backtest.composite_scorers import SCORERS
 from agent_invest_scripts._lib.backtest.engine import run_backtest
@@ -30,6 +28,7 @@ from agent_invest_scripts._lib.backtest.result import (
     to_dict,
 )
 from agent_invest_scripts._lib.backtest.templates import TEMPLATES
+from agent_invest_scripts._lib.backtest.window import recommend_backtest_window
 from agent_invest_scripts._lib.cli import (
     add_timeout_argument,
     fail_json,
@@ -38,11 +37,46 @@ from agent_invest_scripts._lib.cli import (
 )
 from agent_invest_scripts._lib.data import asset_universe_features
 from agent_invest_scripts._lib.storage import normalize_identifier
-from agent_invest_scripts._lib.backtest.window import recommend_backtest_window
 from agent_invest_scripts.rank_universe import rank_universe_extended
 
 _DEFAULT_MAX_CANDIDATES = 8
 _MIN_CANDIDATES = 3
+
+INPUT_EXAMPLE: dict[str, Any] = {
+    "run_id": "<run_id-from-the-task>",
+    "round": 1,
+    "iteration_hypothesis": "Diversified large-cap basket with 10% cash sleeve.",
+    "universe_override": {
+        "id": "top_n_by_mcap",
+        "params": {"n": 25},
+    },
+    "filters": [
+        {"id": "exclude_stablecoins"},
+        {"id": "exclude_wrapped"},
+        {"id": "market_cap_floor", "value": {"usd": 1_000_000_000}},
+    ],
+    "window_override": {"horizon_days": 365},
+    "candidates": [
+        {
+            "candidate_id": "c1",
+            "template_id": "periodic_rebalance",
+            "select_top": 5,
+            "config": {"weighting": "equal", "rebalance_trigger": "periodic_30d"},
+        },
+        {
+            "candidate_id": "c2",
+            "template_id": "periodic_rebalance",
+            "select_top": 7,
+            "config": {"weighting": "equal", "rebalance_trigger": "periodic_30d"},
+        },
+        {
+            "candidate_id": "c3",
+            "template_id": "buy_and_hold",
+            "select_top": 8,
+            "config": {"weighting": "market_cap"},
+        },
+    ],
+}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -68,12 +102,18 @@ def run(input_payload: dict[str, Any]) -> dict[str, Any]:
     batch_id = f"candidate_batch_{uuid4().hex}"
     prices = daily_prices()
     features = asset_universe_features()
+    batch_universe_override = input_payload.get("universe_override")
+    if batch_universe_override is None and "basket" in input_payload:
+        batch_universe_override = _basket_universe_override(input_payload["basket"])
     jobs = [
         {
             "candidate": candidate,
             "round": input_payload["round"],
             "prices": prices,
             "features": features,
+            "batch_universe_override": batch_universe_override,
+            "batch_filters": input_payload.get("filters"),
+            "batch_window_override": input_payload.get("window_override"),
         }
         for candidate in input_payload["candidates"]
     ]
@@ -88,7 +128,12 @@ def run(input_payload: dict[str, Any]) -> dict[str, Any]:
         "round": input_payload["round"],
         "results": results,
     }
-    _persist_batch_atomic(output)
+    if "iteration_hypothesis" in input_payload:
+        output["iteration_hypothesis"] = input_payload["iteration_hypothesis"]
+    # Batches are no longer written to disk. Callers that need to
+    # validate a batch should pipe this stdout payload to
+    # `validate_against_thesis --input <json>` rather than relying on a
+    # batch-id filesystem handle.
     return output
 
 
@@ -98,6 +143,12 @@ def _validate_batch_input(input_payload: dict[str, Any]) -> None:
     normalize_identifier(str(input_payload.get("run_id", "")), "run_id")
     if input_payload.get("round") not in {1, 2, 3}:
         raise ValueError("round must be 1, 2, or 3")
+    if "iteration_hypothesis" in input_payload and not isinstance(
+        input_payload["iteration_hypothesis"], str
+    ):
+        raise ValueError("iteration_hypothesis must be a string")
+    if "basket" in input_payload:
+        _basket_universe_override(input_payload["basket"])
     candidates = input_payload.get("candidates")
     if not isinstance(candidates, list):
         raise ValueError("candidates must be an array")
@@ -145,15 +196,25 @@ def _run_candidate_job(job: dict[str, Any]) -> dict[str, Any]:
 
     prices = job["prices"].copy()
     features = job["features"].copy()
-    window = _resolve_window(candidate, template, prices)
+    window = _resolve_window(
+        candidate.get("window_override", job.get("batch_window_override")),
+        template,
+        prices,
+    )
+    universe_override = candidate.get(
+        "universe_override", job.get("batch_universe_override")
+    )
+    if universe_override is None and "basket" in candidate:
+        universe_override = _basket_universe_override(candidate["basket"])
+    filters = candidate.get("filters", job.get("batch_filters", []))
     ranked = rank_universe_extended(
         features,
         prices,
         {
             "universe_selector": _universe_selector(
-                candidate.get("universe_override") or template.METADATA.default_universe
+                universe_override or template.METADATA.default_universe
             ),
-            "filters": candidate.get("filters", []),
+            "filters": filters,
             "ranking": candidate.get("ranking") or _default_ranking(template),
             "limit": selection_limit,
         },
@@ -197,11 +258,30 @@ def _run_candidate_job(job: dict[str, Any]) -> dict[str, Any]:
 
 
 def _resolve_window(
-    candidate: dict[str, Any], template: Any, prices: pd.DataFrame
+    override: Any, template: Any, prices: pd.DataFrame
 ) -> tuple[date, date]:
-    override = candidate.get("window_override")
     if isinstance(override, dict):
-        return (_parse_date(override["start"]), _parse_date(override["end"]))
+        start = (
+            override.get("start") or override.get("start_date") or override.get("from")
+        )
+        end = override.get("end") or override.get("end_date") or override.get("to")
+        if isinstance(start, str) and isinstance(end, str):
+            return (_parse_date(start), _parse_date(end))
+        horizon_days = override.get("horizon_days") or override.get("days")
+        if isinstance(horizon_days, int) and horizon_days > 0:
+            coin_ids = sorted(
+                set(str(value) for value in prices["coin_id"].dropna().unique())
+            )
+            payload = recommend_backtest_window(
+                pl.from_pandas(prices),
+                coin_ids=coin_ids,
+                horizon_days=max(template.METADATA.min_history_days, horizon_days),
+            )
+            return (_parse_date(payload["start"]), _parse_date(payload["end"]))
+        raise ValueError(
+            "window_override must include start/end, start_date/end_date, from/to, "
+            "or horizon_days"
+        )
     coin_ids = sorted(set(str(value) for value in prices["coin_id"].dropna().unique()))
     payload = recommend_backtest_window(
         pl.from_pandas(prices),
@@ -227,6 +307,13 @@ def _default_ranking(template: Any) -> list[dict[str, Any]]:
 
 
 def _universe_selector(selector: dict[str, Any]) -> dict[str, Any]:
+    if selector.get("id") == "fixed":
+        params = (
+            selector.get("params") if isinstance(selector.get("params"), dict) else {}
+        )
+        coin_ids = params.get("coin_ids") or selector.get("coin_ids")
+        if isinstance(coin_ids, list):
+            return {"id": "hand_picked", "params": {"coin_ids": coin_ids}}
     if "id" in selector:
         return selector
     if "selector" in selector:
@@ -237,6 +324,21 @@ def _universe_selector(selector: dict[str, Any]) -> dict[str, Any]:
             },
         }
     return selector
+
+
+def _basket_universe_override(basket: Any) -> dict[str, Any]:
+    if not isinstance(basket, list):
+        raise ValueError("basket must be an array of objects with coin_id")
+    coin_ids: list[str] = []
+    for item in basket:
+        if not isinstance(item, dict) or not isinstance(item.get("coin_id"), str):
+            raise ValueError("basket must include a coin_id column")
+        coin_id = item["coin_id"].strip()
+        if coin_id and coin_id not in coin_ids:
+            coin_ids.append(coin_id)
+    if not coin_ids:
+        raise ValueError("basket must include at least one coin_id")
+    return {"id": "hand_picked", "params": {"coin_ids": coin_ids}}
 
 
 def _price_map(prices: pd.DataFrame) -> dict[str, pd.DataFrame]:
@@ -508,23 +610,6 @@ def _drawdown_episodes(equity: pd.Series) -> list[DrawdownEpisode]:
             (recovery - trough).days if recovery else None,
         )
     ]
-
-
-def _persist_batch_atomic(output: dict[str, Any]) -> None:
-    directory = storage_root() / "candidate_batches"
-    directory.mkdir(parents=True, exist_ok=True)
-    target = directory / f"{output['batch_id']}.json"
-    fd, tmp_name = tempfile.mkstemp(
-        prefix=f".{output['batch_id']}.", suffix=".tmp", dir=directory
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(output, handle, indent=2)
-            handle.write("\n")
-        Path(tmp_name).replace(target)
-    except Exception:
-        Path(tmp_name).unlink(missing_ok=True)
-        raise
 
 
 def _parse_date(value: str) -> date:

@@ -278,6 +278,54 @@ export const agentEvents = pgTable(
   ],
 );
 
+export const agentToolCalls = pgTable(
+  "agent_tool_calls",
+  {
+    toolCallId: text("tool_call_id").primaryKey(),
+    runId: text("run_id").references(() => runs.runId, { onDelete: "cascade" }),
+    threadId: text("thread_id").references(
+      () => conversationThreads.threadId,
+      { onDelete: "cascade" },
+    ),
+    stageRunId: text("stage_run_id").references(() => stageRuns.stageRunId, {
+      onDelete: "set null",
+    }),
+    toolName: text("tool_name").notNull(),
+    args: jsonb("args").notNull().default({}),
+    result: jsonb("result"),
+    isError: boolean("is_error").notNull().default(false),
+    errorMessage: text("error_message"),
+    startedAt: timestamp("started_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
+    durationMs: integer("duration_ms"),
+    startedEventId: text("started_event_id").references(
+      () => agentEvents.eventId,
+      { onDelete: "set null" },
+    ),
+    finishedEventId: text("finished_event_id").references(
+      () => agentEvents.eventId,
+      { onDelete: "set null" },
+    ),
+  },
+  (table) => [
+    index("agent_tool_calls_run_id_started_at_idx").on(
+      table.runId,
+      table.startedAt,
+    ),
+    index("agent_tool_calls_thread_id_started_at_idx").on(
+      table.threadId,
+      table.startedAt,
+    ),
+    index("agent_tool_calls_tool_name_idx").on(table.toolName),
+    check(
+      "agent_tool_calls_parent_check",
+      sql`${table.runId} IS NOT NULL OR ${table.threadId} IS NOT NULL`,
+    ),
+  ],
+);
+
 export const backtestRequests = pgTable(
   "backtest_requests",
   {
@@ -517,6 +565,9 @@ export type NewInvestmentThesis = typeof investmentTheses.$inferInsert;
 
 export type AgentEvent = typeof agentEvents.$inferSelect;
 export type NewAgentEvent = typeof agentEvents.$inferInsert;
+
+export type AgentToolCall = typeof agentToolCalls.$inferSelect;
+export type NewAgentToolCall = typeof agentToolCalls.$inferInsert;
 
 export type BacktestRequest = typeof backtestRequests.$inferSelect;
 export type NewBacktestRequest = typeof backtestRequests.$inferInsert;

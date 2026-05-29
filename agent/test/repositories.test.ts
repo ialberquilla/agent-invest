@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendEvent } from "../src/db/repositories/agent-events";
+import {
+  appendEvent,
+  subscribeAgentEvents,
+} from "../src/db/repositories/agent-events";
 import { createArtifact } from "../src/db/repositories/artifacts";
 import { createRequest, storeResult } from "../src/db/repositories/backtests";
 import {
@@ -294,6 +297,36 @@ test("appendEvent inserts an agent event", async () => {
     payload: { tool: "read" },
     threadId: "thread-1",
   });
+});
+
+test("subscribeAgentEvents notifies SSE listeners for the matching run only", async () => {
+  const { db } = createDbDouble();
+  const received: string[] = [];
+  const unsubscribe = subscribeAgentEvents("run-A", (event) => {
+    received.push(event.eventId);
+  });
+
+  await appendEvent(
+    { eventId: "ev-a", eventType: "stage.started", runId: "run-A" },
+    db,
+  );
+  await appendEvent(
+    { eventId: "ev-b", eventType: "stage.started", runId: "run-B" },
+    db,
+  );
+  await appendEvent(
+    { eventId: "ev-c", eventType: "stage.completed", runId: "run-A" },
+    db,
+  );
+
+  assert.deepEqual(received, ["ev-a", "ev-c"]);
+
+  unsubscribe();
+  await appendEvent(
+    { eventId: "ev-d", eventType: "stage.started", runId: "run-A" },
+    db,
+  );
+  assert.deepEqual(received, ["ev-a", "ev-c"]);
 });
 
 test("createRequest and storeResult persist backtest rows", async () => {
