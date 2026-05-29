@@ -21,7 +21,7 @@ export type InterpretBriefResult = {
   next: StepName;
 };
 
-export const NEXT_STEP: StepName = "select_universe";
+export const NEXT_STEP: StepName = "select_templates";
 
 const PARSE_RETRY_NOTE =
   "Your previous response could not be parsed as JSON. Reply with only valid JSON matching the Thesis schema. No Markdown fences. No prose.";

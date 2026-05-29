@@ -42,6 +42,7 @@ export const PROPOSE_CANDIDATES_PROMPT = `You are the candidate-proposal step fo
 
 Inputs you receive in the user message:
 - thesis: the constraints, objective, horizon, and weighting mode the brief was translated into.
+- selected_families: a ranked strategy-family shortlist (best fit first) chosen by the select_templates step. Treat it as guidance for which configurations to favor. Only the allocation templates below are currently executable, so map each selected family onto the closest executable template (e.g. periodic_rebalanced_allocation -> periodic_rebalance with a periodic trigger; threshold_rebalanced_allocation -> periodic_rebalance with threshold_drift_10pct; synthetic_long_allocation / core_satellite / barbell -> buy_and_hold or periodic_rebalance). May be absent.
 - universe: { coin_ids, source } -- the eligible coin set already chosen by the previous step. You may select any subset of these via select_top, but you cannot add coins outside this set.
 - window: { start, end, horizon_days } -- the backtest window already chosen by the previous step.
 - prior_attempts: an array of prior attempts (may be empty). When present, each entry contains the previous proposal, the validation_summary (which constraints failed and by how much), and a refinement_hint with structured suggested_changes. Treat the hint as a directive: use it to inform this round's candidates.
@@ -160,6 +161,10 @@ function buildUserMessage(input: ProposeCandidatesInput): string {
   const payload = {
     run_id: input.run_id,
     thesis: thesisDigest(input.thesis),
+    selected_families: input.template_selection?.selected.map((s) => ({
+      family: s.family,
+      rank: s.rank,
+    })),
     universe: {
       coin_ids: input.universe.coin_ids,
       source: input.universe.source,

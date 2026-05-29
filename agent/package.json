@@ -11,6 +11,7 @@
     "start": "node dist/server.js",
     "test": "NODE_ENV=test env -u AGENT_API_KEY tsx --test --test-concurrency=1 test/**/*.test.ts",
     "eval:interpret-brief": "tsx src/agent/workflow/steps/interpret_brief.eval.ts",
+    "eval:select-templates": "tsx src/agent/workflow/steps/select_templates.eval.ts",
     "eval:select-universe": "tsx src/agent/workflow/steps/select_universe.eval.ts",
     "eval:select-window": "tsx src/agent/workflow/steps/select_window.eval.ts",
     "eval:propose-candidates": "tsx src/agent/workflow/steps/propose_candidates.eval.ts",

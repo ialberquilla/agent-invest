@@ -60,7 +60,7 @@ function deps(llm: LLMClient): InterpretBriefDeps {
   return { llm, logger: createSilentStepLogger() };
 }
 
-test("interpretBrief returns valid Thesis and routes to select_universe", async () => {
+test("interpretBrief returns valid Thesis and routes to select_templates", async () => {
   const llm = fakeLLM([JSON.stringify(SAMPLE_THESIS)]);
 
   const result = await interpretBrief(
@@ -68,7 +68,7 @@ test("interpretBrief returns valid Thesis and routes to select_universe", async 
     deps(llm),
   );
 
-  assert.equal(result.next, "select_universe");
+  assert.equal(result.next, "select_templates");
   assert.deepEqual(result.delta.thesis, SAMPLE_THESIS);
   assert.equal(llm.calls.length, 1);
 });
