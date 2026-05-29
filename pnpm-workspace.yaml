@@ -1,5 +1,6 @@
 packages:
   - agent
+  - contracts
   - frontend
 
 minimumReleaseAge: 10080
