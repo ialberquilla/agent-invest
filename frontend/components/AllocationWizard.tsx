@@ -372,7 +372,15 @@ function formatUsd(value: string) {
   }).format(amount);
 }
 
-export function AllocationWizard() {
+type AllocationWizardProps = {
+  embedded?: boolean;
+  onSubmit?: (state: AllocationWizardState) => void | Promise<void>;
+};
+
+export function AllocationWizard({
+  embedded = false,
+  onSubmit,
+}: AllocationWizardProps = {}) {
   const router = useRouter();
   const [selectedStepIndex, setSelectedStepIndex] = useState(0);
   const [state, setState] = useState<AllocationWizardState>(defaultState);
@@ -508,6 +516,12 @@ export function AllocationWizard() {
     setIsPreparingAgent(true);
 
     try {
+      if (onSubmit) {
+        await onSubmit(state);
+        setIsPreparingAgent(false);
+        return;
+      }
+
       const strategy = await requestStrategy();
       const strategyId = strategy.strategy_id;
       const runId = await requestWizardRun(strategyId, state);
@@ -609,42 +623,60 @@ export function AllocationWizard() {
   ];
 
   return (
-    <main className="min-h-dvh bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--primary)_16%,transparent),transparent_34%),linear-gradient(180deg,var(--background),color-mix(in_oklab,var(--accent)_38%,var(--background)))] px-3 py-4 sm:px-4 lg:px-6">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-4">
-        <section className="grid gap-3 overflow-hidden rounded-2xl border bg-background p-3 shadow-sm sm:gap-5 sm:p-4 lg:grid-cols-[1fr_auto] lg:items-end">
-          <div className="min-w-0">
-            <div className="max-w-3xl space-y-2">
-              <Badge variant="secondary" className="w-fit">
-                Pond3r agent
-              </Badge>
-              <h1 className="text-xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
-                DeFi allocation copilot for crypto portfolio research.
-              </h1>
-              <p className="text-sm leading-5 text-muted-foreground sm:text-base sm:leading-6">
-                Give Pond3r the core allocation inputs, review the mandate, and
-                launch an agent run grounded in portfolio constraints and
-                backtests.
-              </p>
+    <main
+      className={
+        embedded
+          ? "min-h-0 bg-background px-0 py-0"
+          : "min-h-dvh bg-[radial-gradient(circle_at_top_left,color-mix(in_oklab,var(--primary)_16%,transparent),transparent_34%),linear-gradient(180deg,var(--background),color-mix(in_oklab,var(--accent)_38%,var(--background)))] px-3 py-4 sm:px-4 lg:px-6"
+      }
+    >
+      <div
+        className={
+          embedded
+            ? "flex w-full flex-col gap-2"
+            : "mx-auto flex w-full max-w-7xl flex-col gap-4"
+        }
+      >
+        {embedded ? null : (
+          <section className="grid gap-3 overflow-hidden rounded-2xl border bg-background p-3 shadow-sm sm:gap-5 sm:p-4 lg:grid-cols-[1fr_auto] lg:items-end">
+            <div className="min-w-0">
+              <div className="max-w-3xl space-y-2">
+                <Badge variant="secondary" className="w-fit">
+                  Pond3r agent
+                </Badge>
+                <h1 className="text-xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
+                  DeFi allocation copilot for crypto portfolio research.
+                </h1>
+                <p className="text-sm leading-5 text-muted-foreground sm:text-base sm:leading-6">
+                  Give Pond3r the core allocation inputs, review the mandate,
+                  and launch an agent run grounded in portfolio constraints and
+                  backtests.
+                </p>
+              </div>
             </div>
-          </div>
-          <div className="grid gap-2 rounded-xl bg-accent p-2.5 text-sm sm:p-3 lg:min-w-60">
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-muted-foreground">Progress</span>
-              <span className="font-medium">
-                Step {selectedStepIndex + 1} of {steps.length}
-              </span>
+            <div className="grid gap-2 rounded-xl bg-accent p-2.5 text-sm sm:p-3 lg:min-w-60">
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-muted-foreground">Progress</span>
+                <span className="font-medium">
+                  Step {selectedStepIndex + 1} of {steps.length}
+                </span>
+              </div>
+              <div className="h-2 overflow-hidden rounded-full bg-background">
+                <div
+                  className="h-full rounded-full bg-primary"
+                  style={{ width: `${progress}%` }}
+                />
+              </div>
             </div>
-            <div className="h-2 overflow-hidden rounded-full bg-background">
-              <div
-                className="h-full rounded-full bg-primary"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-          </div>
-        </section>
+          </section>
+        )}
 
         <nav
-          className="-mx-3 overflow-hidden px-3 lg:hidden"
+          className={
+            embedded
+              ? "overflow-hidden rounded-xl border bg-background p-1.5"
+              : "-mx-3 overflow-hidden px-3 lg:hidden"
+          }
           aria-label="Wizard steps"
         >
           <div className="flex gap-1.5 overflow-x-auto pb-1 [-webkit-overflow-scrolling:touch] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -681,8 +713,20 @@ export function AllocationWizard() {
           </div>
         </nav>
 
-        <section className="grid min-w-0 gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]">
-          <Card className="hidden min-w-0 lg:sticky lg:top-4 lg:flex lg:max-h-[calc(100dvh-2rem)]">
+        <section
+          className={
+            embedded
+              ? "grid min-w-0 gap-2"
+              : "grid min-w-0 gap-4 lg:grid-cols-[18rem_minmax(0,1fr)] xl:grid-cols-[18rem_minmax(0,1fr)_20rem]"
+          }
+        >
+          <Card
+            className={
+              embedded
+                ? "hidden"
+                : "hidden min-w-0 lg:sticky lg:top-4 lg:flex lg:max-h-[calc(100dvh-2rem)]"
+            }
+          >
             <CardHeader>
               <CardTitle>Guided steps</CardTitle>
               <CardDescription>Jump back to edit any answer.</CardDescription>
@@ -1038,7 +1082,8 @@ export function AllocationWizard() {
             ) : null}
           </Card>
 
-          <details className="rounded-xl border bg-card p-4 text-card-foreground shadow-xs lg:hidden">
+          {embedded ? null : (
+            <details className="rounded-xl border bg-card p-4 text-card-foreground shadow-xs lg:hidden">
             <summary className="cursor-pointer list-none text-sm font-medium marker:hidden">
               Review draft brief
             </summary>
@@ -1065,8 +1110,15 @@ export function AllocationWizard() {
               </Button>
             </div>
           </details>
+          )}
 
-          <Card className="hidden min-w-0 lg:col-span-2 lg:sticky lg:top-4 lg:flex lg:h-fit xl:col-span-1">
+          <Card
+            className={
+              embedded
+                ? "hidden"
+                : "hidden min-w-0 lg:col-span-2 lg:sticky lg:top-4 lg:flex lg:h-fit xl:col-span-1"
+            }
+          >
             <CardHeader>
               <CardTitle>Review and Run</CardTitle>
               <CardDescription>

@@ -201,7 +201,7 @@ export function StrategyChatShell() {
 
   return (
     <main className="min-h-screen bg-muted/30 px-4 py-4 sm:px-6 sm:py-6">
-      <div className="mx-auto grid max-w-6xl gap-4 lg:grid-cols-[280px_minmax(0,1fr)]">
+      <div className="mx-auto grid max-w-[98rem] gap-4 lg:grid-cols-[240px_minmax(0,1fr)] 2xl:max-w-[112rem]">
         <StrategySidebar
           strategies={knownStrategies}
           activeStrategyId={strategyId}

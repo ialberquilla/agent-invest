@@ -2,10 +2,12 @@
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
+import { AllocationWizard } from "@/components/AllocationWizard";
 import { Composer } from "@/components/Composer";
 import { IdentityBar } from "@/components/IdentityBar";
 import { MessageList } from "@/components/MessageList";
 import { RunInspector } from "@/components/RunInspector";
+import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
   initialTimeline,
@@ -22,6 +24,7 @@ import {
   upsertKnownStrategy,
 } from "@/lib/local-store";
 import { readSse } from "@/lib/sse";
+import type { AllocationWizardState } from "@/lib/wizard-prompt";
 
 type ChatViewProps = {
   strategyId: string;
@@ -67,6 +70,14 @@ function getRunStartedId(data: string) {
   }
 }
 
+type RunSubmission =
+  | { text: string }
+  | { wizard_params: AllocationWizardState; displayText: string };
+
+function wizardSubmissionText() {
+  return "Allocation wizard submission";
+}
+
 export function ChatView({
   strategyId,
   disabled = false,
@@ -84,6 +95,7 @@ export function ChatView({
     useState<TimelineState>(initialTimeline);
   const [inspectedRunId, setInspectedRunId] = useState<string | null>(null);
   const [isInspectorOpen, setIsInspectorOpen] = useState(false);
+  const [isWizardOpen, setIsWizardOpen] = useState(false);
   const inspectorTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   const reportBusyChange = useEffectEvent((isBusy: boolean) => {
@@ -117,12 +129,15 @@ export function ChatView({
     notifyKnownStrategiesChange();
   }, [messages, strategyId]);
 
-  async function handleSend(text: string) {
+  async function submitRun(submission: RunSubmission) {
     if (disabled || isSending) {
       return;
     }
 
-    setMessages((current) => [...current, { role: "user", text }]);
+    const userText =
+      "text" in submission ? submission.text : submission.displayText;
+
+    setMessages((current) => [...current, { role: "user", text: userText }]);
     setIsSending(true);
     setLiveRunId(null);
     setLiveTimeline(initialTimeline);
@@ -134,7 +149,14 @@ export function ChatView({
           "content-type": "application/json",
         },
         cache: "no-store",
-        body: JSON.stringify({ strategy_id: strategyId, text }),
+        body: JSON.stringify(
+          "text" in submission
+            ? { strategy_id: strategyId, text: submission.text }
+            : {
+                strategy_id: strategyId,
+                wizard_params: submission.wizard_params,
+              },
+        ),
       });
 
       if (!response.ok) {
@@ -198,6 +220,7 @@ export function ChatView({
           status: run.status,
           error: run.error ?? undefined,
           artifacts: run.artifacts,
+          structured_result: run.structured_result,
         },
       ]);
     } catch {
@@ -215,6 +238,18 @@ export function ChatView({
       setLiveRunId(null);
       setLiveTimeline(initialTimeline);
     }
+  }
+
+  async function handleSend(text: string) {
+    await submitRun({ text });
+  }
+
+  async function handleWizardSubmit(wizardParams: AllocationWizardState) {
+    setIsWizardOpen(false);
+    await submitRun({
+      wizard_params: wizardParams,
+      displayText: wizardSubmissionText(),
+    });
   }
 
   function handleInspectRun(runId: string, trigger: HTMLButtonElement) {
@@ -248,7 +283,13 @@ export function ChatView({
           </div>
         ) : null}
 
-        <div className="min-h-0 flex-1 bg-muted/10">
+        <div
+          className={
+            isWizardOpen
+              ? "min-h-0 max-h-28 shrink-0 bg-muted/10"
+              : "min-h-0 flex-1 bg-muted/10"
+          }
+        >
           <MessageList
             messages={messages}
             isThinking={isSending}
@@ -258,7 +299,42 @@ export function ChatView({
           />
         </div>
 
-        <Composer disabled={isDisabled} onSubmit={handleSend} />
+        {isWizardOpen ? (
+          <section className="min-h-0 flex-1 overflow-y-auto border-t bg-background">
+            <div className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b bg-background/95 px-4 py-2 backdrop-blur sm:px-5">
+              <h2 className="font-heading text-sm font-semibold">
+                Allocation wizard
+              </h2>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setIsWizardOpen(false)}
+              >
+                <span aria-hidden>×</span>
+                <span className="sr-only">Close wizard</span>
+              </Button>
+            </div>
+            <div className="p-2 sm:p-3">
+              <AllocationWizard embedded onSubmit={handleWizardSubmit} />
+            </div>
+          </section>
+        ) : null}
+
+        <Composer
+          disabled={isDisabled}
+          action={
+            <Button
+              type="button"
+              variant="outline"
+              disabled={isDisabled}
+              onClick={() => setIsWizardOpen(true)}
+            >
+              Wizard
+            </Button>
+          }
+          onSubmit={handleSend}
+        />
       </Card>
 
       <RunInspector

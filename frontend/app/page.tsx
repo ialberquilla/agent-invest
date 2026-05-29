@@ -1,5 +1,5 @@
-import { AllocationWizard } from "@/components/AllocationWizard";
+import { StrategyChatShell } from "@/components/StrategyChatShell";
 
 export default function Home() {
-  return <AllocationWizard />;
+  return <StrategyChatShell />;
 }
