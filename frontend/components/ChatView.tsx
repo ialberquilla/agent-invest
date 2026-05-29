@@ -56,6 +56,17 @@ function getErrorMessage(payload: unknown) {
   return "Request failed";
 }
 
+function getRunStartedId(data: string) {
+  try {
+    const payload = JSON.parse(data) as unknown;
+    return isRecord(payload) && typeof payload.run_id === "string"
+      ? payload.run_id
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export function ChatView({
   strategyId,
   disabled = false,
@@ -68,6 +79,7 @@ export function ChatView({
     getMessages(strategyId),
   );
   const [isSending, setIsSending] = useState(false);
+  const [liveRunId, setLiveRunId] = useState<string | null>(null);
   const [liveTimeline, setLiveTimeline] =
     useState<TimelineState>(initialTimeline);
   const [inspectedRunId, setInspectedRunId] = useState<string | null>(null);
@@ -112,6 +124,7 @@ export function ChatView({
 
     setMessages((current) => [...current, { role: "user", text }]);
     setIsSending(true);
+    setLiveRunId(null);
     setLiveTimeline(initialTimeline);
 
     try {
@@ -153,6 +166,10 @@ export function ChatView({
 
       let timeline: TimelineState = initialTimeline;
       for await (const sseMessage of readSse(response.body)) {
+        if (sseMessage.event === "run.started") {
+          const runId = getRunStartedId(sseMessage.data);
+          if (runId) setLiveRunId(runId);
+        }
         timeline = reduceTimeline(timeline, sseMessage);
         setLiveTimeline(timeline);
         if (timeline.done) break;
@@ -195,6 +212,7 @@ export function ChatView({
       ]);
     } finally {
       setIsSending(false);
+      setLiveRunId(null);
       setLiveTimeline(initialTimeline);
     }
   }
@@ -234,6 +252,7 @@ export function ChatView({
           <MessageList
             messages={messages}
             isThinking={isSending}
+            liveRunId={liveRunId}
             liveParts={liveTimeline.parts}
             onInspectRun={handleInspectRun}
           />

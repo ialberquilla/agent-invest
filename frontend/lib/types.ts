@@ -80,8 +80,60 @@ export type Run = {
   exit_code: number | null;
   reply: string | null;
   error: string | null;
+  stages?: StageRunSummary[];
   artifacts?: ArtifactRef[];
   structured_result?: StrategyResult | null;
+};
+
+export type StageRunSummary = {
+  stage_run_id: string;
+  stage: string;
+  round: number;
+  status: string;
+  started_at: string;
+  ended_at: string | null;
+  model: string;
+  tokens: {
+    input: number | null;
+    output: number | null;
+  };
+};
+
+export type StageRunDelta = {
+  run_id: string;
+  stage_run_id: string;
+  stage: string;
+  round: number;
+  status: string;
+};
+
+export type StageEventType =
+  | "stage.started"
+  | "stage.tool_call"
+  | "stage.completed"
+  | "stage.failed"
+  | string;
+
+export type StageEvent = {
+  event_id: string;
+  event_type: StageEventType;
+  payload: {
+    stage?: unknown;
+    round?: unknown;
+    stage_run_id?: unknown;
+    tool_name?: unknown;
+    error?: unknown;
+    event?: unknown;
+  };
+  created_at: string;
+};
+
+export type StageRunDetail = StageRunSummary & {
+  run_id: string;
+  opencode_session_id: string | null;
+  input: unknown;
+  output: unknown;
+  error: string | null;
 };
 
 export type MessageRequest = {

@@ -56,6 +56,7 @@ def test_write_report_writes_png_and_json_and_returns_paths(tmp_path: Path) -> N
     equity_curve_json = out_dir / "equity_curve.json"
     drawdown_json = out_dir / "drawdown.json"
     allocation_json = out_dir / "allocation.json"
+    target_allocation_json = out_dir / "target_allocation.json"
     report_json = out_dir / "report.json"
 
     assert equity_curve_png.is_file()
@@ -63,6 +64,7 @@ def test_write_report_writes_png_and_json_and_returns_paths(tmp_path: Path) -> N
     assert equity_curve_json.is_file()
     assert drawdown_json.is_file()
     assert allocation_json.is_file()
+    assert target_allocation_json.is_file()
     assert report_json.is_file()
     assert report == {
         "kpis": result.summary,
@@ -71,6 +73,7 @@ def test_write_report_writes_png_and_json_and_returns_paths(tmp_path: Path) -> N
         "equity_curve_json": str(equity_curve_json),
         "drawdown_json": str(drawdown_json),
         "allocation_json": str(allocation_json),
+        "target_allocation_json": str(target_allocation_json),
         "report_json": str(report_json),
     }
 

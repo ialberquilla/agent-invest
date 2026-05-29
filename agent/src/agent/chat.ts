@@ -1,0 +1,338 @@
+import { randomUUID } from "node:crypto";
+
+import { eq, sql } from "drizzle-orm";
+
+import { db as defaultDb } from "../db/client";
+import { appendEvent as defaultAppendEvent } from "../db/repositories/agent-events";
+import {
+  recordToolCall as defaultRecordToolCall,
+  recordToolResult as defaultRecordToolResult,
+} from "../db/repositories/agent-tool-calls";
+import { conversationThreads, runs } from "../db/schema";
+import { effectiveToolName, extractToolPart } from "./opencode-events";
+import {
+  disabledOpencodeBuiltinsTools,
+  getOrCreateManagedOpencode,
+  parseOpencodeModel,
+  resolveOpencodeModel,
+  type ManagedOpencode,
+} from "./session";
+import { createOpencodeLLMClient } from "./workflow/llm";
+import { runWorkflowAndPersist } from "./workflow/persist";
+import type { WizardBrief } from "./workflow/state";
+
+export const CHAT_PROMPT = `You are the Agent Invest chat agent.
+
+Answer general investing and quantitative-finance questions clearly and directly. You can explain concepts, ask brief clarifying questions, and help the user shape an investment-strategy brief.
+
+You have exactly one tool available:
+- run_strategy_pipeline({ brief }): starts an asynchronous strategy pipeline from the user's brief and returns { run_id } immediately.
+
+Use run_strategy_pipeline only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy. Do not use it for ordinary educational or conversational questions. Never claim to know pipeline internals or final results; progress and results are delivered through the run's event streams.`;
+
+export const CHAT_ALLOWED_TOOLS = {
+  run_strategy_pipeline: true,
+} as const;
+
+export type ChatAgentInput = {
+  chatSessionId: string;
+  userId: string;
+  message: string;
+};
+
+export type ChatAgentResponse = {
+  content: string;
+  opencode_session_id: string;
+  run_id?: string;
+};
+
+export type RunStrategyPipelineInput = {
+  brief: string;
+};
+
+export type RunStrategyPipelineResult = {
+  run_id: string;
+};
+
+type Db = typeof defaultDb;
+
+export type ChatAgentDependencies = {
+  db?: Db;
+  getManagedOpencode?: () => Promise<ManagedOpencode>;
+  runWorkflow?: typeof runWorkflowAndPersist;
+  onBackgroundError?: (error: unknown, runId: string) => void;
+  env?: NodeJS.ProcessEnv;
+  appendEvent?: typeof defaultAppendEvent;
+  recordToolCall?: typeof defaultRecordToolCall;
+  recordToolResult?: typeof defaultRecordToolResult;
+};
+
+export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
+  const db = dependencies.db ?? defaultDb;
+  const executeWorkflow = dependencies.runWorkflow ?? runWorkflowAndPersist;
+  const getManagedOpencode =
+    dependencies.getManagedOpencode ?? (() => getOrCreateManagedOpencode());
+  const env = dependencies.env ?? process.env;
+  const appendEvent = dependencies.appendEvent ?? defaultAppendEvent;
+  const recordToolCall = dependencies.recordToolCall ?? defaultRecordToolCall;
+  const recordToolResult =
+    dependencies.recordToolResult ?? defaultRecordToolResult;
+
+  async function runStrategyPipeline(
+    input: RunStrategyPipelineInput,
+    chatSessionId?: string,
+  ): Promise<RunStrategyPipelineResult> {
+    const brief = input.brief.trim();
+    if (!brief) throw new Error("run_strategy_pipeline requires a brief");
+
+    const runId = randomUUID();
+    await db.insert(runs).values({
+      runId,
+      threadId: chatSessionId,
+      kind: "strategy_pipeline",
+      status: "running",
+      metadata: { brief },
+    });
+
+    void executeWorkflow(runId, brief as string | WizardBrief, {
+      db,
+      llm: createOpencodeLLMClient({ env, sessionTitle: `workflow ${runId}` }),
+    }).catch((error: unknown) => {
+      // The persist helper already records status=failed on exception
+      // before re-throwing, so this catch is just a notification hook.
+      dependencies.onBackgroundError?.(error, runId);
+    });
+
+    return { run_id: runId };
+  }
+
+  return {
+    allowedTools: CHAT_ALLOWED_TOOLS,
+    runStrategyPipeline,
+    async run(input: ChatAgentInput): Promise<ChatAgentResponse> {
+      const message = input.message.trim();
+      if (!message) throw new Error("chat message is required");
+
+      const managed = await getManagedOpencode();
+      const sessionId = await getOrCreateChatOpencodeSession(
+        db,
+        managed,
+        input.chatSessionId,
+        input.userId,
+      );
+
+      const abortEvents = new AbortController();
+      const events = collectChatSessionEvents({
+        managed,
+        appendEvent,
+        recordToolCall,
+        recordToolResult,
+        threadId: input.chatSessionId,
+        sessionId,
+        signal: abortEvents.signal,
+      });
+
+      let response: Awaited<ReturnType<typeof managed.client.session.prompt>>;
+      try {
+        response = await managed.client.session.prompt({
+          path: { id: sessionId },
+          body: {
+            model: parseOpencodeModel(resolveOpencodeModel(env)),
+            system: CHAT_PROMPT,
+            tools: { ...disabledOpencodeBuiltinsTools(), ...CHAT_ALLOWED_TOOLS },
+            parts: [{ type: "text", text: message }],
+          },
+          throwOnError: true,
+        });
+      } finally {
+        abortEvents.abort();
+        await events;
+      }
+
+      for (const part of response.data?.parts ?? []) {
+        if (!part || typeof part !== "object") continue;
+        await appendEvent({
+          threadId: input.chatSessionId,
+          eventType: "message.part.updated",
+          payload: { event: { type: "message.part.updated", properties: { part } } },
+        });
+      }
+
+      return {
+        content: extractText(response.data),
+        opencode_session_id: sessionId,
+      };
+    },
+  };
+}
+
+export const chatAgent = createChatAgent();
+
+async function getOrCreateChatOpencodeSession(
+  db: Db,
+  managed: ManagedOpencode,
+  chatSessionId: string,
+  userId: string,
+) {
+  const [thread] = await db
+    .select({ providerSessionId: conversationThreads.providerSessionId })
+    .from(conversationThreads)
+    .where(eq(conversationThreads.threadId, chatSessionId));
+
+  const existingSessionId = thread?.providerSessionId?.trim();
+  if (existingSessionId) return existingSessionId;
+
+  const session = await managed.client.session.create({
+    body: { title: `chat ${chatSessionId}` },
+    throwOnError: true,
+  });
+  const sessionId = session.data.id as string;
+
+  await db
+    .insert(conversationThreads)
+    .values({
+      threadId: chatSessionId,
+      userId,
+      provider: "opencode",
+      providerSessionId: sessionId,
+      title: "Agent Invest chat",
+    })
+    .onConflictDoUpdate({
+      target: conversationThreads.threadId,
+      set: { providerSessionId: sessionId, updatedAt: sql`NOW()` },
+    });
+
+  return sessionId;
+}
+
+type CollectChatSessionEventsInput = {
+  managed: ManagedOpencode;
+  appendEvent: typeof defaultAppendEvent;
+  recordToolCall: typeof defaultRecordToolCall;
+  recordToolResult: typeof defaultRecordToolResult;
+  threadId: string;
+  sessionId: string;
+  signal: AbortSignal;
+};
+
+async function collectChatSessionEvents({
+  managed,
+  appendEvent,
+  recordToolCall,
+  recordToolResult,
+  threadId,
+  sessionId,
+  signal,
+}: CollectChatSessionEventsInput) {
+  const seenCallIds = new Set<string>();
+  const finishedCallIds = new Set<string>();
+
+  try {
+    const response = await managed.client.event.subscribe({ signal });
+    for await (const event of response.stream as AsyncIterable<unknown>) {
+      const eventSessionId = extractSessionId(event);
+      if (eventSessionId && eventSessionId !== sessionId) continue;
+
+      const rawEvent = await appendEvent({
+        threadId,
+        eventType: extractEventType(event),
+        payload: { event },
+      });
+      const rawEventId = rawEvent?.eventId ?? null;
+
+      const toolPart = extractToolPart(event);
+      if (!toolPart) continue;
+
+      const status = toolPart.state?.status;
+      const hasArgs =
+        toolPart.state?.input !== undefined &&
+        toolPart.state.input !== null &&
+        Object.keys(toolPart.state.input as Record<string, unknown>).length > 0;
+
+      if (!seenCallIds.has(toolPart.callID)) {
+        seenCallIds.add(toolPart.callID);
+        await recordToolCall({
+          toolCallId: toolPart.callID,
+          toolName: effectiveToolName(toolPart.tool, toolPart.state?.input),
+          args: toolPart.state?.input ?? {},
+          threadId,
+          startedEventId: rawEventId,
+        });
+      } else if (hasArgs) {
+        await recordToolCall({
+          toolCallId: toolPart.callID,
+          toolName: effectiveToolName(toolPart.tool, toolPart.state?.input),
+          args: toolPart.state?.input ?? {},
+          threadId,
+        });
+      }
+
+      if (
+        (status === "completed" || status === "error") &&
+        !finishedCallIds.has(toolPart.callID)
+      ) {
+        finishedCallIds.add(toolPart.callID);
+        const isError = status === "error";
+        const errorMessage = isError
+          ? typeof toolPart.state?.error === "string"
+            ? toolPart.state.error
+            : null
+          : null;
+        const result = isError
+          ? toolPart.state?.error ?? null
+          : toolPart.state?.output ?? null;
+
+        await recordToolResult({
+          toolCallId: toolPart.callID,
+          toolName: effectiveToolName(toolPart.tool, toolPart.state?.input),
+          result,
+          isError,
+          errorMessage,
+          finishedEventId: rawEventId,
+        });
+      }
+    }
+  } catch (error) {
+    if (!signal.aborted) throw error;
+  }
+}
+
+function extractSessionId(event: unknown): string | null {
+  if (!event || typeof event !== "object") return null;
+  const queue: Array<Record<string, unknown>> = [
+    event as Record<string, unknown>,
+  ];
+  const seen = new Set<unknown>();
+  while (queue.length > 0) {
+    const value = queue.shift()!;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    for (const key of ["sessionID", "sessionId", "session_id"]) {
+      const candidate = value[key];
+      if (typeof candidate === "string") return candidate;
+    }
+    for (const child of Object.values(value)) {
+      if (child && typeof child === "object" && !Array.isArray(child)) {
+        queue.push(child as Record<string, unknown>);
+      }
+    }
+  }
+  return null;
+}
+
+function extractEventType(event: unknown): string {
+  if (!event || typeof event !== "object") return "opencode.event";
+  const type = (event as Record<string, unknown>).type;
+  return typeof type === "string" && type.trim() ? type : "opencode.event";
+}
+
+function extractText(result: { parts?: unknown[] }) {
+  return (result.parts ?? [])
+    .map((part) => {
+      if (!part || typeof part !== "object") return "";
+      const text = (part as { text?: unknown }).text;
+      return typeof text === "string" ? text : "";
+    })
+    .filter(Boolean)
+    .join("\n");
+}

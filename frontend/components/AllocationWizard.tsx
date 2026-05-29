@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { readSse } from "@/lib/sse";
 import type { StrategyCreateResponse } from "@/lib/types";
 import type { AllocationWizardState } from "@/lib/wizard-prompt";
 import { trackEvent } from "@/lib/analytics";
@@ -104,6 +105,17 @@ function getStrategyCreateError(payload: unknown) {
   return "Unable to prepare the allocation agent";
 }
 
+function getRunStartedId(data: string) {
+  try {
+    const payload = JSON.parse(data) as unknown;
+    return isRecord(payload) && typeof payload.run_id === "string"
+      ? payload.run_id
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 async function requestStrategy() {
   const response = await fetch("/api/strategies", {
     method: "POST",
@@ -120,6 +132,42 @@ async function requestStrategy() {
   }
 
   return payload as StrategyCreateResponse;
+}
+
+async function requestWizardRun(
+  strategyId: string,
+  wizardParams: AllocationWizardState,
+) {
+  const response = await fetch("/api/messages/stream", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({
+      strategy_id: strategyId,
+      wizard_params: wizardParams,
+    }),
+  });
+
+  if (!response.ok) {
+    const payload = await readJson(response);
+    throw new Error(getStrategyCreateError(payload));
+  }
+
+  if (!response.body) {
+    throw new Error("Run creation returned no stream");
+  }
+
+  try {
+    for await (const sseMessage of readSse(response.body)) {
+      if (sseMessage.event !== "run.started") continue;
+      const runId = getRunStartedId(sseMessage.data);
+      if (runId) return runId;
+    }
+  } finally {
+    await response.body.cancel().catch(() => undefined);
+  }
+
+  throw new Error("Run creation ended before a run id was returned");
 }
 
 const universeOptions: Option<AllocationWizardState["universe"]>[] = [
@@ -462,13 +510,11 @@ export function AllocationWizard() {
     try {
       const strategy = await requestStrategy();
       const strategyId = strategy.strategy_id;
-      const storedRun = JSON.stringify({
-        state,
-        strategyId,
+      const runId = await requestWizardRun(strategyId, state);
+      trackEvent("wizard_run_started", {
+        run_source: "allocation_wizard",
       });
-      localStorage.setItem(`wizard-run:${strategyId}`, storedRun);
-      sessionStorage.setItem(`wizard-run:${strategyId}`, storedRun);
-      router.push(`/wizard/run?id=${encodeURIComponent(strategyId)}`);
+      router.push(`/runs/${encodeURIComponent(runId)}`);
     } catch (error) {
       setPreparationError(
         error instanceof Error

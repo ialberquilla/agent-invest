@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 type MessageListProps = {
   messages: ChatMessage[];
   isThinking: boolean;
+  liveRunId?: string | null;
   liveParts?: TimelinePart[];
   onInspectRun?: (runId: string, trigger: HTMLButtonElement) => void;
 };
@@ -20,6 +21,7 @@ type MessageListProps = {
 export function MessageList({
   messages,
   isThinking,
+  liveRunId = null,
   liveParts = [],
   onInspectRun,
 }: MessageListProps) {
@@ -109,8 +111,8 @@ export function MessageList({
         })}
 
         {isThinking ? (
-          liveParts.length > 0 ? (
-            <LiveActivity parts={liveParts} />
+          liveRunId || liveParts.length > 0 ? (
+            <LiveActivity runId={liveRunId ?? undefined} parts={liveParts} />
           ) : (
             <div className="flex justify-start">
               <Card
