@@ -7,3 +7,11 @@ tasks
 plan.md
 task-decomposer.md
 agent/.env
+contracts/.env
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/.forge-snapshots/
+contracts/lcov.info
+contracts/report/
+
