@@ -1,16 +1,22 @@
 "use client";
 
 import { FormEvent, KeyboardEvent, useState } from "react";
+import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
 type ComposerProps = {
   disabled?: boolean;
+  action?: ReactNode;
   onSubmit: (text: string) => void | Promise<void>;
 };
 
-export function Composer({ disabled = false, onSubmit }: ComposerProps) {
+export function Composer({
+  disabled = false,
+  action,
+  onSubmit,
+}: ComposerProps) {
   const [text, setText] = useState("");
 
   async function submit(event?: FormEvent<HTMLFormElement>) {
@@ -51,9 +57,12 @@ export function Composer({ disabled = false, onSubmit }: ComposerProps) {
           <p className="text-xs text-muted-foreground">
             Cmd/Ctrl+Enter to send
           </p>
-          <Button type="submit" disabled={disabled || text.trim().length === 0}>
-            Send
-          </Button>
+          <div className="flex items-center gap-2">
+            {action}
+            <Button type="submit" disabled={disabled || text.trim().length === 0}>
+              Send
+            </Button>
+          </div>
         </div>
       </div>
     </form>

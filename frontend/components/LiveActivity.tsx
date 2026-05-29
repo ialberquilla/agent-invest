@@ -80,7 +80,7 @@ export function LiveActivity({
     // SSE-only: the backend sends a `snapshot` frame with everything
     // appended so far, then `event` frames as new rows arrive. The old
     // 1Hz polling against /events is gone.
-    setStatus("loading");
+    queueMicrotask(() => setStatus("loading"));
     const source = new EventSource(
       `/api/runs/${encodeURIComponent(runId)}/events/stream`,
     );

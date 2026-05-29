@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { ArtifactGallery } from "@/components/ArtifactGallery";
 import { LiveActivity } from "@/components/LiveActivity";
@@ -26,6 +26,7 @@ export function MessageList({
   onInspectRun,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -45,6 +46,7 @@ export function MessageList({
           const isInspectable =
             message.role === "agent" && typeof message.run_id === "string";
           const runId = isInspectable ? message.run_id : null;
+          const isActivityExpanded = runId === expandedRunId;
           const metadata = [message.status, message.run_id]
             .filter(Boolean)
             .join(" · ");
@@ -84,7 +86,7 @@ export function MessageList({
               key={`${message.role}-${message.run_id ?? index}`}
               className={cn("flex", isUser ? "justify-end" : "justify-start")}
             >
-              <div className="flex max-w-[90%] flex-col gap-2 sm:max-w-[80%]">
+              <div className="flex max-w-[96%] flex-col gap-2 sm:max-w-[92%] xl:max-w-[88%]">
                 {isInspectable ? (
                   <button
                     type="button"
@@ -105,6 +107,27 @@ export function MessageList({
                 {hasArtifacts && message.artifacts ? (
                   <ArtifactGallery artifacts={message.artifacts} />
                 ) : null}
+
+                {runId ? (
+                  <div className="space-y-2">
+                    <button
+                      type="button"
+                      className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                      onClick={() =>
+                        setExpandedRunId((current) =>
+                          current === runId ? null : runId,
+                        )
+                      }
+                    >
+                      {isActivityExpanded
+                        ? "Hide run activity"
+                        : "Show run activity"}
+                    </button>
+                    {isActivityExpanded ? (
+                      <LiveActivity runId={runId} fullWidth />
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             </div>
           );
@@ -112,12 +135,17 @@ export function MessageList({
 
         {isThinking ? (
           liveRunId || liveParts.length > 0 ? (
-            <LiveActivity runId={liveRunId ?? undefined} parts={liveParts} />
+            <LiveActivity
+              runId={liveRunId ?? undefined}
+              parts={liveRunId ? [] : liveParts}
+              fullWidth={Boolean(liveRunId)}
+              includeText
+            />
           ) : (
             <div className="flex justify-start">
               <Card
                 size="sm"
-                className="max-w-[90%] bg-muted py-3 text-muted-foreground sm:max-w-[80%]"
+                className="max-w-[96%] bg-muted py-3 text-muted-foreground sm:max-w-[92%] xl:max-w-[88%]"
               >
                 <CardContent>
                   <p className="text-sm italic">thinking...</p>
