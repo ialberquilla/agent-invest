@@ -44,7 +44,7 @@ const SAMPLE_PROPOSAL: Proposal = {
   candidates: [
     {
       candidate_id: "c1",
-      template_id: "buy_and_hold",
+      template_id: "synthetic_long_allocation",
       select_top: 5,
       weighting: "equal",
       rationale: "baseline",

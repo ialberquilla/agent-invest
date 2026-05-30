@@ -72,14 +72,14 @@ const PROPOSAL: Proposal = {
   candidates: [
     {
       candidate_id: "c1",
-      template_id: "buy_and_hold",
+      template_id: "synthetic_long_allocation",
       select_top: 5,
       weighting: "equal",
       rationale: "baseline",
     },
     {
       candidate_id: "c2",
-      template_id: "periodic_rebalance",
+      template_id: "periodic_rebalanced_allocation",
       select_top: 5,
       weighting: "cap",
       rebalance_trigger: "periodic_30d",
@@ -140,9 +140,9 @@ test("buildBatchInput wraps universe with hand_picked and uses start/end window"
 test("buildBatchInput flattens candidates and omits trigger on buy_and_hold", () => {
   const built = buildBatchInput(BASE_INPUT, 1);
   assert.equal(built.candidates.length, 2);
-  assert.equal(built.candidates[0]?.template_id, "buy_and_hold");
+  assert.equal(built.candidates[0]?.template_id, "synthetic_long_allocation");
   assert.deepEqual(built.candidates[0]?.config, { weighting: "equal" });
-  assert.equal(built.candidates[1]?.template_id, "periodic_rebalance");
+  assert.equal(built.candidates[1]?.template_id, "periodic_rebalanced_allocation");
   assert.deepEqual(built.candidates[1]?.config, {
     weighting: "cap",
     rebalance_trigger: "periodic_30d",

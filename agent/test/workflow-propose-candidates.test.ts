@@ -80,14 +80,14 @@ const SAMPLE_PROPOSAL: Proposal = {
   candidates: [
     {
       candidate_id: "c1",
-      template_id: "buy_and_hold",
+      template_id: "synthetic_long_allocation",
       select_top: 5,
       weighting: "equal",
       rationale: "baseline equal-weight large-cap basket",
     },
     {
       candidate_id: "c2",
-      template_id: "periodic_rebalance",
+      template_id: "periodic_rebalanced_allocation",
       select_top: 7,
       weighting: "cap",
       rebalance_trigger: "periodic_30d",
@@ -95,7 +95,7 @@ const SAMPLE_PROPOSAL: Proposal = {
     },
     {
       candidate_id: "c3",
-      template_id: "periodic_rebalance",
+      template_id: "periodic_rebalanced_allocation",
       select_top: 6,
       weighting: "vol_inverse",
       rebalance_trigger: "periodic_90d",
@@ -143,7 +143,7 @@ test("proposeCandidates returns a valid Proposal and routes to run_and_validate"
 
   assert.equal(result.next, "run_and_validate");
   assert.equal(result.delta.proposal.candidates.length, 3);
-  assert.equal(result.delta.proposal.candidates[0]?.template_id, "buy_and_hold");
+  assert.equal(result.delta.proposal.candidates[0]?.template_id, "synthetic_long_allocation");
 });
 
 test("proposeCandidates retries once on parse failure", async () => {
@@ -209,7 +209,7 @@ test("proposeCandidates rejects rebalance_trigger on buy_and_hold", async () => 
     candidates: [
       {
         candidate_id: "c1",
-        template_id: "buy_and_hold",
+        template_id: "synthetic_long_allocation",
         select_top: 5,
         weighting: "equal",
         rebalance_trigger: "periodic_30d",
@@ -233,7 +233,7 @@ test("proposeCandidates requires rebalance_trigger on periodic_rebalance", async
     candidates: [
       {
         candidate_id: "c1",
-        template_id: "periodic_rebalance",
+        template_id: "periodic_rebalanced_allocation",
         select_top: 5,
         weighting: "cap",
         rationale: "missing trigger",
@@ -312,7 +312,7 @@ test("proposeCandidates accepts five candidates", async () => {
     iteration_hypothesis: "scan five configurations in one round",
     candidates: Array.from({ length: 5 }, (_, i) => ({
       candidate_id: `c${i + 1}`,
-      template_id: "buy_and_hold" as const,
+      template_id: "synthetic_long_allocation" as const,
       select_top: 5 + i,
       weighting: "equal" as const,
       rationale: `variant ${i + 1}`,

@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Agent-facing Python scripts for agent-invest."
 requires-python = ">=3.12,<3.13"
 dependencies = [
+  "bt>=1.1.0,<2.0.0",
   "matplotlib>=3.9.0,<4.0.0",
   "pandas>=2.2.0,<3.0.0",
   "polars>=1.8.0",

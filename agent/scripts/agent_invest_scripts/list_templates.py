@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import asdict
 
-from agent_invest_scripts._lib.backtest.templates import TEMPLATES
+from agent_invest_scripts._lib.backtest.bt_templates import TEMPLATES
 from agent_invest_scripts._lib.cli import print_json
 
 

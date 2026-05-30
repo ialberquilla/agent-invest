@@ -15,7 +15,6 @@ from collections.abc import Sequence
 # Static command table: name -> (module, one-line description).
 # Kept static so a broken module does not crash discovery.
 COMMANDS: dict[str, str] = {
-    "analyze_recovery": "Deterministic recovery analysis for an asset universe.",
     "compare_backtests": "Compare candidate-batch backtests and rank them deterministically.",
     "list_registry": "List closed-set registries (sectors, factors, etc.) available to the agent.",
     "list_runs": "List prior runs for a strategy with optional local artifact summaries.",
@@ -23,7 +22,6 @@ COMMANDS: dict[str, str] = {
     "list_universe": "List the top-N asset universe entries by market cap.",
     "rank_universe": "Screen the materialized asset feature universe by sort/filter rules.",
     "recommend_backtest_window": "Pick a deterministic backtest window for the given universe.",
-    "run_backtest": "Score an agent-supplied portfolio allocation against a backtest window.",
     "run_candidate_batch": "Run a bounded batch of candidate template backtests.",
     "validate_against_thesis": "Validate candidate-batch results against a structured thesis.",
 }

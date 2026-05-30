@@ -42,19 +42,34 @@ export const PROPOSE_CANDIDATES_PROMPT = `You are the candidate-proposal step fo
 
 Inputs you receive in the user message:
 - thesis: the constraints, objective, horizon, and weighting mode the brief was translated into.
-- selected_families: a ranked strategy-family shortlist (best fit first) chosen by the select_templates step. Treat it as guidance for which configurations to favor. Only the allocation templates below are currently executable, so map each selected family onto the closest executable template (e.g. periodic_rebalanced_allocation -> periodic_rebalance with a periodic trigger; threshold_rebalanced_allocation -> periodic_rebalance with threshold_drift_10pct; synthetic_long_allocation / core_satellite / barbell -> buy_and_hold or periodic_rebalance). May be absent.
+- selected_families: a ranked strategy-family shortlist (best fit first) chosen by the select_templates step. Each family below is directly executable -- carry the family id through as the candidate's template_id. Favor the higher-ranked families. May be absent.
 - universe: { coin_ids, source } -- the eligible coin set already chosen by the previous step. You may select any subset of these via select_top, but you cannot add coins outside this set.
 - window: { start, end, horizon_days } -- the backtest window already chosen by the previous step.
 - prior_attempts: an array of prior attempts (may be empty). When present, each entry contains the previous proposal, the validation_summary (which constraints failed and by how much), and a refinement_hint with structured suggested_changes. Treat the hint as a directive: use it to inform this round's candidates.
 
-Your job: emit 3 to 5 candidates spanning the most promising allocation-template configurations for this thesis. The downstream backtest engine requires at least 3 candidates per batch -- always emit at least 3. Emit JSON only -- no prose, no Markdown fences.
+Your job: emit 3 to 5 candidates spanning the most promising strategy-family configurations for this thesis. The downstream backtest engine requires at least 3 candidates per batch -- always emit at least 3. Emit JSON only -- no prose, no Markdown fences.
 
-Allowed templates (ALLOCATION ONLY for now):
-- "buy_and_hold"      -- one-shot allocation, no rebalance_trigger
-- "periodic_rebalance" -- requires a rebalance_trigger
+Allowed template_id values. The long-only families:
+- "synthetic_long_allocation"        -- one-shot long basket, no rebalance_trigger.
+- "periodic_rebalanced_allocation"   -- long basket on a fixed cadence; REQUIRES a rebalance_trigger.
+- "threshold_rebalanced_allocation"  -- long basket rebalanced on weight drift; rebalance_trigger optional.
+- "core_satellite_allocation"        -- BTC/ETH core + satellites; set core_weight (0..1); rebalance_trigger optional.
+- "barbell_allocation"               -- safe core + small capped speculative sleeve; set core_weight and sleeve_cap (0..1).
+- "volatility_targeted_exposure"     -- inverse-vol weighted long book; rebalance_trigger optional.
+- "relative_momentum_rotation"       -- rotate into the strongest names each rebalance; rebalance_trigger optional.
+- "trend_following_long_neutral"     -- hold only trending names, else de-risk; no rebalance_trigger.
+The short/hedge families (ONLY use one when it appears in selected_families):
+- "partial_hedge_overlay"            -- long alt book with a partial short BTC/ETH hedge; rebalance_trigger optional.
+- "beta_hedged_alt_exposure"         -- long alts, short BTC/ETH to strip market beta; rebalance_trigger optional.
+- "relative_value_pair_trade"        -- long the top name, short the runner-up; no rebalance_trigger. Needs select_top >= 2.
+- "trend_following_long_short"       -- long uptrend names, short downtrend names; no rebalance_trigger.
+- "drawdown_based_hedge"             -- long book that adds a short hedge as drawdown deepens; no rebalance_trigger.
 
 Allowed weightings: ${WEIGHTING_SCHEMES.join(", ")}
-Allowed rebalance_triggers (only on periodic_rebalance): ${REBALANCE_TRIGGERS.join(", ")}
+Allowed rebalance_triggers: ${REBALANCE_TRIGGERS.join(", ")}
+- rebalance_trigger is REQUIRED on periodic_rebalanced_allocation; FORBIDDEN on synthetic_long_allocation, trend_following_long_neutral, relative_value_pair_trade, trend_following_long_short, and drawdown_based_hedge; OPTIONAL on the rest.
+- core_weight is only allowed on core_satellite_allocation and barbell_allocation. sleeve_cap is only allowed on barbell_allocation.
+- SHORTS GATE: only propose a short/hedge family when it is present in selected_families (select_templates shortlists them only when the thesis opts into shorts/hedging). When selected_families has no short family, propose long-only families only.
 
 Proposal schema:
 {
@@ -65,7 +80,9 @@ Proposal schema:
       "template_id": ${ALLOCATION_TEMPLATES.map((t) => `"${t}"`).join(" | ")},
       "select_top": integer in [thesis.constraints.asset_count_min, min(asset_count_max, universe.size)],
       "weighting": one of the allowed weightings,
-      "rebalance_trigger": one of the allowed triggers (REQUIRED on periodic_rebalance, FORBIDDEN on buy_and_hold),
+      "rebalance_trigger": one of the allowed triggers (see rules above),
+      "core_weight": number in (0,1) -- core_satellite/barbell only,
+      "sleeve_cap": number in (0,1) -- barbell only,
       "rationale": "one short sentence on why this configuration is worth trying"
     }
   ]

@@ -71,10 +71,10 @@ Rules:
 - ranks must be the contiguous set 1..n with no gaps or duplicates.
 - SHORTS GATE: only shortlist a family marked "REQUIRES SHORTS" when the thesis interpretation_notes (or objective) clearly opt into shorts or hedging. When in doubt, prefer long-only families.
 - Map thesis signals to families:
-  - objective preserve_capital / income, low max_drawdown -> prefer core_satellite, threshold_rebalanced, periodic_rebalanced, volatility_targeted.
+  - objective preserve_capital / income, low max_drawdown -> prefer core_satellite, threshold_rebalanced, periodic_rebalanced, volatility_targeted. When max_drawdown is TIGHT (<= 0.20), rank a drawdown-aware family (volatility_targeted, or threshold_rebalanced for low turnover) FIRST -- plain calendar rebalancing (periodic_rebalanced) does not control drawdown, so it should not be the rank-1 pick for a tight-drawdown mandate.
   - objective balanced_growth -> core_satellite, periodic_rebalanced, synthetic_long.
-  - objective growth, higher drawdown tolerance -> barbell, relative_momentum_rotation, synthetic_long.
-  - thesis emphasizing a rebalance cadence -> periodic_rebalanced; emphasizing drift control / not overtrading -> threshold_rebalanced.
+  - objective growth, higher drawdown tolerance -> barbell, relative_momentum_rotation, synthetic_long. When the thesis explicitly describes a large core PLUS a small or capped speculative / high-risk sleeve, barbell is the most precise fit -> rank it first, with core_satellite as the close alternative.
+  - thesis emphasizing a rebalance cadence -> periodic_rebalanced; emphasizing drift control / not overtrading -> threshold_rebalanced. A stated rebalance cadence is an implementation detail: do not let it displace the primary structural/objective fit at rank 1 unless rebalancing itself is the main intent.
   - thesis mentioning trend / momentum -> trend_following_long_neutral or relative_momentum_rotation (and long_short variants only if shorts allowed).
   - thesis mentioning hedging / downside protection with shorts allowed -> partial_hedge_overlay, drawdown_based_hedge, beta_hedged_alt_exposure.
 - Prefer fewer, higher-conviction picks over padding the list to 3.`;

@@ -128,8 +128,14 @@ function candidateToBatchEntry(
   thesis: Thesis,
 ) {
   const config: Record<string, unknown> = { weighting: candidate.weighting };
-  if (candidate.template_id === "periodic_rebalance") {
+  if (candidate.rebalance_trigger !== undefined) {
     config.rebalance_trigger = candidate.rebalance_trigger;
+  }
+  if (candidate.core_weight !== undefined) {
+    config.core_weight = candidate.core_weight;
+  }
+  if (candidate.sleeve_cap !== undefined) {
+    config.sleeve_cap = candidate.sleeve_cap;
   }
   return {
     candidate_id: candidate.candidate_id,

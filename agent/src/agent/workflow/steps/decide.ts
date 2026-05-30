@@ -88,7 +88,7 @@ The five possible actions:
          "increase_cash_to": optional number,
          "swap_assets": optional { "remove": [...], "consider": [...] },
          "change_rebalance_to": optional "periodic_30d" | "periodic_90d" | "threshold_drift_10pct",
-         "change_template_to": optional "buy_and_hold" | "periodic_rebalance"
+         "change_template_to": optional -- one of the executable strategy-family ids (e.g. "synthetic_long_allocation", "periodic_rebalanced_allocation", "core_satellite_allocation", "volatility_targeted_exposure", ...)
        },
        "rationale": "one short paragraph"
      }

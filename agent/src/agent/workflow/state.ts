@@ -72,12 +72,10 @@ export type Thesis = {
 
 // The strategy-family catalog mirrors spec.md section 9. select_templates
 // classifies a Thesis onto a ranked shortlist of these families before
-// propose_candidates parameterizes concrete candidates. Note that only the
-// allocation families currently compile to executable candidates
-// (buy_and_hold / periodic_rebalance); the long/short, hedge, and signal
-// families are catalogued here so the routing decision is explicit and
-// auditable, and so propose_candidates can approximate them with the
-// closest executable template until their own candidate schemas land.
+// propose_candidates parameterizes concrete candidates. The eight long-only
+// families compile to executable candidates today (see ALLOCATION_TEMPLATES);
+// the four short/hedge families are catalogued here for routing but only
+// become executable in Phase 2, behind the SHORTS gate.
 export const STRATEGY_FAMILIES = [
   "synthetic_long_allocation", // 9.1
   "periodic_rebalanced_allocation", // 9.2
@@ -221,15 +219,45 @@ export type SelectWindowInput = {
   universe: Universe;
 };
 
-// Allocation-template candidate. Tactical templates are intentionally
-// out of scope for v1 of the workflow -- their slot schemas require
-// signal_indicator / exit_rule / etc, which would balloon the
-// Proposal output shape and parser surface. Re-add when needed.
+// Executable strategy families, each backed by a `bt` recipe in agent/scripts
+// bt_templates. Phase 1 shipped the eight long-only families; Phase 2 adds the
+// five short/hedge families (negative weights), which select_templates only
+// shortlists when the thesis opts into shorts (the SHORTS gate).
 export const ALLOCATION_TEMPLATES = [
-  "buy_and_hold",
-  "periodic_rebalance",
+  "synthetic_long_allocation",
+  "periodic_rebalanced_allocation",
+  "threshold_rebalanced_allocation",
+  "core_satellite_allocation",
+  "barbell_allocation",
+  "volatility_targeted_exposure",
+  "relative_momentum_rotation",
+  "trend_following_long_neutral",
+  "partial_hedge_overlay",
+  "beta_hedged_alt_exposure",
+  "relative_value_pair_trade",
+  "trend_following_long_short",
+  "drawdown_based_hedge",
 ] as const;
 export type AllocationTemplate = (typeof ALLOCATION_TEMPLATES)[number];
+
+// Families that accept a rebalance_trigger slot. synthetic_long (held once),
+// trend_following (weekly by construction), pair-trade/drawdown-hedge (fixed
+// schedule) do not.
+export const REBALANCE_TRIGGER_FAMILIES = [
+  "periodic_rebalanced_allocation",
+  "threshold_rebalanced_allocation",
+  "core_satellite_allocation",
+  "barbell_allocation",
+  "volatility_targeted_exposure",
+  "relative_momentum_rotation",
+  "partial_hedge_overlay",
+  "beta_hedged_alt_exposure",
+] as const;
+// Structural-slot families (core_weight; barbell additionally caps the sleeve).
+export const CORE_WEIGHT_FAMILIES = [
+  "core_satellite_allocation",
+  "barbell_allocation",
+] as const;
 
 export const WEIGHTING_SCHEMES = [
   "equal",
@@ -251,9 +279,12 @@ export type ProposedCandidate = {
   template_id: AllocationTemplate;
   select_top: number;
   weighting: WeightingScheme;
-  // Required when template_id === "periodic_rebalance"; must be absent
-  // when template_id === "buy_and_hold".
+  // Allowed only for REBALANCE_TRIGGER_FAMILIES; required for
+  // periodic_rebalanced_allocation (its defining knob).
   rebalance_trigger?: RebalanceTrigger;
+  // Structural slots for CORE_WEIGHT_FAMILIES. sleeve_cap is barbell-only.
+  core_weight?: number;
+  sleeve_cap?: number;
   rationale: string;
 };
 
@@ -868,16 +899,57 @@ function validateCandidate(
 
   requireString(candidate.rationale, `candidates[${index}].rationale`);
 
-  if (candidate.template_id === "periodic_rebalance") {
+  const family = candidate.template_id as AllocationTemplate;
+  const allowsTrigger = (
+    REBALANCE_TRIGGER_FAMILIES as readonly string[]
+  ).includes(family);
+  if (family === "periodic_rebalanced_allocation") {
     requireEnum(
       candidate.rebalance_trigger,
       REBALANCE_TRIGGERS,
       `candidates[${index}].rebalance_trigger`,
     );
   } else if (candidate.rebalance_trigger !== undefined) {
-    throw new ProposalValidationError(
-      `candidates[${index}]: rebalance_trigger is not allowed on template "${candidate.template_id as string}"`,
+    if (!allowsTrigger) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: rebalance_trigger is not allowed on template "${family}"`,
+      );
+    }
+    requireEnum(
+      candidate.rebalance_trigger,
+      REBALANCE_TRIGGERS,
+      `candidates[${index}].rebalance_trigger`,
     );
+  }
+
+  const allowsCoreWeight = (
+    CORE_WEIGHT_FAMILIES as readonly string[]
+  ).includes(family);
+  if (candidate.core_weight !== undefined) {
+    if (!allowsCoreWeight) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: core_weight is not allowed on template "${family}"`,
+      );
+    }
+    requireFiniteNumber(candidate.core_weight, `candidates[${index}].core_weight`);
+    if ((candidate.core_weight as number) <= 0 || (candidate.core_weight as number) >= 1) {
+      throw new ProposalValidationError(
+        `candidates[${index}].core_weight must be in (0, 1)`,
+      );
+    }
+  }
+  if (candidate.sleeve_cap !== undefined) {
+    if (family !== "barbell_allocation") {
+      throw new ProposalValidationError(
+        `candidates[${index}]: sleeve_cap is only allowed on barbell_allocation`,
+      );
+    }
+    requireFiniteNumber(candidate.sleeve_cap, `candidates[${index}].sleeve_cap`);
+    if ((candidate.sleeve_cap as number) <= 0 || (candidate.sleeve_cap as number) >= 1) {
+      throw new ProposalValidationError(
+        `candidates[${index}].sleeve_cap must be in (0, 1)`,
+      );
+    }
   }
 }
 
