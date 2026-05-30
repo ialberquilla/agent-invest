@@ -4,13 +4,12 @@ import json
 import os
 from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any
 
 import psycopg
 import pytest
 
-from agent_invest_scripts import list_universe, rank_universe, run_backtest
+from agent_invest_scripts import list_universe, rank_universe
 from agent_invest_scripts._lib import db
 
 INTEGRATION_FLAG = "AGENT_INVEST_POSTGRES_INTEGRATION"
@@ -141,37 +140,6 @@ def test_rank_universe_reads_materialized_postgres_features(
     payload = json.loads(capsys.readouterr().out)
     assert [row["coin_id"] for row in payload] == ["ethereum", "bitcoin"]
     assert [row["rank"] for row in payload] == [1, 2]
-
-
-def test_run_backtest_uses_db_backed_daily_prices(
-    postgres_fixture: psycopg.Connection[dict[str, Any]],
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
-
-    exit_code = run_backtest.main(
-        [
-            "--allocation",
-            json.dumps(
-                {
-                    "type": "static",
-                    "weights": {"bitcoin": 0.5, "ethereum": 0.5},
-                    "start": "2024-01-01",
-                    "end": "2024-07-19",
-                }
-            ),
-            "--label",
-            "postgres_fixture",
-        ]
-    )
-
-    payload = json.loads(capsys.readouterr().out)
-    assert exit_code == 0
-    assert payload["label"] == "postgres_fixture"
-    assert payload["kpis"]["final_equity_usd"] > 1000
-    assert Path(payload["report_json"]).is_file()
 
 
 def _fixture_tables_are_empty(connection: psycopg.Connection[dict[str, Any]]) -> bool:

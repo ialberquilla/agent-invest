@@ -68,14 +68,14 @@ const PROPOSAL: Proposal = {
   candidates: [
     {
       candidate_id: "c1",
-      template_id: "buy_and_hold",
+      template_id: "synthetic_long_allocation",
       select_top: 5,
       weighting: "equal",
       rationale: "baseline",
     },
     {
       candidate_id: "c2",
-      template_id: "periodic_rebalance",
+      template_id: "periodic_rebalanced_allocation",
       select_top: 7,
       weighting: "cap",
       rebalance_trigger: "periodic_30d",

@@ -71,6 +71,13 @@
       "when": 1777999200000,
       "tag": "0009_agent_tool_calls",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1777999800000,
+      "tag": "0010_fix_asset_universe_market_cap",
+      "breakpoints": true
     }
   ]
 }

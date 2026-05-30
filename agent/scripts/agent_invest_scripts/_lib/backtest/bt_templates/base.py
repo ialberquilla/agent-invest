@@ -1,10 +1,23 @@
+"""Recipe metadata + config validation for the ``bt``-backed templates.
+
+Self-contained so the legacy ``templates/`` package can be deleted: the slot
+schema validator and ``TemplateMetadata`` shape match what ``list_templates``
+and ``run_candidate_batch`` already expect.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any, Literal, Protocol, TypedDict
+from typing import Any, Callable, Literal
 
+import bt
 import pandas as pd
+
+# A recipe builder turns the resolved universe + wide price frame + candidate
+# config + window into a runnable bt.Strategy. No price slicing here -- the
+# runner slices to the window before bt.run.
+Builder = Callable[[pd.DataFrame, pd.DataFrame, dict, "tuple[date, date]"], bt.Strategy]
 
 
 @dataclass(frozen=True)
@@ -18,41 +31,31 @@ class TemplateMetadata:
     slot_schema: dict
 
 
-class AllocationPlan(TypedDict):
-    """Output of allocation templates. Consumed by the backtest engine."""
+@dataclass(frozen=True)
+class Recipe:
+    """Mirrors the old template object surface (``METADATA`` / ``validate_config``
+    / ``build``) so callers swap import path only, but ``build`` returns a
+    ``bt.Strategy`` instead of an engine plan."""
 
-    holdings: dict[date, dict[str, float]]
-    rebalance_dates: list[date]
-
-
-class SignalPlan(TypedDict):
-    """Output of tactical templates. Consumed by the backtest engine."""
-
-    signals: dict[str, pd.Series]
-    sizing: dict[str, float]
-    exit_rule: str
-
-
-class BaseTemplate(Protocol):
     METADATA: TemplateMetadata
+    _builder: Builder
 
     def validate_config(self, config: dict) -> None:
-        """Raise ValueError if config doesn't satisfy METADATA.slot_schema."""
-        ...
+        validate_against_slot_schema(config, self.METADATA.slot_schema)
 
     def build(
         self,
         universe: pd.DataFrame,
-        prices: dict[str, pd.DataFrame],
+        prices: pd.DataFrame,
         config: dict,
         window: tuple[date, date],
-    ) -> AllocationPlan | SignalPlan:
-        """Allocation templates return AllocationPlan; tactical return SignalPlan."""
-        ...
+    ) -> bt.Strategy:
+        self.validate_config(config)
+        return self._builder(universe, prices, config, window)
 
 
 def validate_against_slot_schema(config: dict, slot_schema: dict) -> None:
-    """Validate a template config against the plan's lightweight slot schema."""
+    """Validate a candidate config against the recipe's lightweight slot schema."""
     properties = slot_schema.get("properties", slot_schema)
     required = set(slot_schema.get("required", ()))
 
@@ -69,8 +72,7 @@ def validate_against_slot_schema(config: dict, slot_schema: dict) -> None:
             raise ValueError(f"Missing required config key: {key}")
 
     for key, value in config.items():
-        schema = properties[key]
-        _validate_slot_value(key, value, schema)
+        _validate_slot_value(key, value, properties[key])
 
 
 def _validate_slot_value(key: str, value: Any, schema: dict) -> None:

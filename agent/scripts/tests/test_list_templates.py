@@ -7,13 +7,19 @@ def test_list_templates_returns_registered_template_metadata() -> None:
     payload = list_templates()
 
     assert [template["id"] for template in payload] == [
-        "buy_and_hold",
-        "periodic_rebalance",
-        "momentum",
-        "dual_momentum",
-        "trend_following",
-        "mean_reversion",
-        "breakout",
+        "synthetic_long_allocation",
+        "periodic_rebalanced_allocation",
+        "threshold_rebalanced_allocation",
+        "core_satellite_allocation",
+        "barbell_allocation",
+        "volatility_targeted_exposure",
+        "relative_momentum_rotation",
+        "trend_following_long_neutral",
+        "partial_hedge_overlay",
+        "beta_hedged_alt_exposure",
+        "relative_value_pair_trade",
+        "trend_following_long_short",
+        "drawdown_based_hedge",
     ]
     for template in payload:
         assert set(template) == {

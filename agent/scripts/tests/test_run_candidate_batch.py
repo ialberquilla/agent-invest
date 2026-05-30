@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
 from datetime import date, timedelta
-from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from agent_invest_scripts import run_candidate_batch
+from agent_invest_scripts._lib.backtest import robustness
 
 
 def test_rejects_fewer_than_three_candidates() -> None:
@@ -28,10 +27,7 @@ def test_rejects_default_cap() -> None:
         )
 
 
-def test_runs_batch_and_persists_results(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
+def test_runs_batch_and_returns_results(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(run_candidate_batch, "daily_prices", _daily_prices)
     monkeypatch.setattr(run_candidate_batch, "asset_universe_features", _features)
 
@@ -45,25 +41,20 @@ def test_runs_batch_and_persists_results(
 
     assert output["batch_id"].startswith("candidate_batch_")
     assert len(output["results"]) == 3
-    assert (tmp_path / "candidate_batches" / f"{output['batch_id']}.json").is_file()
-    persisted = json.loads(
-        (tmp_path / "candidate_batches" / f"{output['batch_id']}.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert "iteration_hypothesis" not in persisted
+    # Batches are no longer written to disk -- the caller pipes this payload to
+    # validate_against_thesis.
+    assert "iteration_hypothesis" not in output
     for result in output["results"]:
-        assert (result["allocation_metrics"] is None) != (
-            result["tactical_metrics"] is None
-        )
+        # Every family is allocation-shaped now (no tactical signal plans).
+        assert result["allocation_metrics"] is not None
+        assert result["tactical_metrics"] is None
         assert result["robustness"]["n_rebalances"] == 1
         assert result["robustness"]["sample_size_warning"] is True
 
 
-def test_persists_iteration_hypothesis_when_provided(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_returns_iteration_hypothesis_when_provided(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
     monkeypatch.setattr(run_candidate_batch, "daily_prices", _daily_prices)
     monkeypatch.setattr(run_candidate_batch, "asset_universe_features", _features)
 
@@ -76,19 +67,12 @@ def test_persists_iteration_hypothesis_when_provided(
         }
     )
 
-    persisted = json.loads(
-        (tmp_path / "candidate_batches" / f"{output['batch_id']}.json").read_text(
-            encoding="utf-8"
-        )
-    )
     assert output["iteration_hypothesis"] == "Test lower turnover equal weighting."
-    assert persisted["iteration_hypothesis"] == "Test lower turnover equal weighting."
 
 
 def test_batch_level_overrides_apply_to_candidates(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
     monkeypatch.setattr(run_candidate_batch, "daily_prices", _daily_prices)
     monkeypatch.setattr(run_candidate_batch, "asset_universe_features", _features)
 
@@ -120,9 +104,8 @@ def test_batch_level_overrides_apply_to_candidates(
 
 
 def test_top_level_basket_becomes_hand_picked_universe(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("STORAGE_ROOT", str(tmp_path))
     monkeypatch.setattr(run_candidate_batch, "daily_prices", _daily_prices)
     monkeypatch.setattr(run_candidate_batch, "asset_universe_features", _features)
 
@@ -149,24 +132,9 @@ def test_warning_thresholds_flip_on_bad_case() -> None:
         ),
     )
     benchmark = pd.Series([1.0, 2.0, 2.02, 0.5], index=equity.index)
-    performance = pd.DataFrame(
-        {
-            "date": equity.index,
-            "net_return": equity.pct_change().fillna(0.0).to_numpy(),
-        }
-    )
-    engine_result = type(
-        "EngineResult",
-        (),
-        {
-            "performance": run_candidate_batch.pl.from_pandas(performance),
-            "summary": {"survivorship_warning": True},
-        },
-    )()
-    allocation = run_candidate_batch.AllocationMetrics([], 0.0, 1.0, [])
 
-    signals = run_candidate_batch._robustness(  # noqa: SLF001
-        engine_result, equity, benchmark, allocation
+    signals = robustness.compute_robustness(
+        equity, benchmark, n_rebalances=0, survivorship_warning=True
     )
 
     assert signals.concentration_warning is True
@@ -179,7 +147,7 @@ def test_warning_thresholds_flip_on_bad_case() -> None:
 def _candidate(candidate_id: str) -> dict[str, object]:
     return {
         "candidate_id": candidate_id,
-        "template_id": "buy_and_hold",
+        "template_id": "synthetic_long_allocation",
         "ranking": [{"factor": "market_cap_rank", "direction": "low", "weight": 1.0}],
         "select_top": 1,
         "config": {"weighting": "equal"},
