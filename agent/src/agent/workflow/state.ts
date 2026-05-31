@@ -335,6 +335,38 @@ export type CandidateMetrics = {
   composite_score: number | null;
 };
 
+// One point on a backtest equity (or benchmark) curve, mirroring the
+// Python run_candidate_batch output: portfolio value indexed by date,
+// with the running drawdown at that point (<= 0, e.g. -0.25 for -25%).
+export type EquityPoint = {
+  date: string;
+  value: number;
+  drawdown_pct: number;
+};
+
+// One asset's target weight in the winner's allocation, lifted from the
+// first rebalance in the backtest's holdings_history.
+export type AllocationWeight = {
+  coin_id: string;
+  weight: number;
+};
+
+// A candidate's full backtest output: scalar metrics plus the per-day
+// equity and benchmark curves. Captured in run_and_validate but kept on
+// a side-channel (WorkflowState.backtests) rather than in the
+// LLM-visible Attempt, because the curves are large and only the winner
+// needs them. The winner's CandidateBacktest is attached to FinalWinner
+// at finalize so the result card can show real numbers and plot the
+// equity curve.
+export type CandidateBacktest = {
+  metrics: CandidateMetrics;
+  equity_curve: EquityPoint[];
+  benchmark_curve: EquityPoint[];
+  // Target weights per asset (the first rebalance's allocation). Empty
+  // when the backtest produced no holdings history.
+  allocation: AllocationWeight[];
+};
+
 // One row per backtested candidate, carrying its gate result, how far
 // it missed (0 when passing), and its metrics. This is the unit the
 // cross-attempt ranker consumes.
@@ -487,6 +519,11 @@ export type FinalWinner = {
   window: Window;
   attempts_summary: Attempt[];
   narrative: FinalizeNarrative;
+  // The winner's full backtest (metrics + equity/benchmark curves),
+  // resolved from WorkflowState.backtests at finalize. Optional because
+  // an older state or a winner whose curves were not captured still
+  // produces a valid (curve-less) record.
+  winner_backtest?: CandidateBacktest;
 };
 
 export type FinalNoViable = {
@@ -527,6 +564,12 @@ export type WorkflowState = {
   window?: Window;
   attempts: Attempt[];
   counters: Counters;
+  // Per-candidate full backtest output (metrics + equity/benchmark
+  // curves), keyed by `${attempt_n}:${candidate_id}`. A side-channel
+  // populated by run_and_validate and read only at finalize to attach
+  // the winner's curve -- deliberately NOT part of Attempt so the large
+  // curves never enter LLM context or the persisted round history.
+  backtests?: Record<string, CandidateBacktest>;
   final?: Final;
 };
 
@@ -545,6 +588,10 @@ export type FinalizeInput = {
   winner_attempt_n: number;
   is_best_effort: boolean;
   decide_justification: string;
+  // The winner's full backtest, resolved by the controller from
+  // WorkflowState.backtests and threaded through so finalize can attach
+  // it to the FinalWinner record.
+  winner_backtest?: CandidateBacktest;
 };
 
 export class FinalizeValidationError extends Error {

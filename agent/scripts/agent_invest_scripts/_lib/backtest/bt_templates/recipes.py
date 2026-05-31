@@ -64,19 +64,55 @@ def _run_algo(trigger: str | None) -> bt.algos.Algo:
             raise ValueError(f"unsupported rebalance_trigger: {other!r}")
 
 
-def _weigh(scheme: str, coins: list[str], universe: pd.DataFrame) -> bt.algos.Algo:
+def _weigh(
+    scheme: str,
+    coins: list[str],
+    universe: pd.DataFrame,
+    prices: pd.DataFrame,
+    window: tuple,
+) -> bt.algos.Algo:
     # `cap` falls back to equal: the ranked universe doesn't carry market_cap as
     # a column (it lives nested in factor_values), the same fallback the legacy
-    # engine used. `vol_inverse` uses bt's dynamic inverse-vol weighting.
+    # engine used.
     match scheme:
         case "equal" | "cap":
             return bt.algos.WeighEqually()
         case "vol_inverse":
-            return bt.algos.WeighInvVol()
+            # bt's WeighInvVol estimates volatility from a trailing lookback,
+            # which doesn't exist at the first rebalance once prices are sliced
+            # to the window -> it returns empty weights -> the strategy holds
+            # 100% cash and the equity curve is flat. Instead pin static
+            # inverse-volatility weights computed from the window's returns,
+            # the same static-weight approach `ranking_proportional` uses.
+            return bt.algos.WeighSpecified(
+                **_inverse_vol_weights(coins, prices, window)
+            )
         case "ranking_proportional":
             return bt.algos.WeighSpecified(**_ranking_weights(coins, universe))
         case other:
             raise ValueError(f"unsupported weighting: {other!r}")
+
+
+def _inverse_vol_weights(
+    coins: list[str], prices: pd.DataFrame, window: tuple
+) -> dict[str, float]:
+    """Static inverse-volatility weights over the backtest window.
+
+    Each coin's weight is proportional to 1 / (stddev of its daily returns)
+    within the window, normalized to sum to 1. Coins with zero/undefined
+    volatility (constant or too-short series) drop to a 0 weight. Falls back
+    to equal weights when nothing has a usable volatility."""
+    frame = _float_prices(prices, coins)
+    frame.index = pd.to_datetime(frame.index)
+    mask = (frame.index.date >= window[0]) & (frame.index.date <= window[1])
+    returns = frame[mask].pct_change().dropna()
+    vol = returns.std()
+    inv = (1.0 / vol).replace([float("inf"), float("-inf")], pd.NA).dropna()
+    inv = inv[inv > 0]
+    if inv.empty:
+        return {coin: 1.0 / len(coins) for coin in coins}
+    total = float(inv.sum())
+    return {coin: float(inv.get(coin, 0.0)) / total for coin in coins}
 
 
 def _ranking_weights(coins: list[str], universe: pd.DataFrame) -> dict[str, float]:
@@ -111,7 +147,7 @@ def _synthetic_long(universe, prices, config, window) -> bt.Strategy:
         [
             bt.algos.RunOnce(),
             bt.algos.SelectThese(coins),
-            _weigh(config["weighting"], coins, universe),
+            _weigh(config["weighting"], coins, universe, prices, window),
             bt.algos.Rebalance(),
         ],
     )
@@ -124,7 +160,7 @@ def _periodic_rebalanced(universe, prices, config, window) -> bt.Strategy:
         [
             _run_algo(config.get("rebalance_trigger", "periodic_30d")),
             bt.algos.SelectThese(coins),
-            _weigh(config["weighting"], coins, universe),
+            _weigh(config["weighting"], coins, universe, prices, window),
             bt.algos.Rebalance(),
         ],
     )
@@ -137,7 +173,7 @@ def _threshold_rebalanced(universe, prices, config, window) -> bt.Strategy:
         [
             bt.algos.RunIfOutOfBounds(0.10),
             bt.algos.SelectThese(coins),
-            _weigh(config["weighting"], coins, universe),
+            _weigh(config["weighting"], coins, universe, prices, window),
             bt.algos.Rebalance(),
         ],
     )

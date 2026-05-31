@@ -9,6 +9,8 @@ import { db as defaultDb } from "../../db/client.ts";
 import { runs } from "../../db/schema.ts";
 import { runWorkflow, type WorkflowDeps } from "./controller.ts";
 import type {
+  CandidateBacktest,
+  EquityPoint,
   FinalWinner,
   WizardBrief,
   WorkflowState,
@@ -144,6 +146,8 @@ export function workflowStateToStructuredResult(
 
   if (final.kind === "winner") {
     const winnerTemplate = winnerTemplateId(final, state);
+    const backtest = final.winner_backtest;
+    const charts = backtest ? buildCharts(backtest) : {};
     return {
       title: final.narrative.title,
       summary: final.narrative.summary,
@@ -151,18 +155,29 @@ export function workflowStateToStructuredResult(
       assumptions: final.narrative.assumptions,
       risks: final.narrative.risks,
       next_steps: final.narrative.next_steps,
+      constraint_violations: final.unmet_constraints.map(
+        (c) =>
+          `${c.constraint}: observed ${c.observed}, target ${c.target}`,
+      ),
       template_id: winnerTemplate,
       winner_candidate_id: final.winner_candidate_id,
       is_best_effort: final.is_best_effort,
       unmet_constraints: final.unmet_constraints,
       backtest: {
         candidate_batch_id: final.candidate_batch_id,
+        start_date: final.window.start,
+        end_date: final.window.end,
+        rebalance: rebalanceLabel(final),
+        initial_capital_usd: backtest?.equity_curve[0]?.value ?? null,
+        capital_mode: backtest ? "usd" : null,
+        benchmark: final.thesis.objective === "growth" ? "bitcoin" : null,
       },
       winners_by_dimension: null,
       round_history: state.attempts,
       refinement_reasons: collectRefinementReasons(state),
-      allocation: [],
-      kpis: {},
+      allocation: buildAllocation(backtest),
+      kpis: backtest ? buildKpis(backtest) : {},
+      charts,
       artifacts: [],
     };
   }
@@ -184,6 +199,117 @@ export function workflowStateToStructuredResult(
     kpis: {},
     artifacts: [],
   };
+}
+
+function isFiniteNum(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function finiteOrNull(value: number | undefined): number | null {
+  return isFiniteNum(value) ? value : null;
+}
+
+// Map the winner's scalar metrics onto the StrategyKpis shape the
+// frontend result card reads. monthly_hit_rate / trading-cost / swaps
+// are not produced by run_candidate_batch, so they stay null (the card
+// renders "Not provided"). final_equity_* derive from the equity curve.
+function buildKpis(backtest: CandidateBacktest) {
+  const m = backtest.metrics;
+  const curve = backtest.equity_curve;
+  const first = curve[0]?.value;
+  const last = curve[curve.length - 1]?.value;
+  const multiple =
+    isFiniteNum(first) && isFiniteNum(last) && first !== 0
+      ? last / first
+      : null;
+  return {
+    cagr: finiteOrNull(m.cagr),
+    sharpe_ratio: finiteOrNull(m.sharpe),
+    sortino_ratio: finiteOrNull(m.sortino),
+    max_drawdown: finiteOrNull(m.max_drawdown),
+    calmar_ratio: finiteOrNull(m.calmar),
+    monthly_hit_rate: null,
+    final_equity_usd: finiteOrNull(last),
+    final_equity_multiple: multiple,
+    total_trading_cost_usd: null,
+    total_num_swaps: null,
+  };
+}
+
+// Merge the winner's strategy and benchmark curves into the
+// date-aligned series the frontend charts plot. The benchmark curve is
+// normalized to 1.0 at its start, so we rescale it to the strategy's
+// starting capital -- "the same money invested in the benchmark" --
+// keeping both series on one dollar axis. Drawdowns are already pct, so
+// they pass through unscaled.
+function buildCharts(backtest: CandidateBacktest) {
+  const first = backtest.equity_curve[0]?.value;
+  const benchScale = isFiniteNum(first) ? first : 1;
+  const benchByDate = new Map<string, EquityPoint>();
+  for (const point of backtest.benchmark_curve) {
+    benchByDate.set(point.date, point);
+  }
+
+  const equity_curve = backtest.equity_curve.map((point) => {
+    const bench = benchByDate.get(point.date);
+    return {
+      date: point.date,
+      strategy_equity: point.value,
+      benchmark_equity:
+        bench && isFiniteNum(bench.value) ? bench.value * benchScale : null,
+    };
+  });
+  const drawdown = backtest.equity_curve.map((point) => {
+    const bench = benchByDate.get(point.date);
+    return {
+      date: point.date,
+      strategy_drawdown: point.drawdown_pct,
+      benchmark_drawdown: bench ? bench.drawdown_pct : null,
+    };
+  });
+  const target_allocation = backtest.allocation.map((a) => ({
+    asset: assetLabel(a.coin_id),
+    weight: a.weight,
+  }));
+  return { equity_curve, drawdown, target_allocation };
+}
+
+// The richer "Selected assets" list (asset/symbol/coin_id/weight/rationale).
+// We only have coin ids + weights from the backtest, so symbol/rationale are
+// left unset; the card renders those as "Not provided" per asset.
+function buildAllocation(backtest: CandidateBacktest | undefined) {
+  if (!backtest) return [];
+  return backtest.allocation.map((a) => ({
+    asset: assetLabel(a.coin_id),
+    coin_id: a.coin_id,
+    symbol: null,
+    weight: a.weight,
+    rationale: "",
+  }));
+}
+
+// "render-token" -> "Render Token". Just a display nicety for the coin id.
+function assetLabel(coinId: string): string {
+  return coinId
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+// Narrow the thesis rebalance cadence to the labels the card accepts
+// ("quarterly" has no slot, so it shows as unspecified).
+function rebalanceLabel(
+  final: FinalWinner,
+): "daily" | "weekly" | "monthly" | null {
+  switch (final.thesis.rebalance_frequency) {
+    case "daily":
+    case "weekly":
+    case "monthly":
+      return final.thesis.rebalance_frequency;
+    default:
+      return null;
+  }
 }
 
 function winnerTemplateId(

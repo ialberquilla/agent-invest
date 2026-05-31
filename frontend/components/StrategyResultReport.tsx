@@ -176,7 +176,7 @@ function EquityCurveChart({ data }: { data: StrategyEquityPoint[] | null }) {
           <Line
             type="monotone"
             dataKey="bitcoin"
-            name="Bitcoin"
+            name="Benchmark"
             stroke={BITCOIN_SERIES_COLOR}
             strokeDasharray="6 4"
             strokeWidth={2.5}
@@ -242,7 +242,7 @@ function DrawdownChart({ data }: { data: StrategyDrawdownPoint[] | null }) {
           <Line
             type="monotone"
             dataKey="bitcoin"
-            name="Bitcoin"
+            name="Benchmark"
             stroke={BITCOIN_SERIES_COLOR}
             strokeDasharray="6 4"
             strokeWidth={2.5}
