@@ -8,7 +8,6 @@ import { IdentityBar } from "@/components/IdentityBar";
 import { MessageList } from "@/components/MessageList";
 import { RunInspector } from "@/components/RunInspector";
 import { Button } from "@/components/ui/button";
-import { Card } from "@/components/ui/card";
 import {
   initialTimeline,
   reduceTimeline,
@@ -270,7 +269,7 @@ export function ChatView({
 
   return (
     <>
-      <Card className="flex h-[calc(100vh-22rem)] min-h-[30rem] w-full flex-col overflow-hidden border-border/70 bg-background shadow-sm lg:h-[calc(100vh-3rem)]">
+      <div className="flex h-dvh flex-col bg-background">
         <IdentityBar
           strategyId={strategyId}
           disabled={isDisabled}
@@ -278,7 +277,7 @@ export function ChatView({
         />
 
         {strategyError ? (
-          <div className="border-b bg-destructive/10 px-4 py-3 text-sm text-destructive sm:px-5">
+          <div className="border-b border-border/60 bg-destructive/10 px-4 py-3 text-sm text-destructive">
             {strategyError}
           </div>
         ) : null}
@@ -286,8 +285,8 @@ export function ChatView({
         <div
           className={
             isWizardOpen
-              ? "min-h-0 max-h-28 shrink-0 bg-muted/10"
-              : "min-h-0 flex-1 bg-muted/10"
+              ? "min-h-0 max-h-28 shrink-0"
+              : "min-h-0 flex-1"
           }
         >
           <MessageList
@@ -300,23 +299,25 @@ export function ChatView({
         </div>
 
         {isWizardOpen ? (
-          <section className="min-h-0 flex-1 overflow-y-auto border-t bg-background">
-            <div className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b bg-background/95 px-4 py-2 backdrop-blur sm:px-5">
-              <h2 className="font-heading text-sm font-semibold">
-                Allocation wizard
-              </h2>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => setIsWizardOpen(false)}
-              >
-                <span aria-hidden>×</span>
-                <span className="sr-only">Close wizard</span>
-              </Button>
-            </div>
-            <div className="p-2 sm:p-3">
-              <AllocationWizard embedded onSubmit={handleWizardSubmit} />
+          <section className="min-h-0 flex-1 overflow-y-auto border-t border-border/60">
+            <div className="mx-auto w-full max-w-5xl">
+              <div className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-border/60 bg-background/95 px-4 py-2 backdrop-blur">
+                <h2 className="font-heading text-sm font-semibold">
+                  Allocation wizard
+                </h2>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => setIsWizardOpen(false)}
+                >
+                  <span aria-hidden>×</span>
+                  <span className="sr-only">Close wizard</span>
+                </Button>
+              </div>
+              <div className="p-2 sm:p-3">
+                <AllocationWizard embedded onSubmit={handleWizardSubmit} />
+              </div>
             </div>
           </section>
         ) : null}
@@ -326,7 +327,8 @@ export function ChatView({
           action={
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
+              size="sm"
               disabled={isDisabled}
               onClick={() => setIsWizardOpen(true)}
             >
@@ -335,7 +337,7 @@ export function ChatView({
           }
           onSubmit={handleSend}
         />
-      </Card>
+      </div>
 
       <RunInspector
         key={inspectedRunId ?? "empty"}

@@ -2,6 +2,7 @@
 
 import { FormEvent, KeyboardEvent, useState } from "react";
 import type { ReactNode } from "react";
+import { ArrowUp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -32,39 +33,45 @@ export function Composer({
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+    if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       void submit();
     }
   }
 
-  return (
-    <form
-      className="border-t bg-background px-4 py-4 sm:px-5"
-      onSubmit={(event) => void submit(event)}
-    >
-      <div className="flex flex-col gap-3">
-        <Textarea
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Ask the agent to build or refine a strategy..."
-          disabled={disabled}
-          rows={4}
-        />
+  const canSend = !disabled && text.trim().length > 0;
 
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-xs text-muted-foreground">
-            Cmd/Ctrl+Enter to send
-          </p>
-          <div className="flex items-center gap-2">
-            {action}
-            <Button type="submit" disabled={disabled || text.trim().length === 0}>
-              Send
+  return (
+    <div className="shrink-0 px-4 pb-4 pt-4">
+      <form
+        className="mx-auto w-full max-w-5xl"
+        onSubmit={(event) => void submit(event)}
+      >
+        <div className="flex flex-col gap-2 rounded-3xl border border-border/70 bg-card px-3 py-2.5 shadow-sm transition-colors focus-within:border-border">
+          <Textarea
+            value={text}
+            onChange={(event) => setText(event.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Ask the agent to build or refine a strategy..."
+            disabled={disabled}
+            rows={1}
+            className="max-h-48 min-h-9 resize-none border-0 bg-transparent px-1.5 py-1 shadow-none focus-visible:border-0 focus-visible:ring-0 disabled:bg-transparent dark:bg-transparent dark:disabled:bg-transparent"
+          />
+
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-1">{action}</div>
+            <Button
+              type="submit"
+              size="icon"
+              className="size-8 rounded-full"
+              disabled={!canSend}
+              aria-label="Send"
+            >
+              <ArrowUp />
             </Button>
           </div>
         </div>
-      </div>
-    </form>
+      </form>
+    </div>
   );
 }
