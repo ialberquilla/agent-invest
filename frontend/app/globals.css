@@ -49,64 +49,79 @@
 }
 
 :root {
-  --background: oklch(0.985 0.013 252.7);
-  --foreground: oklch(0.22 0.055 255.9);
+  /* Open WebUI-inspired neutral light theme: white canvas, a slightly
+     darker flush sidebar, white raised cards/bubbles. Mirrors the dark
+     theme's neutral hue so toggling stays consistent. */
+  --background: oklch(0.99 0.002 256);
+  --foreground: oklch(0.21 0.01 256);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.22 0.055 255.9);
+  --card-foreground: oklch(0.21 0.01 256);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.22 0.055 255.9);
-  --primary: oklch(0.54 0.19 257.2);
-  --primary-foreground: oklch(0.99 0.006 247.9);
-  --secondary: oklch(0.95 0.027 255.1);
-  --secondary-foreground: oklch(0.31 0.09 257.4);
-  --muted: oklch(0.955 0.02 252.1);
-  --muted-foreground: oklch(0.47 0.052 255.6);
-  --accent: oklch(0.93 0.043 255.6);
-  --accent-foreground: oklch(0.31 0.09 257.4);
+  --popover-foreground: oklch(0.21 0.01 256);
+  --primary: oklch(0.26 0.01 256);
+  --primary-foreground: oklch(0.98 0.002 256);
+  --secondary: oklch(0.96 0.004 256);
+  --secondary-foreground: oklch(0.26 0.01 256);
+  --muted: oklch(0.965 0.004 256);
+  --muted-foreground: oklch(0.45 0.01 256);
+  --accent: oklch(0.94 0.005 256);
+  --accent-foreground: oklch(0.26 0.01 256);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.89 0.025 252.8);
-  --input: oklch(0.89 0.025 252.8);
-  --ring: oklch(0.63 0.16 257.8);
+  --border: oklch(0.91 0.004 256);
+  --input: oklch(0.91 0.004 256);
+  --ring: oklch(0.6 0.02 256);
   --chart-1: oklch(0.56 0.21 257.2);
   --chart-2: oklch(0.67 0.16 223.5);
   --chart-3: oklch(0.7 0.15 164.5);
   --chart-4: oklch(0.72 0.17 70.2);
   --chart-5: oklch(0.62 0.2 293.1);
   --radius: 0.625rem;
-  --sidebar: var(--background);
-  --sidebar-foreground: var(--foreground);
+  --sidebar: oklch(0.965 0.004 256);
+  --sidebar-foreground: oklch(0.26 0.01 256);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: var(--accent);
+  --sidebar-accent: oklch(0.92 0.005 256);
   --sidebar-accent-foreground: var(--accent-foreground);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);
 }
 
 .dark {
-  --background: oklch(0.18 0.055 257.4);
-  --foreground: oklch(0.97 0.01 255.1);
-  --card: oklch(0.22 0.06 257.1);
-  --card-foreground: oklch(0.97 0.01 255.1);
-  --popover: oklch(0.22 0.06 257.1);
-  --popover-foreground: oklch(0.97 0.01 255.1);
-  --primary: oklch(0.72 0.16 252.9);
-  --primary-foreground: oklch(0.17 0.052 257.1);
-  --secondary: oklch(0.3 0.07 256.4);
-  --secondary-foreground: oklch(0.97 0.01 255.1);
-  --muted: oklch(0.3 0.06 255.6);
-  --muted-foreground: oklch(0.78 0.045 253.5);
-  --accent: oklch(0.34 0.08 254.7);
-  --accent-foreground: oklch(0.97 0.01 255.1);
+  /* Open WebUI-inspired neutral near-black. The canvas is the lightest of
+     the three surfaces; the sidebar sits darker and flush; cards/bubbles sit
+     slightly lighter so they read as raised against the canvas. */
+  --background: oklch(0.205 0.005 256);
+  --foreground: oklch(0.97 0.005 256);
+  --card: oklch(0.255 0.006 256);
+  --card-foreground: oklch(0.97 0.005 256);
+  --popover: oklch(0.235 0.006 256);
+  --popover-foreground: oklch(0.97 0.005 256);
+  --primary: oklch(0.93 0.004 256);
+  --primary-foreground: oklch(0.2 0.005 256);
+  --secondary: oklch(0.3 0.006 256);
+  --secondary-foreground: oklch(0.97 0.005 256);
+  --muted: oklch(0.28 0.006 256);
+  --muted-foreground: oklch(0.78 0.012 256);
+  --accent: oklch(0.32 0.006 256);
+  --accent-foreground: oklch(0.96 0.005 256);
   --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.72 0.16 252.9);
+  --border: oklch(1 0 0 / 8%);
+  --input: oklch(1 0 0 / 10%);
+  --ring: oklch(0.7 0.02 256);
   --chart-1: oklch(0.72 0.16 252.9);
   --chart-2: oklch(0.75 0.13 221.1);
   --chart-3: oklch(0.76 0.14 164.5);
   --chart-4: oklch(0.8 0.16 78.4);
   --chart-5: oklch(0.72 0.18 294.8);
+  /* Sidebar rail: darkest surface, flush against the canvas. */
+  --sidebar: oklch(0.165 0.005 256);
+  --sidebar-foreground: oklch(0.88 0.006 256);
+  --sidebar-primary: oklch(0.93 0.004 256);
+  --sidebar-primary-foreground: oklch(0.2 0.005 256);
+  --sidebar-accent: oklch(0.3 0.006 256);
+  --sidebar-accent-foreground: oklch(0.96 0.005 256);
+  --sidebar-border: oklch(1 0 0 / 6%);
+  --sidebar-ring: oklch(0.7 0.02 256);
 }
 
 @layer base {

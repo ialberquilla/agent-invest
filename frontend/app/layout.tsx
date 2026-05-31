@@ -40,7 +40,17 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${inter.variable} ${manrope.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
+      <head>
+        <script
+          // Apply the saved theme before paint to avoid a flash. Defaults to
+          // dark unless the user has explicitly chosen light.
+          dangerouslySetInnerHTML={{
+            __html: `try{var t=localStorage.getItem('agent-invest:theme');if(t!=='light')document.documentElement.classList.add('dark');}catch(e){document.documentElement.classList.add('dark');}`,
+          }}
+        />
+      </head>
       <body className="min-h-full flex flex-col">
         {children}
         {shouldLoadGoogleAnalytics ? (

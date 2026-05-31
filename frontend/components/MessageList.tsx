@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { type MouseEvent, useEffect, useRef, useState } from "react";
 
 import { ArtifactGallery } from "@/components/ArtifactGallery";
 import { LiveActivity } from "@/components/LiveActivity";
 import { StrategyResultReport } from "@/components/StrategyResultReport";
-import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { TimelinePart } from "@/lib/agent-events";
 import { ChatMessage } from "@/lib/local-store";
@@ -52,10 +51,10 @@ export function MessageList({
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex min-h-full flex-col gap-4 px-4 py-4 sm:px-5">
+      <div className="mx-auto flex min-h-full w-full max-w-[100rem] flex-col gap-6 px-4 py-6 sm:px-8">
         {messages.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 px-6 py-10 text-center text-sm text-muted-foreground">
-            Your chat history for this strategy will appear here.
+          <div className="flex flex-1 items-center justify-center py-20 text-center text-sm text-muted-foreground">
+            Ask the agent to build or refine a strategy.
           </div>
         ) : null}
 
@@ -76,92 +75,85 @@ export function MessageList({
             message.role === "agent" && !message.error
               ? reportWithData(message.structured_result)
               : null;
-          const bubbleClassName = cn(
-            "py-3 shadow-sm",
-            isUser && "bg-primary text-primary-foreground ring-primary/15",
-            !isUser && !message.error && "bg-card text-card-foreground",
-            message.error &&
-              "bg-destructive/10 text-destructive ring-destructive/20",
-            isInspectable &&
-              "cursor-pointer transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-          );
-          const bubbleBody = (
-            <Card size="sm" className={bubbleClassName}>
-              <CardContent className="space-y-2">
-                {message.error ? (
-                  <p className="text-sm leading-6">{message.error}</p>
-                ) : (
-                  <pre className="font-sans text-sm leading-6 whitespace-pre-wrap break-words">
-                    {message.text}
-                  </pre>
-                )}
 
-                {metadata ? (
-                  <p className="text-xs opacity-70">{metadata}</p>
-                ) : null}
-              </CardContent>
-            </Card>
+          // User turns read as a compact right-aligned bubble; assistant turns
+          // render as plain flowing text (Open WebUI style). Rich report cards
+          // and errors are the exceptions and get their own treatment.
+          const body = report ? (
+            <StrategyResultReport result={report} />
+          ) : message.error ? (
+            <div className="rounded-xl bg-destructive/10 px-4 py-3 text-sm leading-6 text-destructive ring-1 ring-destructive/20">
+              {message.error}
+            </div>
+          ) : isUser ? (
+            <div className="ml-auto max-w-[85%] rounded-2xl bg-secondary px-4 py-2.5 text-sm leading-6 text-secondary-foreground">
+              <pre className="font-sans whitespace-pre-wrap break-words">
+                {message.text}
+              </pre>
+            </div>
+          ) : (
+            <div
+              className={cn(
+                "max-w-6xl rounded-xl text-[0.95rem] leading-7 text-foreground",
+                isInspectable &&
+                  "-mx-2 cursor-pointer px-2 py-1 transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              )}
+              {...(isInspectable
+                ? {
+                    role: "button" as const,
+                    tabIndex: 0,
+                    "aria-label": `Inspect run ${runId}`,
+                    onClick: (event: MouseEvent<HTMLDivElement>) => {
+                      if (runId) {
+                        onInspectRun?.(
+                          runId,
+                          event.currentTarget as unknown as HTMLButtonElement,
+                        );
+                      }
+                    },
+                  }
+                : {})}
+            >
+              <pre className="font-sans whitespace-pre-wrap break-words">
+                {message.text}
+              </pre>
+              {metadata ? (
+                <p className="mt-2 text-xs text-muted-foreground">{metadata}</p>
+              ) : null}
+            </div>
           );
 
           return (
             <div
               key={`${message.role}-${message.run_id ?? index}`}
-              className={cn("flex", isUser ? "justify-end" : "justify-start")}
+              className="flex w-full flex-col gap-2"
             >
-              <div
-                className={cn(
-                  "flex flex-col gap-2",
-                  // The full report card needs room; plain bubbles stay
-                  // narrow so the conversation reads like a chat.
-                  report
-                    ? "w-full max-w-full"
-                    : "max-w-[96%] sm:max-w-[92%] xl:max-w-[88%]",
-                )}
-              >
-                {report ? (
-                  <StrategyResultReport result={report} />
-                ) : isInspectable ? (
+              {body}
+
+              {hasArtifacts && message.artifacts ? (
+                <ArtifactGallery artifacts={message.artifacts} />
+              ) : null}
+
+              {runId ? (
+                <div className="space-y-2">
                   <button
                     type="button"
-                    className="rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    aria-label={`Inspect run ${runId}`}
-                    onClick={(event) => {
-                      if (runId) {
-                        onInspectRun?.(runId, event.currentTarget);
-                      }
-                    }}
+                    className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+                    onClick={() =>
+                      setExpandedRunId((current) =>
+                        current === runId ? null : runId,
+                      )
+                    }
                   >
-                    {bubbleBody}
+                    {isActivityExpanded
+                      ? "Hide run activity"
+                      : "Show run activity"}
                   </button>
-                ) : (
-                  bubbleBody
-                )}
-
-                {hasArtifacts && message.artifacts ? (
-                  <ArtifactGallery artifacts={message.artifacts} />
-                ) : null}
-
-                {runId ? (
-                  <div className="space-y-2">
-                    <button
-                      type="button"
-                      className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-                      onClick={() =>
-                        setExpandedRunId((current) =>
-                          current === runId ? null : runId,
-                        )
-                      }
-                    >
-                      {isActivityExpanded
-                        ? "Hide run activity"
-                        : "Show run activity"}
-                    </button>
-                    {isActivityExpanded ? (
-                      <LiveActivity runId={runId} fullWidth />
-                    ) : null}
-                  </div>
-                ) : null}
-              </div>
+                  {isActivityExpanded ? (
+                    <LiveActivity runId={runId} fullWidth />
+                  ) : null}
+                </div>
+              ) : null}
             </div>
           );
         })}
@@ -175,16 +167,7 @@ export function MessageList({
               includeText
             />
           ) : (
-            <div className="flex justify-start">
-              <Card
-                size="sm"
-                className="max-w-[96%] bg-muted py-3 text-muted-foreground sm:max-w-[92%] xl:max-w-[88%]"
-              >
-                <CardContent>
-                  <p className="text-sm italic">thinking...</p>
-                </CardContent>
-              </Card>
-            </div>
+            <p className="text-sm italic text-muted-foreground">thinking...</p>
           )
         ) : null}
 
