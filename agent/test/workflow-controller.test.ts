@@ -638,6 +638,24 @@ test("a step error short-circuits to FinalNoViable with the error message", asyn
   );
 });
 
+test("short-circuit salvages a best-effort winner when an attempt has results", async () => {
+  // run_and_validate produces a backtest result for c1, then decide
+  // throws. The short-circuit must NOT give up with no_viable_strategy --
+  // it finalizes the closest-fit candidate as a best-effort winner.
+  const { runners, calls } = trackingRunners(
+    [{ action: "stop_winner", winner_candidate_id: "c1", justification: "ok" }],
+    { failOn: { step: "decide", message: "boom" } },
+  );
+
+  const state = await runWorkflowQuiet("run-salvage", "x", { runners });
+
+  assert.equal(state.final?.kind, "winner");
+  assert.equal((state.final as FinalWinner).is_best_effort, true);
+  assert.equal((state.final as FinalWinner).winner_candidate_id, "c1");
+  // The salvage path ran the finalize step on the ranked best candidate.
+  assert.ok(calls.includes("finalize(winner=c1)"));
+});
+
 test("workflow runs to completion with all default caps", async () => {
   const { runners } = trackingRunners([
     {

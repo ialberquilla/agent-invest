@@ -16,6 +16,35 @@ def test_rejects_fewer_than_three_candidates() -> None:
         )
 
 
+def test_rejects_non_positive_round() -> None:
+    with pytest.raises(ValueError, match="round must be a positive integer"):
+        run_candidate_batch.run(
+            {
+                "run_id": "run-1",
+                "round": 0,
+                "candidates": [_candidate(f"c{i}") for i in range(3)],
+            }
+        )
+
+
+def test_accepts_round_above_three(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The workflow can run more than three batches per run (reinterpret_brief
+    # / broaden_universe edges keep incrementing the attempt counter), so the
+    # echoed round is not capped at 3.
+    monkeypatch.setattr(run_candidate_batch, "daily_prices", _daily_prices)
+    monkeypatch.setattr(run_candidate_batch, "asset_universe_features", _features)
+
+    output = run_candidate_batch.run(
+        {
+            "run_id": "run-1",
+            "round": 4,
+            "candidates": [_candidate(f"c{i}") for i in range(3)],
+        }
+    )
+
+    assert output["round"] == 4
+
+
 def test_rejects_default_cap() -> None:
     with pytest.raises(ValueError, match="at most 8 candidates"):
         run_candidate_batch.run(

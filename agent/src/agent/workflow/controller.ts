@@ -1,9 +1,12 @@
 // Workflow controller. while-loop dispatcher over the 7 steps. Owns
-// WorkflowState, maintains per-edge counters, enforces global caps,
-// short-circuits to FinalNoViable on cap hit or step error.
+// WorkflowState, maintains per-edge counters, enforces global caps. On a
+// cap hit or step error it short-circuits, salvaging a best-effort winner
+// from any attempt that produced a backtest result and only falling back
+// to FinalNoViable when nothing usable exists.
 //
-// No new LLM calls here -- pure orchestration. Step LLM/CLI deps are
-// passed through via WorkflowDeps.
+// The only LLM call here is the salvage finalize on short-circuit;
+// otherwise pure orchestration. Step LLM/CLI deps are passed through via
+// WorkflowDeps.
 
 import pino from "pino";
 
@@ -16,6 +19,7 @@ import {
   type Decision,
   type Final,
   type FinalNoViable,
+  type FinalWinner,
   type ReinterpretHint,
   type StepName,
   type UniverseHint,
@@ -130,6 +134,8 @@ export async function runWorkflow(
         log,
         startedAt,
         appendEvent,
+        runners,
+        deps.llm,
       );
     }
     if (transitions >= caps.max_step_transitions) {
@@ -139,6 +145,8 @@ export async function runWorkflow(
         log,
         startedAt,
         appendEvent,
+        runners,
+        deps.llm,
       );
     }
     if (LLM_STEPS.has(next) && llmStepsInvoked >= caps.max_llm_calls) {
@@ -148,6 +156,8 @@ export async function runWorkflow(
         log,
         startedAt,
         appendEvent,
+        runners,
+        deps.llm,
       );
     }
 
@@ -187,6 +197,8 @@ export async function runWorkflow(
         log,
         startedAt,
         appendEvent,
+        runners,
+        deps.llm,
       );
     }
 
@@ -681,12 +693,57 @@ function resolveLLM(llm: LLMClient | undefined): LLMClient {
   return llm ?? nullLLM;
 }
 
+// Attempt to finalize a closest-fit best-effort winner when a run is
+// short-circuiting (budget cap or step error). Returns the FinalWinner on
+// success, or undefined when there is nothing to show (no thesis/window
+// resolved yet, no attempt ever produced a backtest result, or the
+// finalize call itself fails) -- in which case the caller falls back to
+// no_viable_strategy.
+async function salvageBestEffort(
+  state: WorkflowState,
+  reason: string,
+  runners: StepRunners,
+  llm: LLMClient | undefined,
+  log: pino.Logger,
+): Promise<FinalWinner | undefined> {
+  if (!state.thesis || !state.universe || !state.window) return undefined;
+  const best = bestCandidate(state.attempts, state.thesis);
+  if (!best) return undefined;
+  try {
+    const result = await runners.finalize(
+      {
+        run_id: state.run_id,
+        thesis: state.thesis,
+        universe: state.universe,
+        window: state.window,
+        attempts: state.attempts,
+        winner_candidate_id: best.candidate_id,
+        winner_attempt_n: best.attempt_n,
+        is_best_effort: true,
+        decide_justification: `Run stopped before a full match (${reason}); showing the closest-fit candidate found across all attempts.`,
+      },
+      { llm: resolveLLM(llm) },
+    );
+    log.info({ phase: "best_effort_salvaged", reason });
+    return result.delta.final;
+  } catch (error) {
+    log.warn({
+      phase: "best_effort_salvage_failed",
+      reason,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
 async function finishShortCircuit(
   state: WorkflowState,
   reason: string,
   log: pino.Logger,
   startedAt: number,
   appendEvent: typeof defaultAppendEvent,
+  runners: StepRunners,
+  llm: LLMClient | undefined,
 ): Promise<WorkflowState> {
   log.warn({ phase: "cap_hit", reason });
   await safeAppend(appendEvent, log, {
@@ -699,14 +756,21 @@ async function finishShortCircuit(
       error: reason,
     },
   });
-  const noViable: FinalNoViable = {
-    kind: "no_viable_strategy",
-    run_id: state.run_id,
-    thesis: state.thesis,
-    reasons: [reason],
-    attempts_summary: state.attempts,
-  };
-  state.final = noViable;
+  // The workflow's contract is to always show a strategy when one exists.
+  // Before giving up, salvage a best-effort winner from any attempt that
+  // produced a backtest result -- even when the tripped cap was
+  // max_llm_calls, the finalized strategy is worth one more LLM call.
+  // no_viable_strategy is reserved for the genuine "zero usable
+  // candidates" case (or a salvage finalize that itself fails).
+  state.final =
+    (await salvageBestEffort(state, reason, runners, llm, log)) ??
+    ({
+      kind: "no_viable_strategy",
+      run_id: state.run_id,
+      thesis: state.thesis,
+      reasons: [reason],
+      attempts_summary: state.attempts,
+    } satisfies FinalNoViable);
   const duration_ms = Date.now() - startedAt;
   log.info({
     phase: "workflow_end",
