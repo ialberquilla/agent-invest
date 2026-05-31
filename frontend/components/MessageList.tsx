@@ -3,6 +3,7 @@
 import { type MouseEvent, useEffect, useRef, useState } from "react";
 
 import { ArtifactGallery } from "@/components/ArtifactGallery";
+import { ChatEmptyState } from "@/components/ChatEmptyState";
 import { LiveActivity } from "@/components/LiveActivity";
 import { StrategyResultReport } from "@/components/StrategyResultReport";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -33,6 +34,9 @@ type MessageListProps = {
   liveRunId?: string | null;
   liveParts?: TimelinePart[];
   onInspectRun?: (runId: string, trigger: HTMLButtonElement) => void;
+  emptyStateDisabled?: boolean;
+  onSelectPrompt?: (prompt: string) => void;
+  onOpenWizard?: () => void;
 };
 
 export function MessageList({
@@ -41,6 +45,9 @@ export function MessageList({
   liveRunId = null,
   liveParts = [],
   onInspectRun,
+  emptyStateDisabled = false,
+  onSelectPrompt,
+  onOpenWizard,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
@@ -53,9 +60,17 @@ export function MessageList({
     <ScrollArea className="h-full">
       <div className="mx-auto flex min-h-full w-full max-w-[100rem] flex-col gap-6 px-4 py-6 sm:px-8">
         {messages.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center py-20 text-center text-sm text-muted-foreground">
-            Ask the agent to build or refine a strategy.
-          </div>
+          onSelectPrompt && onOpenWizard ? (
+            <ChatEmptyState
+              disabled={emptyStateDisabled}
+              onSelectPrompt={onSelectPrompt}
+              onOpenWizard={onOpenWizard}
+            />
+          ) : (
+            <div className="flex flex-1 items-center justify-center py-20 text-center text-sm text-muted-foreground">
+              Ask the agent to build or refine a strategy.
+            </div>
+          )
         ) : null}
 
         {messages.map((message, index) => {
