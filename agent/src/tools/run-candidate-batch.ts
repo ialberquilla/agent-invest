@@ -28,7 +28,11 @@ export type Candidate = {
 
 export type RunCandidateBatchInput = {
   run_id: string;
-  round: 1 | 2 | 3;
+  // 1-based attempt index, echoed back as metadata. The workflow can run
+  // more than three batches per run (reinterpret_brief / broaden_universe
+  // each start another propose->validate cycle without resetting the
+  // attempt counter), so any positive integer is valid.
+  round: number;
   iteration_hypothesis?: string;
   candidates: Candidate[];
   timeoutSeconds?: number;
@@ -37,7 +41,7 @@ export type RunCandidateBatchInput = {
 export type RunCandidateBatchOutput = {
   batch_id: string;
   run_id: string;
-  round: 1 | 2 | 3;
+  round: number;
   iteration_hypothesis?: string;
   results: Array<Record<string, unknown>>;
 };
@@ -67,8 +71,12 @@ export function parseRunCandidateBatchOutput(
     throw new Error("run_candidate_batch returned invalid JSON");
   assertString(parsed.batch_id, "batch_id");
   assertString(parsed.run_id, "run_id");
-  if (parsed.round !== 1 && parsed.round !== 2 && parsed.round !== 3) {
-    throw new Error("round must be 1, 2, or 3");
+  if (
+    typeof parsed.round !== "number" ||
+    !Number.isInteger(parsed.round) ||
+    parsed.round < 1
+  ) {
+    throw new Error("round must be a positive integer");
   }
   if (
     parsed.iteration_hypothesis !== undefined &&
@@ -102,8 +110,8 @@ export function parseRunCandidateBatchOutput(
 
 function validateInput(input: RunCandidateBatchInput) {
   if (!input.run_id) throw new Error("run_id is required");
-  if (input.round !== 1 && input.round !== 2 && input.round !== 3) {
-    throw new Error("round must be 1, 2, or 3");
+  if (!Number.isInteger(input.round) || input.round < 1) {
+    throw new Error("round must be a positive integer");
   }
   if (
     input.iteration_hypothesis !== undefined &&

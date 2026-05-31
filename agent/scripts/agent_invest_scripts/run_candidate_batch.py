@@ -129,8 +129,14 @@ def _validate_batch_input(input_payload: dict[str, Any]) -> None:
     if not isinstance(input_payload, dict):
         raise ValueError("RunCandidateBatchInput must be an object")
     normalize_identifier(str(input_payload.get("run_id", "")), "run_id")
-    if input_payload.get("round") not in {1, 2, 3}:
-        raise ValueError("round must be 1, 2, or 3")
+    # `round` is a 1-based attempt index, echoed back as metadata. The
+    # workflow can run more than three batches across a run (each
+    # reinterpret_brief / broaden_universe edge starts another
+    # propose->validate cycle without resetting the attempt counter), so
+    # any positive integer is valid here.
+    round_value = input_payload.get("round")
+    if not isinstance(round_value, int) or isinstance(round_value, bool) or round_value < 1:
+        raise ValueError("round must be a positive integer")
     if "iteration_hypothesis" in input_payload and not isinstance(
         input_payload["iteration_hypothesis"], str
     ):
