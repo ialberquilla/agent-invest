@@ -4,11 +4,29 @@ import { useEffect, useRef, useState } from "react";
 
 import { ArtifactGallery } from "@/components/ArtifactGallery";
 import { LiveActivity } from "@/components/LiveActivity";
+import { StrategyResultReport } from "@/components/StrategyResultReport";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { TimelinePart } from "@/lib/agent-events";
 import { ChatMessage } from "@/lib/local-store";
+import type { StrategyResult } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+// A structured result is worth rendering as the full report card only
+// when it carries real backtest output -- an equity curve or at least
+// one finite KPI. A no_viable result (empty kpis/charts) falls back to
+// the plain text bubble.
+function reportWithData(
+  result: StrategyResult | null | undefined,
+): StrategyResult | null {
+  if (!result) return null;
+  const curve = result.charts?.equity_curve;
+  const hasCurve = Array.isArray(curve) && curve.length > 0;
+  const hasKpi = Object.values(result.kpis ?? {}).some(
+    (value) => typeof value === "number" && Number.isFinite(value),
+  );
+  return hasCurve || hasKpi ? result : null;
+}
 
 type MessageListProps = {
   messages: ChatMessage[];
@@ -54,6 +72,10 @@ export function MessageList({
             message.role === "agent" &&
             !!message.artifacts &&
             message.artifacts.length > 0;
+          const report =
+            message.role === "agent" && !message.error
+              ? reportWithData(message.structured_result)
+              : null;
           const bubbleClassName = cn(
             "py-3 shadow-sm",
             isUser && "bg-primary text-primary-foreground ring-primary/15",
@@ -86,8 +108,19 @@ export function MessageList({
               key={`${message.role}-${message.run_id ?? index}`}
               className={cn("flex", isUser ? "justify-end" : "justify-start")}
             >
-              <div className="flex max-w-[96%] flex-col gap-2 sm:max-w-[92%] xl:max-w-[88%]">
-                {isInspectable ? (
+              <div
+                className={cn(
+                  "flex flex-col gap-2",
+                  // The full report card needs room; plain bubbles stay
+                  // narrow so the conversation reads like a chat.
+                  report
+                    ? "w-full max-w-full"
+                    : "max-w-[96%] sm:max-w-[92%] xl:max-w-[88%]",
+                )}
+              >
+                {report ? (
+                  <StrategyResultReport result={report} />
+                ) : isInspectable ? (
                   <button
                     type="button"
                     className="rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"

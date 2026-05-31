@@ -16,6 +16,7 @@ import { bestCandidate } from "./rank.ts";
 import {
   DEFAULT_WORKFLOW_CAPS,
   type Attempt,
+  type CandidateBacktest,
   type Decision,
   type Final,
   type FinalNoViable,
@@ -543,6 +544,15 @@ async function dispatch(
       );
       current.batch_id = result.delta.batch_id;
       current.validation_summary = result.delta.validation_summary;
+      // Stash full per-candidate backtests on the side-channel, keyed by
+      // attempt so a best-effort winner from an earlier round can still
+      // be located. Kept off Attempt so the curves never reach the LLM.
+      if (!state.backtests) state.backtests = {};
+      for (const [candidateId, backtest] of Object.entries(
+        result.delta.backtests,
+      )) {
+        state.backtests[`${current.attempt_n}:${candidateId}`] = backtest;
+      }
       return result.next;
     }
     case "decide": {
@@ -591,6 +601,11 @@ async function dispatch(
           winner_attempt_n: current.attempt_n,
           is_best_effort: false,
           decide_justification: decision.justification,
+          winner_backtest: winnerBacktest(
+            state,
+            current.attempt_n,
+            decision.winner_candidate_id,
+          ),
         };
       } else if (decision.action === "stop_best_effort") {
         // No candidate fully satisfied the thesis: show the closest fit.
@@ -609,6 +624,11 @@ async function dispatch(
           winner_attempt_n: best.attempt_n,
           is_best_effort: true,
           decide_justification: decision.reasons.join("; "),
+          winner_backtest: winnerBacktest(
+            state,
+            best.attempt_n,
+            best.candidate_id,
+          ),
         };
       } else {
         throw new Error(
@@ -678,6 +698,17 @@ function lastDecisionHint(
   return (decision as Hinted).hint as never;
 }
 
+// Look up a candidate's full backtest from the side-channel by attempt
+// and candidate id. Returns undefined when the curves were not captured
+// (older state, or a batch that produced no usable row for that id).
+function winnerBacktest(
+  state: WorkflowState,
+  attempt_n: number,
+  candidate_id: string,
+): CandidateBacktest | undefined {
+  return state.backtests?.[`${attempt_n}:${candidate_id}`];
+}
+
 // Fallback LLM that fails only when actually called. Lets the
 // controller stay typed while keeping deps.llm optional for tests that
 // override the LLM-backed runners with deterministic doubles.
@@ -721,6 +752,7 @@ async function salvageBestEffort(
         winner_attempt_n: best.attempt_n,
         is_best_effort: true,
         decide_justification: `Run stopped before a full match (${reason}); showing the closest-fit candidate found across all attempts.`,
+        winner_backtest: winnerBacktest(state, best.attempt_n, best.candidate_id),
       },
       { llm: resolveLLM(llm) },
     );

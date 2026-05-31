@@ -6,6 +6,7 @@ import {
   runWorkflow,
   type StepRunners,
 } from "../src/agent/workflow/controller.ts";
+import { workflowStateToStructuredResult } from "../src/agent/workflow/persist.ts";
 import type {
   Decision,
   FinalWinner,
@@ -210,6 +211,32 @@ function trackingRunners(
                 },
               ],
             },
+            backtests: {
+              c1: {
+                metrics: {
+                  total_return: 0.1,
+                  cagr: 0.05,
+                  volatility: 0.6,
+                  max_drawdown: -0.5,
+                  sharpe: 0.2,
+                  sortino: 0.3,
+                  calmar: 0.1,
+                  composite_score: 0.4,
+                },
+                equity_curve: [
+                  { date: "2023-01-01", value: 1_000_000, drawdown_pct: 0 },
+                  { date: "2023-01-02", value: 1_100_000, drawdown_pct: 0 },
+                ],
+                benchmark_curve: [
+                  { date: "2023-01-01", value: 1, drawdown_pct: 0 },
+                  { date: "2023-01-02", value: 1.05, drawdown_pct: 0 },
+                ],
+                allocation: [
+                  { coin_id: "bitcoin", weight: 0.6 },
+                  { coin_id: "ethereum", weight: 0.4 },
+                ],
+              },
+            },
           },
           next: "decide",
         };
@@ -258,6 +285,7 @@ function trackingRunners(
             risks: ["risk"],
             next_steps: ["next"],
           },
+          winner_backtest: input.winner_backtest,
         };
         return { delta: { final }, next: "complete" };
       },
@@ -338,6 +366,71 @@ test("workflow runs the happy path through to FinalWinner", async () => {
     "decide",
     "finalize",
   ]);
+});
+
+test("winner backtest curves flow from run_and_validate into the structured result", async () => {
+  const { runners } = trackingRunners([
+    {
+      action: "stop_winner",
+      winner_candidate_id: "c1",
+      justification: "best fit",
+    },
+  ]);
+
+  const state = await runWorkflowQuiet("run-curves", "balanced brief", {
+    runners,
+  });
+
+  // The controller stashed the per-candidate backtest on the
+  // side-channel and attached the winner's to the FinalWinner.
+  assert.equal(state.final?.kind, "winner");
+  const final = state.final as FinalWinner;
+  assert.ok(final.winner_backtest, "winner_backtest should be attached");
+  assert.equal(final.winner_backtest?.equity_curve.length, 2);
+
+  // The structured result the API returns now carries real KPIs and a
+  // date-aligned equity curve (benchmark rescaled to starting capital).
+  const result = workflowStateToStructuredResult(state) as Record<
+    string,
+    unknown
+  >;
+  const kpis = result.kpis as Record<string, number | null>;
+  assert.equal(kpis.cagr, 0.05);
+  assert.equal(kpis.sharpe_ratio, 0.2);
+  assert.equal(kpis.final_equity_usd, 1_100_000);
+  assert.equal(kpis.final_equity_multiple, 1.1);
+
+  const charts = result.charts as {
+    equity_curve: Array<{
+      date: string;
+      strategy_equity: number;
+      benchmark_equity: number | null;
+    }>;
+  };
+  assert.equal(charts.equity_curve.length, 2);
+  assert.equal(charts.equity_curve[0]?.strategy_equity, 1_000_000);
+  // benchmark normalized 1.0 -> rescaled to the 1_000_000 starting capital.
+  assert.equal(charts.equity_curve[0]?.benchmark_equity, 1_000_000);
+  assert.equal(charts.equity_curve[1]?.benchmark_equity, 1_050_000);
+
+  // Allocation: selected-assets list + the pie-chart series, sorted by weight.
+  const allocation = result.allocation as Array<{
+    asset: string;
+    coin_id: string;
+    weight: number;
+  }>;
+  assert.deepEqual(
+    allocation.map((a) => [a.coin_id, a.weight]),
+    [
+      ["bitcoin", 0.6],
+      ["ethereum", 0.4],
+    ],
+  );
+  assert.equal(allocation[0]?.asset, "Bitcoin");
+  const target = (result.charts as { target_allocation: Array<{ weight: number }> })
+    .target_allocation;
+  assert.equal(target.length, 2);
+  assert.equal(target[0]?.weight, 0.6);
 });
 
 test("controller emits stage.failed + final stage.completed on a budget short-circuit", async () => {

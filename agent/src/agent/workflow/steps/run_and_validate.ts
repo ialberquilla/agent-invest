@@ -14,10 +14,13 @@ import {
 } from "../cli.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
 import type {
+  AllocationWeight,
   Attempt,
   AttemptValidationSummary,
+  CandidateBacktest,
   CandidateMetrics,
   CandidateOutcome,
+  EquityPoint,
   Proposal,
   ProposedCandidate,
   RunAndValidateInput,
@@ -38,6 +41,11 @@ export type RunAndValidateResult = {
   delta: {
     batch_id: string;
     validation_summary: AttemptValidationSummary;
+    // Full backtest output (metrics + equity/benchmark curves) per
+    // candidate_id. The controller stashes these on
+    // WorkflowState.backtests keyed by attempt; only the winner's is
+    // ever surfaced. Empty when the batch produced no usable rows.
+    backtests: Record<string, CandidateBacktest>;
   };
   next: StepName;
 };
@@ -84,6 +92,7 @@ export async function runAndValidate(
     );
 
     const summary = normalizeValidationSummary(validation, batchResponse);
+    const backtests = indexBacktests(batchResponse);
 
     logger.exit(NEXT_STEP, {
       batch_id: batchResponse.batch_id,
@@ -95,6 +104,7 @@ export async function runAndValidate(
       delta: {
         batch_id: batchResponse.batch_id,
         validation_summary: summary,
+        backtests,
       },
       next: NEXT_STEP,
     };
@@ -259,28 +269,112 @@ function indexMetrics(
 ): Map<string, CandidateMetrics> {
   const out = new Map<string, CandidateMetrics>();
   for (const row of batch?.results ?? []) {
-    if (typeof row !== "object" || row === null) continue;
-    const r = row as Record<string, unknown>;
-    const id = r.candidate_id;
-    if (typeof id !== "string") continue;
-    const m = r.metrics;
-    if (typeof m !== "object" || m === null) continue;
-    const mm = m as Record<string, unknown>;
-    out.set(id, {
-      total_return: coerceNumber(mm.total_return),
-      cagr: coerceNumber(mm.cagr),
-      volatility: coerceNumber(mm.volatility),
-      max_drawdown: coerceNumber(mm.max_drawdown),
-      sharpe: coerceNumber(mm.sharpe),
-      sortino: coerceNumber(mm.sortino),
-      calmar: coerceNumber(mm.calmar),
-      composite_score:
-        typeof r.composite_score === "number" &&
-        Number.isFinite(r.composite_score)
-          ? r.composite_score
-          : null,
+    const r = asResultRow(row);
+    if (!r) continue;
+    const metrics = metricsFromRow(r.row);
+    if (metrics) out.set(r.id, metrics);
+  }
+  return out;
+}
+
+// Extract the full backtest (metrics + equity/benchmark curves) per
+// candidate from the batch response. The curves are already in the
+// Python output (result.to_dict's equity_curve/benchmark_curve); we
+// just keep them instead of discarding them after the gate. Candidates
+// without metrics are skipped (nothing useful to show).
+export function indexBacktests(
+  batch: RunCandidateBatchResponse | undefined,
+): Record<string, CandidateBacktest> {
+  const out: Record<string, CandidateBacktest> = {};
+  for (const row of batch?.results ?? []) {
+    const r = asResultRow(row);
+    if (!r) continue;
+    const metrics = metricsFromRow(r.row);
+    if (!metrics) continue;
+    out[r.id] = {
+      metrics,
+      equity_curve: extractCurve(r.row.equity_curve),
+      benchmark_curve: extractCurve(r.row.benchmark_curve),
+      allocation: extractAllocation(r.row),
+    };
+  }
+  return out;
+}
+
+// Narrow a raw result entry to an object with a string candidate_id.
+function asResultRow(
+  row: unknown,
+): { id: string; row: Record<string, unknown> } | undefined {
+  if (typeof row !== "object" || row === null) return undefined;
+  const r = row as Record<string, unknown>;
+  if (typeof r.candidate_id !== "string") return undefined;
+  return { id: r.candidate_id, row: r };
+}
+
+function metricsFromRow(
+  row: Record<string, unknown>,
+): CandidateMetrics | undefined {
+  const m = row.metrics;
+  if (typeof m !== "object" || m === null) return undefined;
+  const mm = m as Record<string, unknown>;
+  return {
+    total_return: coerceNumber(mm.total_return),
+    cagr: coerceNumber(mm.cagr),
+    volatility: coerceNumber(mm.volatility),
+    max_drawdown: coerceNumber(mm.max_drawdown),
+    sharpe: coerceNumber(mm.sharpe),
+    sortino: coerceNumber(mm.sortino),
+    calmar: coerceNumber(mm.calmar),
+    composite_score:
+      typeof row.composite_score === "number" &&
+      Number.isFinite(row.composite_score)
+        ? row.composite_score
+        : null,
+  };
+}
+
+// Normalize a Python `_series_to_records` list ([{date, value,
+// drawdown_pct}, ...]) into EquityPoint[]. Drops malformed entries
+// rather than throwing -- a missing or non-array curve yields [].
+function extractCurve(value: unknown): EquityPoint[] {
+  if (!Array.isArray(value)) return [];
+  const points: EquityPoint[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const rec = entry as Record<string, unknown>;
+    if (typeof rec.date !== "string") continue;
+    points.push({
+      date: rec.date,
+      value: coerceNumber(rec.value),
+      drawdown_pct: coerceNumber(rec.drawdown_pct),
     });
   }
+  return points;
+}
+
+// Pull the target allocation from the backtest's allocation_metrics: the
+// weights of the first rebalance in holdings_history. Drops zero/near-zero
+// weights and sorts heaviest first. Returns [] when nothing is available.
+function extractAllocation(row: Record<string, unknown>): AllocationWeight[] {
+  const am = row.allocation_metrics;
+  if (typeof am !== "object" || am === null) return [];
+  const history = (am as Record<string, unknown>).holdings_history;
+  if (!Array.isArray(history) || history.length === 0) return [];
+  const first = history[0];
+  if (typeof first !== "object" || first === null) return [];
+  const weights = (first as Record<string, unknown>).weights;
+  if (typeof weights !== "object" || weights === null) return [];
+
+  const out: AllocationWeight[] = [];
+  for (const [coin_id, raw] of Object.entries(
+    weights as Record<string, unknown>,
+  )) {
+    const weight = coerceNumber(raw);
+    if (Number.isFinite(weight) && Math.abs(weight) > 1e-6) {
+      out.push({ coin_id, weight });
+    }
+  }
+  out.sort((a, b) => b.weight - a.weight);
   return out;
 }
 

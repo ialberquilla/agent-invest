@@ -283,6 +283,7 @@ function assembleFinal(
     window: input.window,
     attempts_summary: input.attempts,
     narrative,
+    winner_backtest: input.winner_backtest,
   };
 }
 

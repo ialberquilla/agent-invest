@@ -739,6 +739,11 @@ function runSummaryFields(structuredResult: unknown) {
         ? (structuredResult.backtest.candidate_batch_id ?? null)
         : null,
       winner_candidate_id: structuredResult.winner_candidate_id ?? null,
+      // Persist the full structured result so a page reload / the run
+      // inspector can recover the report card (KPIs + charts) without
+      // re-running the workflow. The streaming path only delivers it
+      // over SSE otherwise.
+      structured_result: structuredResult,
     },
   };
 }
