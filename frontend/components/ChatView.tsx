@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useEffectEvent, useRef, useState } from "react";
+import { Compass } from "lucide-react";
 
 import { AllocationWizard } from "@/components/AllocationWizard";
 import { Composer } from "@/components/Composer";
@@ -295,6 +296,9 @@ export function ChatView({
             liveRunId={liveRunId}
             liveParts={liveTimeline.parts}
             onInspectRun={handleInspectRun}
+            emptyStateDisabled={isDisabled}
+            onSelectPrompt={handleSend}
+            onOpenWizard={() => setIsWizardOpen(true)}
           />
         </div>
 
@@ -303,7 +307,7 @@ export function ChatView({
             <div className="mx-auto w-full max-w-5xl">
               <div className="sticky top-0 z-20 flex items-center justify-between gap-4 border-b border-border/60 bg-background/95 px-4 py-2 backdrop-blur">
                 <h2 className="font-heading text-sm font-semibold">
-                  Allocation wizard
+                  Guided setup
                 </h2>
                 <Button
                   type="button"
@@ -312,7 +316,7 @@ export function ChatView({
                   onClick={() => setIsWizardOpen(false)}
                 >
                   <span aria-hidden>×</span>
-                  <span className="sr-only">Close wizard</span>
+                  <span className="sr-only">Close guided setup</span>
                 </Button>
               </div>
               <div className="p-2 sm:p-3">
@@ -331,8 +335,10 @@ export function ChatView({
               size="sm"
               disabled={isDisabled}
               onClick={() => setIsWizardOpen(true)}
+              className="gap-1.5"
             >
-              Wizard
+              <Compass className="size-4" />
+              Guided setup
             </Button>
           }
           onSubmit={handleSend}
