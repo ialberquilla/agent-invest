@@ -132,17 +132,6 @@ function buildReply(final: WorkflowState["final"]): string {
   return `No viable strategy found:\n- ${final.reasons.join("\n- ")}`;
 }
 
-function winnerTemplate(
-  final: FinalWinner,
-  state: WorkflowState,
-): string | null {
-  const latest = state.attempts.at(-1);
-  const winnerCandidate = latest?.proposal.candidates.find(
-    (c) => c.candidate_id === final.winner_candidate_id,
-  );
-  return winnerCandidate?.template_id ?? null;
-}
-
 // Map a finished WorkflowState into the structured-result shape the
 // synchronous /messages endpoint (and the frontend) expects. Lets us
 // swap the old artifact-reading code path without changing the wire
@@ -164,6 +153,8 @@ export function workflowStateToStructuredResult(
       next_steps: final.narrative.next_steps,
       template_id: winnerTemplate,
       winner_candidate_id: final.winner_candidate_id,
+      is_best_effort: final.is_best_effort,
+      unmet_constraints: final.unmet_constraints,
       backtest: {
         candidate_batch_id: final.candidate_batch_id,
       },
@@ -199,8 +190,12 @@ function winnerTemplateId(
   final: FinalWinner,
   state: WorkflowState,
 ): string | null {
-  const latest = state.attempts.at(-1);
-  const winnerCandidate = latest?.proposal.candidates.find(
+  // Locate the winner by its attempt: a best-effort winner can be from
+  // an earlier attempt, and candidate_id is only unique within a batch.
+  const attempt = state.attempts.find(
+    (a) => a.attempt_n === final.winner_attempt_n,
+  );
+  const winnerCandidate = attempt?.proposal.candidates.find(
     (c) => c.candidate_id === final.winner_candidate_id,
   );
   return winnerCandidate?.template_id ?? null;

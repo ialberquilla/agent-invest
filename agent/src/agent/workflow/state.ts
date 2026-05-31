@@ -320,6 +320,34 @@ export type RefinementHint = {
   rationale: string;
 };
 
+// Per-candidate backtest metrics, lifted from the run_candidate_batch
+// result row. Retained (rather than discarded after the pass/fail gate)
+// so `decide` can pick the genuinely-best passing candidate and the
+// ranker can choose a closest-fit winner when nothing fully passes.
+export type CandidateMetrics = {
+  total_return: number;
+  cagr: number;
+  volatility: number;
+  max_drawdown: number;
+  sharpe: number;
+  sortino: number;
+  calmar: number;
+  composite_score: number | null;
+};
+
+// One row per backtested candidate, carrying its gate result, how far
+// it missed (0 when passing), and its metrics. This is the unit the
+// cross-attempt ranker consumes.
+export type CandidateOutcome = {
+  candidate_id: string;
+  passed: boolean;
+  // 0 when passed. Otherwise the sum of normalized constraint overshoot
+  // across this candidate's violations -- a single "distance from
+  // satisfying the thesis" scalar the ranker minimizes.
+  constraint_distance: number;
+  metrics?: CandidateMetrics;
+};
+
 // Compact summary of what happened in a prior attempt. Avoid passing
 // the full validation payload back through the LLM -- this is the
 // pruned view propose_candidates needs.
@@ -333,6 +361,10 @@ export type AttemptValidationSummary = {
       target: number;
     }>;
   }>;
+  // Every backtested candidate (passing and failing) with metrics and
+  // constraint_distance. Populated by run_and_validate from the batch +
+  // validation results; read by the ranker and surfaced to decide.
+  candidates: CandidateOutcome[];
 };
 
 export type Attempt = {
@@ -396,6 +428,15 @@ export type Decision =
       winner_candidate_id: string;
       justification: string;
     }
+  // Normal give-up: nothing fully satisfied the thesis, but the run still
+  // produced at least one backtested candidate. The deterministic ranker
+  // selects the closest-fit winner downstream; the LLM only supplies the
+  // reasons it could not fully satisfy the brief.
+  | { action: "stop_best_effort"; reasons: string[] }
+  // Hard failure only: no candidate ever produced a usable backtest, so
+  // there is literally nothing to show. Not offered to the LLM as a
+  // normal choice -- reserved for the decide parse-failure fallback and
+  // the controller's cap/error short-circuit.
   | { action: "stop_no_viable"; reasons: string[] }
   | { action: "refine_candidates"; hint: RefinementHint }
   | { action: "broaden_universe"; hint: UniverseHint }
@@ -425,7 +466,22 @@ export type FinalWinner = {
   kind: "winner";
   run_id: string;
   winner_candidate_id: string;
+  // Which attempt the winner came from. Needed because a best-effort
+  // winner can be from an earlier attempt and candidate_id is only
+  // unique within a batch, so locating the candidate requires both.
+  winner_attempt_n: number;
   candidate_batch_id: string;
+  // True when no candidate fully satisfied the thesis and this is the
+  // closest-fit fallback. False for a candidate that passed the gate.
+  is_best_effort: boolean;
+  // Constraints the winner did NOT satisfy. Empty for a full winner;
+  // populated for a best-effort winner so the narrative can disclose
+  // what it missed and by how much.
+  unmet_constraints: Array<{
+    constraint: string;
+    observed: number;
+    target: number;
+  }>;
   thesis: Thesis;
   universe: Universe;
   window: Window;
@@ -474,9 +530,11 @@ export type WorkflowState = {
   final?: Final;
 };
 
-// Input for the LLM finalize step. The step is only invoked when
-// `decide` chose stop_winner, so the winner pointer is known and
-// guaranteed to be in the latest attempt's passing set.
+// Input for the LLM finalize step. Invoked when `decide` chose
+// stop_winner (a passing candidate in the latest attempt) or
+// stop_best_effort (the ranker's closest-fit candidate, which may be in
+// an earlier attempt). winner_attempt_n locates the winner; is_best_effort
+// tells the step whether to narrate it as a full match or a closest fit.
 export type FinalizeInput = {
   run_id: string;
   thesis: Thesis;
@@ -484,6 +542,8 @@ export type FinalizeInput = {
   window: Window;
   attempts: Attempt[];
   winner_candidate_id: string;
+  winner_attempt_n: number;
+  is_best_effort: boolean;
   decide_justification: string;
 };
 
@@ -558,8 +618,11 @@ export function validateDecision(
     case "stop_winner":
       validateStopWinner(value, context);
       return;
+    case "stop_best_effort":
+      validateStopReasons(value, "stop_best_effort");
+      return;
     case "stop_no_viable":
-      validateStopNoViable(value);
+      validateStopReasons(value, "stop_no_viable");
       return;
     case "refine_candidates":
       validateRefineCandidates(value, context);
@@ -572,7 +635,7 @@ export function validateDecision(
       return;
     default:
       throw new DecisionValidationError(
-        `decision.action must be one of: stop_winner, stop_no_viable, refine_candidates, broaden_universe, reinterpret_brief (got "${action}")`,
+        `decision.action must be one of: stop_winner, stop_best_effort, stop_no_viable, refine_candidates, broaden_universe, reinterpret_brief (got "${action}")`,
       );
   }
 }
@@ -593,14 +656,17 @@ function validateStopWinner(
   }
 }
 
-function validateStopNoViable(value: Record<string, unknown>): void {
+function validateStopReasons(
+  value: Record<string, unknown>,
+  action: "stop_best_effort" | "stop_no_viable",
+): void {
   if (
     !Array.isArray(value.reasons) ||
     value.reasons.length === 0 ||
     value.reasons.some((reason) => typeof reason !== "string" || !reason.trim())
   ) {
     throw new DecisionValidationError(
-      "reasons must be a non-empty array of non-empty strings",
+      `${action}.reasons must be a non-empty array of non-empty strings`,
     );
   }
 }

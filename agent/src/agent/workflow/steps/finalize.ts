@@ -38,15 +38,23 @@ const SCHEMA_RETRY_NOTE =
 
 export const FINALIZE_PROMPT = `You are the finalize step for an investment-strategy workflow.
 
-The deterministic gate has already selected a winning candidate. Your job is to emit a user-facing narrative explaining this strategy, its assumptions, its risks, and what the user should do next. Emit JSON only -- no prose, no Markdown fences.
+A candidate has already been selected. Your job is to emit a user-facing narrative explaining this strategy, its assumptions, its risks, and what the user should do next. Emit JSON only -- no prose, no Markdown fences.
 
 You will receive in the user message:
 - thesis: how the user's brief was interpreted (objective, horizon, constraints).
 - universe: { coin_ids, source } -- the coin set the strategy uses.
 - window: { start, end, horizon_days, effective } -- the backtest window the strategy was scored over.
-- winner: the candidate config that passed validation (template, weighting, select_top, rebalance_trigger, rationale).
+- winner: the selected candidate config (template, weighting, select_top, rebalance_trigger, rationale).
+- is_best_effort: boolean. When FALSE, the winner fully satisfied every thesis constraint. When TRUE, NO candidate fully satisfied the thesis and this is the CLOSEST-FIT fallback we are showing anyway.
+- unmet_constraints: present only for best_effort -- the constraints the winner did NOT meet, with observed vs target values.
 - attempts: the iteration history that led here. Useful for "why this candidate not the earlier ones" framing.
 - decide_justification: the structured reasoning the decide step used when picking this winner. Lean on it but rewrite in user-friendly prose.
+
+BEST-EFFORT HONESTY (when is_best_effort is true):
+- The summary MUST state plainly that this strategy did not fully meet the brief, and which constraint(s) it missed (use unmet_constraints, e.g. "its 41% max drawdown exceeds your 35% limit").
+- At least one risk entry MUST call out each unmet constraint and its observed-vs-target gap.
+- Do NOT describe a best-effort result as if it satisfied the thesis. Frame it as "the closest we could get".
+- next_steps SHOULD include relaxing the unmet constraint(s) or rerunning with a different brief if the gap matters to the user.
 
 Output schema (all fields required, all strings non-empty, all arrays non-empty):
 {
@@ -76,47 +84,67 @@ export async function finalize(
       attempt: input.attempts.length,
     });
 
-  const latest = input.attempts.at(-1);
-  if (!latest) {
+  // The winner can come from any attempt (a best-effort winner may be
+  // from an earlier round), so locate it by attempt_n rather than
+  // assuming the latest attempt.
+  const winnerAttempt = input.attempts.find(
+    (a) => a.attempt_n === input.winner_attempt_n,
+  );
+  if (!winnerAttempt) {
     const err = new FinalizeValidationError(
-      "finalize requires at least one attempt",
+      `no attempt with attempt_n ${input.winner_attempt_n}`,
     );
     logger.error(err);
     throw err;
   }
-  if (!latest.batch_id) {
+  if (!winnerAttempt.batch_id) {
     const err = new FinalizeValidationError(
-      "latest attempt is missing batch_id",
+      `attempt ${input.winner_attempt_n} is missing batch_id`,
     );
     logger.error(err);
     throw err;
   }
-  const passingIds = latest.validation_summary?.passing_candidate_ids ?? [];
-  if (!passingIds.includes(input.winner_candidate_id)) {
-    const err = new FinalizeValidationError(
-      `winner_candidate_id "${input.winner_candidate_id}" is not in the latest attempt's passing_candidate_ids [${passingIds.join(", ")}]`,
-    );
-    logger.error(err);
-    throw err;
-  }
-  const winnerCandidate = latest.proposal.candidates.find(
+  const winnerCandidate = winnerAttempt.proposal.candidates.find(
     (c) => c.candidate_id === input.winner_candidate_id,
   );
   if (!winnerCandidate) {
     const err = new FinalizeValidationError(
-      `winner_candidate_id "${input.winner_candidate_id}" is not in the latest attempt's proposal`,
+      `winner_candidate_id "${input.winner_candidate_id}" is not in attempt ${input.winner_attempt_n}'s proposal`,
     );
     logger.error(err);
     throw err;
   }
+  // A full winner must have actually passed the gate. A best-effort
+  // winner did not -- that is the whole point -- so we only check
+  // membership in the passing set when this is NOT a best-effort result.
+  if (!input.is_best_effort) {
+    const passingIds =
+      winnerAttempt.validation_summary?.passing_candidate_ids ?? [];
+    if (!passingIds.includes(input.winner_candidate_id)) {
+      const err = new FinalizeValidationError(
+        `winner_candidate_id "${input.winner_candidate_id}" is not in attempt ${input.winner_attempt_n}'s passing_candidate_ids [${passingIds.join(", ")}]`,
+      );
+      logger.error(err);
+      throw err;
+    }
+  }
+  const unmetConstraints = input.is_best_effort
+    ? unmetConstraintsFor(winnerAttempt, input.winner_candidate_id)
+    : [];
 
   logger.enter({
     winner_candidate_id: input.winner_candidate_id,
-    batch_id: latest.batch_id,
+    winner_attempt_n: input.winner_attempt_n,
+    is_best_effort: input.is_best_effort,
+    batch_id: winnerAttempt.batch_id,
     attempts: input.attempts.length,
   });
 
-  const userMessage = buildUserMessage(input, winnerCandidate);
+  const userMessage = buildUserMessage(
+    input,
+    winnerCandidate,
+    unmetConstraints,
+  );
   let lastError: Error | undefined;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -133,7 +161,12 @@ export async function finalize(
     try {
       const parsed = parseJson(response.text);
       validateFinalizeNarrative(parsed);
-      const final = assembleFinal(input, latest.batch_id, parsed);
+      const final = assembleFinal(
+        input,
+        winnerAttempt.batch_id,
+        parsed,
+        unmetConstraints,
+      );
       logger.exit(NEXT_STEP, {
         title_chars: parsed.title.length,
         summary_chars: parsed.summary.length,
@@ -167,6 +200,7 @@ function buildSystem(attempt: number, lastError: Error | undefined): string {
 function buildUserMessage(
   input: FinalizeInput,
   winner: ProposedCandidate,
+  unmetConstraints: UnmetConstraint[],
 ): string {
   return JSON.stringify({
     run_id: input.run_id,
@@ -183,9 +217,32 @@ function buildUserMessage(
       window_length_days: input.window.effective.window_length_days,
     },
     winner,
+    // When best_effort, the strategy did NOT fully satisfy the thesis;
+    // unmet_constraints lists what it missed so the narrative can be
+    // honest about it.
+    is_best_effort: input.is_best_effort,
+    unmet_constraints: unmetConstraints,
     attempts: input.attempts.map(attemptDigest),
     decide_justification: input.decide_justification,
   });
+}
+
+type UnmetConstraint = { constraint: string; observed: number; target: number };
+
+// Pull the winner's own violations from its attempt so the best-effort
+// narrative can state exactly which constraints it missed and by how much.
+function unmetConstraintsFor(
+  attempt: Attempt,
+  candidateId: string,
+): UnmetConstraint[] {
+  const failing = attempt.validation_summary?.failing.find(
+    (f) => f.candidate_id === candidateId,
+  );
+  return (failing?.violations ?? []).map((v) => ({
+    constraint: v.constraint,
+    observed: v.observed,
+    target: v.target,
+  }));
 }
 
 function thesisDigest(thesis: Thesis) {
@@ -211,12 +268,16 @@ function assembleFinal(
   input: FinalizeInput,
   batchId: string,
   narrative: FinalizeNarrative,
+  unmetConstraints: UnmetConstraint[],
 ): FinalWinner {
   return {
     kind: "winner",
     run_id: input.run_id,
     winner_candidate_id: input.winner_candidate_id,
+    winner_attempt_n: input.winner_attempt_n,
     candidate_batch_id: batchId,
+    is_best_effort: input.is_best_effort,
+    unmet_constraints: unmetConstraints,
     thesis: input.thesis,
     universe: input.universe,
     window: input.window,

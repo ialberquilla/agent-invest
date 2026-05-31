@@ -17,11 +17,33 @@ DEFAULT_SCRIPT_TIMEOUT_SECONDS = 30
 SCRIPT_TIMEOUT_ENV_VAR = "AGENT_SCRIPT_TIMEOUT_SECONDS"
 
 
+def _sanitize_non_finite(value: Any) -> Any:
+    """Replace NaN/Infinity floats with None so the output is valid JSON.
+
+    Python's ``json.dump`` defaults to ``allow_nan=True`` and emits bare
+    ``NaN``/``Infinity`` tokens, which are not valid JSON and crash strict
+    parsers (notably ``JSON.parse`` in the TS workflow layer). A single
+    degenerate metric (e.g. a NaN Sharpe from a zero-volatility series)
+    would otherwise take down an entire candidate batch. Mapping the
+    non-finite values to null keeps the payload parseable; downstream
+    readers already treat null/NaN metrics as "unknown" and rank them last.
+    """
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _sanitize_non_finite(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_sanitize_non_finite(item) for item in value]
+    return value
+
+
 def print_json(payload: Any, *, stream: TextIO | None = None) -> None:
     """Write a JSON payload to the target stream with a trailing newline."""
     if stream is None:
         stream = sys.stdout
-    json.dump(payload, stream)
+    # allow_nan=False makes a stray non-finite a hard error rather than
+    # silent invalid JSON; _sanitize_non_finite removes them first.
+    json.dump(_sanitize_non_finite(payload), stream, allow_nan=False)
     stream.write("\n")
 
 

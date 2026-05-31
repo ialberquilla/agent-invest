@@ -49,25 +49,27 @@ Compute which of the five actions are even legal given the run state. The user m
 - refine_candidates: ALLOWED iff attempts.length < caps.max_attempts. Otherwise FORBIDDEN.
 - broaden_universe: ALLOWED iff counters.broaden_universe < caps.max_broaden_universe. Otherwise FORBIDDEN.
 - reinterpret_brief: ALLOWED iff counters.reinterpret_brief < caps.max_reinterpret_brief. Otherwise FORBIDDEN.
-- stop_no_viable: ALWAYS ALLOWED.
+- stop_best_effort: ALWAYS ALLOWED.
 
-If only stop_no_viable is allowed (every other action is FORBIDDEN), you MUST pick stop_no_viable. Never propose a FORBIDDEN action; the workflow will reject it and you waste an attempt.
+If only stop_best_effort is allowed (every other action is FORBIDDEN), you MUST pick stop_best_effort. Never propose a FORBIDDEN action; the workflow will reject it and you waste an attempt.
 
 Pick from the ALLOWED set only. If multiple are allowed, then reason about which best matches the failure pattern (rules below).
 
+There is no "give up with nothing" action: the workflow ALWAYS shows the user a strategy. When you cannot fully satisfy the thesis, choose stop_best_effort and a deterministic ranker will surface the closest-fit candidate across all attempts. You never name that candidate -- you only supply the reasons the brief could not be fully satisfied.
+
 The five possible actions:
 
-1. "stop_winner" -- the latest attempt produced at least one candidate that PASSED thesis validation; pick the best one.
+1. "stop_winner" -- the latest attempt produced at least one candidate that PASSED thesis validation; pick the best one. Use the per-candidate metrics in validation_summary.candidates (sharpe, total_return, max_drawdown, composite_score) to pick the strongest passing candidate, not an arbitrary one.
    {
      "action": "stop_winner",
      "winner_candidate_id": "id from latest attempt's passing_candidate_ids",
-     "justification": "one short paragraph on why this candidate is the best"
+     "justification": "one short paragraph on why this candidate is the best, referencing its metrics"
    }
 
-2. "stop_no_viable" -- no further iteration will help. Use when budget is exhausted OR the failures show a pattern with no clear fix the workflow can attempt.
+2. "stop_best_effort" -- no candidate fully satisfied the thesis and no further iteration will help (budget exhausted, or failures show a pattern with no clear fix). The ranker will pick the closest-fit candidate to show the user.
    {
-     "action": "stop_no_viable",
-     "reasons": ["one short reason per array entry"]
+     "action": "stop_best_effort",
+     "reasons": ["one short reason per array entry on why the thesis could not be fully satisfied"]
    }
 
 3. "refine_candidates" -- try another candidate batch with a structured hint that addresses the specific failures.
@@ -129,7 +131,7 @@ Cap rules:
 
 When to use which:
 - Latest attempt has >= 1 passing candidate -> stop_winner (pick the best one).
-- Two consecutive attempts failed on the SAME constraint with no improvement and refining further looks unlikely to help -> stop_no_viable.
+- Two consecutive attempts failed on the SAME constraint with no improvement and refining further looks unlikely to help -> stop_best_effort.
 - Failure looks fixable by a different candidate configuration (e.g., concentration too high -> increase select_top, or drawdown too high -> tighten weight cap) -> refine_candidates with a specific hint.
 - The selected universe is structurally too small to satisfy constraints (e.g., universe size < asset_count_min) -> broaden_universe.
 - The brief itself is infeasible (e.g., the user requested a horizon longer than common history allows) -> reinterpret_brief.`;
@@ -204,7 +206,7 @@ export async function decide(
         // exhausted what the workflow can do. Surfacing this as
         // stop_no_viable lets the controller finish cleanly with
         // FinalNoViable instead of short-circuiting via step_error.
-        const fallback = synthesiseStopNoViable(input, caps, lastError);
+        const fallback = synthesiseStopBestEffort(input, caps, lastError);
         logger.exit(nextStepFor(fallback.action), {
           action: fallback.action,
           fallback: true,
@@ -221,17 +223,20 @@ export async function decide(
   throw lastError ?? new Error("decide failed without an error");
 }
 
-// Builds a stop_no_viable Decision when the LLM can't produce one
-// itself. Includes the parse/validation error AND a compact summary
-// of the latest attempt's failed constraints so a human reading the
-// run can see why decide gave up.
-function synthesiseStopNoViable(
+// Builds a stop_best_effort Decision when the LLM can't produce a valid
+// one itself. The workflow always shows a strategy, so even on a decide
+// parse failure we fall back to the deterministic ranker rather than
+// giving up -- decide is guaranteed at least one attempt with results.
+// Includes the parse/validation error AND a compact summary of the
+// latest attempt's failed constraints so a human reading the run can see
+// why decide fell back.
+function synthesiseStopBestEffort(
   input: DecideInput,
   caps: DecisionCaps,
   lastError: Error,
 ): Decision {
   const reasons: string[] = [
-    `decide could not parse a valid Decision after retries (${lastError.message})`,
+    `decide could not parse a valid Decision after retries (${lastError.message}); showing the closest-fit candidate`,
   ];
   const latest = input.attempts.at(-1);
   const failedConstraints = Array.from(
@@ -250,7 +255,7 @@ function synthesiseStopNoViable(
     `${input.attempts.length}/${caps.max_attempts} candidate-refinement attempts used`,
   );
   return {
-    action: "stop_no_viable",
+    action: "stop_best_effort",
     reasons,
   };
 }
@@ -258,6 +263,8 @@ function synthesiseStopNoViable(
 export function nextStepFor(action: Decision["action"]): StepName {
   switch (action) {
     case "stop_winner":
+      return "finalize";
+    case "stop_best_effort":
       return "finalize";
     case "stop_no_viable":
       return "complete";
@@ -322,6 +329,8 @@ function exitDigest(decision: Decision): Record<string, unknown> {
   switch (decision.action) {
     case "stop_winner":
       return { winner_candidate_id: decision.winner_candidate_id };
+    case "stop_best_effort":
+      return { reason_count: decision.reasons.length };
     case "stop_no_viable":
       return { reason_count: decision.reasons.length };
     case "refine_candidates":

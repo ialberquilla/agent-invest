@@ -9,6 +9,7 @@ import pino from "pino";
 
 import { appendEvent as defaultAppendEvent } from "../../db/repositories/agent-events.ts";
 import type { LLMClient } from "./llm.ts";
+import { bestCandidate } from "./rank.ts";
 import {
   DEFAULT_WORKFLOW_CAPS,
   type Attempt,
@@ -357,6 +358,7 @@ function transitionDigest(
             winner_candidate_id: decision.winner_candidate_id,
             justification: excerpt(decision.justification, 220),
           };
+        case "stop_best_effort":
         case "stop_no_viable":
           return {
             action: decision.action,
@@ -561,23 +563,49 @@ async function dispatch(
       if (!current || !current.decision) {
         throw new Error("finalize entered without a decided attempt");
       }
-      if (current.decision.action !== "stop_winner") {
+      const decision = current.decision;
+      const base = {
+        run_id: state.run_id,
+        thesis: state.thesis,
+        universe: state.universe,
+        window: state.window,
+        attempts: state.attempts,
+      };
+      let finalizeInput;
+      if (decision.action === "stop_winner") {
+        finalizeInput = {
+          ...base,
+          winner_candidate_id: decision.winner_candidate_id,
+          winner_attempt_n: current.attempt_n,
+          is_best_effort: false,
+          decide_justification: decision.justification,
+        };
+      } else if (decision.action === "stop_best_effort") {
+        // No candidate fully satisfied the thesis: show the closest fit.
+        // The ranker selects deterministically across ALL attempts; a
+        // missing result here means no backtest ever produced output,
+        // which the dispatch try/catch turns into a FinalNoViable.
+        const best = bestCandidate(state.attempts, state.thesis);
+        if (!best) {
+          throw new Error(
+            "stop_best_effort but no candidate produced a backtest result",
+          );
+        }
+        finalizeInput = {
+          ...base,
+          winner_candidate_id: best.candidate_id,
+          winner_attempt_n: best.attempt_n,
+          is_best_effort: true,
+          decide_justification: decision.reasons.join("; "),
+        };
+      } else {
         throw new Error(
-          `finalize entered after action=${current.decision.action} (expected stop_winner)`,
+          `finalize entered after action=${decision.action} (expected stop_winner or stop_best_effort)`,
         );
       }
-      const result = await runners.finalize(
-        {
-          run_id: state.run_id,
-          thesis: state.thesis,
-          universe: state.universe,
-          window: state.window,
-          attempts: state.attempts,
-          winner_candidate_id: current.decision.winner_candidate_id,
-          decide_justification: current.decision.justification,
-        },
-        { llm: resolveLLM(llm) },
-      );
+      const result = await runners.finalize(finalizeInput, {
+        llm: resolveLLM(llm),
+      });
       state.final = result.delta.final;
       return result.next;
     }
@@ -614,7 +642,9 @@ function applyDecisionSideEffects(
       };
       return;
     case "stop_winner":
-      // finalize will build the FinalWinner record from this decision.
+    case "stop_best_effort":
+      // finalize will build the FinalWinner record from this decision
+      // (stop_best_effort resolves its winner via the ranker there).
       return;
   }
 }

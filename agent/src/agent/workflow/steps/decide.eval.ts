@@ -3,7 +3,7 @@
 // decide is an LLM step: it reads the iteration history (thesis + attempts +
 // their validation summaries + counters/caps) and emits exactly ONE Decision
 // routing the run to a next step. Its deterministic plumbing -- routing per
-// action, the cap/legality validator, and the stop_no_viable fallback when the
+// action, the cap/legality validator, and the stop_best_effort fallback when the
 // LLM can't emit valid JSON -- is already covered hermetically by
 // test/workflow-decide.test.ts with a fake LLM. This eval's distinct job is the
 // LIVE JUDGEMENT: given a realistic post-validate state, does the real model
@@ -21,9 +21,9 @@
 //   reinterpret  a thesis-level contradiction no candidate/universe edit can
 //                fix, with refine futile + broaden exhausted -> reinterpret_brief
 //   caps         every backward edge is at its cap and the latest failed ->
-//                only stop_no_viable is legal, so it MUST be chosen (STEP 0)
+//                only stop_best_effort is legal, so it MUST be chosen (STEP 0)
 //   persona      a full multi-attempt history failing the same constraint with
-//                no improvement -> stop_no_viable on judgement (refinement memory)
+//                no improvement -> stop_best_effort on judgement (refinement memory)
 //
 // Run all:        pnpm eval:decide
 // Run one group:  pnpm eval:decide refine reinterpret
@@ -147,7 +147,22 @@ function passAttempt(
     attempt_n,
     proposal,
     batch_id: `batch_${attempt_n}`,
-    validation_summary: { passing_candidate_ids: passing, failing },
+    validation_summary: {
+      passing_candidate_ids: passing,
+      failing,
+      candidates: [
+        ...passing.map((id) => ({
+          candidate_id: id,
+          passed: true,
+          constraint_distance: 0,
+        })),
+        ...failing.map((f) => ({
+          candidate_id: f.candidate_id,
+          passed: false,
+          constraint_distance: 1,
+        })),
+      ],
+    },
   };
 }
 
@@ -166,6 +181,12 @@ function failAttempt(
       failing: failing.map((f) => ({
         candidate_id: f.candidate_id,
         violations: [{ constraint: f.constraint, observed: f.observed, target: f.target }],
+      })),
+      candidates: failing.map((f) => ({
+        candidate_id: f.candidate_id,
+        passed: false,
+        constraint_distance:
+          Math.abs(f.observed - f.target) / Math.max(Math.abs(f.target), 1),
       })),
     },
     refinement_hint,
@@ -338,13 +359,13 @@ const CASES: EvalCase[] = [
     },
   },
 
-  // --- caps: every backward edge exhausted -> only stop_no_viable is legal ---
+  // --- caps: every backward edge exhausted -> only stop_best_effort is legal -
   {
     // STEP 0 hard gate: attempts at max_attempts, both counters at their caps,
-    // latest attempt failed. Every action but stop_no_viable is FORBIDDEN, so
+    // latest attempt failed. Every action but stop_best_effort is FORBIDDEN, so
     // the model must pick it regardless of how "fixable" the failure looks.
     group: "caps",
-    name: "caps=all_exhausted_forces_no_viable",
+    name: "caps=all_exhausted_forces_best_effort",
     input: {
       run_id: "eval-decide-caps",
       thesis: thesis(),
@@ -355,7 +376,7 @@ const CASES: EvalCase[] = [
         failAttempt(3, [{ candidate_id: "c1", constraint: "max_drawdown", observed: -0.48, target: -0.35 }]),
       ],
     },
-    expect: { action: "stop_no_viable" },
+    expect: { action: "stop_best_effort" },
   },
 
   // --- persona: full history, same constraint, no improvement ----------------
@@ -384,7 +405,7 @@ const CASES: EvalCase[] = [
         failAttempt(3, [{ candidate_id: "c1", constraint: "max_drawdown", observed: -0.53, target: -0.35 }]),
       ],
     },
-    expect: { action: "stop_no_viable" },
+    expect: { action: "stop_best_effort" },
   },
 ];
 
