@@ -170,6 +170,14 @@ function failedAttempt(
       failing: [
         { candidate_id: "c1", violations: [{ constraint, observed, target }] },
       ],
+      candidates: [
+        {
+          candidate_id: "c1",
+          passed: false,
+          constraint_distance:
+            Math.abs(observed - target) / Math.max(Math.abs(target), 1),
+        },
+      ],
     },
     refinement_hint: {
       failed_constraints: [

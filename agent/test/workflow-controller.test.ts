@@ -192,6 +192,23 @@ function trackingRunners(
                   ],
                 },
               ],
+              candidates: [
+                {
+                  candidate_id: "c1",
+                  passed: false,
+                  constraint_distance: 0.43,
+                  metrics: {
+                    total_return: 0.1,
+                    cagr: 0.05,
+                    volatility: 0.6,
+                    max_drawdown: -0.5,
+                    sharpe: 0.2,
+                    sortino: 0.3,
+                    calmar: 0.1,
+                    composite_score: 0.4,
+                  },
+                },
+              ],
             },
           },
           next: "decide",
@@ -225,7 +242,10 @@ function trackingRunners(
           kind: "winner",
           run_id: input.run_id,
           winner_candidate_id: input.winner_candidate_id,
+          winner_attempt_n: input.winner_attempt_n,
           candidate_batch_id: input.attempts.at(-1)!.batch_id!,
+          is_best_effort: input.is_best_effort,
+          unmet_constraints: [],
           thesis: input.thesis,
           universe: input.universe,
           window: input.window,
@@ -248,6 +268,8 @@ function trackingRunners(
 function nextStepFor(decision: Decision): "finalize" | "complete" | "propose_candidates" | "select_universe" | "interpret_brief" {
   switch (decision.action) {
     case "stop_winner":
+      return "finalize";
+    case "stop_best_effort":
       return "finalize";
     case "stop_no_viable":
       return "complete";

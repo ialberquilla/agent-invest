@@ -92,6 +92,11 @@ function passingAttempt(passingIds: string[]): Attempt {
     validation_summary: {
       passing_candidate_ids: passingIds,
       failing: [],
+      candidates: passingIds.map((id) => ({
+        candidate_id: id,
+        passed: true,
+        constraint_distance: 0,
+      })),
     },
   };
 }
@@ -143,6 +148,8 @@ function baseInput(overrides: Partial<FinalizeInput> = {}): FinalizeInput {
     window: WINDOW,
     attempts: [passingAttempt(["c2"])],
     winner_candidate_id: "c2",
+    winner_attempt_n: 1,
+    is_best_effort: false,
     decide_justification: "c2 was the only passing candidate.",
     ...overrides,
   };
@@ -202,9 +209,56 @@ test("finalize refuses when winner_candidate_id is not in passing set", async ()
         baseInput({ winner_candidate_id: "c1" }),
         deps(llm),
       ),
-    /is not in the latest attempt's passing_candidate_ids/,
+    /is not in attempt 1's passing_candidate_ids/,
   );
   assert.equal(llm.calls.length, 0);
+});
+
+test("finalize accepts a best-effort winner that did not pass and surfaces unmet constraints", async () => {
+  // No candidate passed; c1 is the closest fit. is_best_effort relaxes
+  // the passing-set check, and the winner's violations flow into the
+  // FinalWinner.unmet_constraints and the finalize user message.
+  const bestEffortAttempt: Attempt = {
+    attempt_n: 1,
+    proposal: PROPOSAL,
+    batch_id: "candidate_batch_best_effort",
+    validation_summary: {
+      passing_candidate_ids: [],
+      failing: [
+        {
+          candidate_id: "c1",
+          violations: [
+            { constraint: "max_drawdown", observed: 0.41, target: 0.35 },
+          ],
+        },
+      ],
+      candidates: [
+        { candidate_id: "c1", passed: false, constraint_distance: 0.17 },
+      ],
+    },
+  };
+  const llm = fakeLLM([JSON.stringify(NARRATIVE)]);
+
+  const result = await finalize(
+    baseInput({
+      attempts: [bestEffortAttempt],
+      winner_candidate_id: "c1",
+      winner_attempt_n: 1,
+      is_best_effort: true,
+    }),
+    deps(llm),
+  );
+
+  assert.equal(result.delta.final.is_best_effort, true);
+  assert.deepEqual(result.delta.final.unmet_constraints, [
+    { constraint: "max_drawdown", observed: 0.41, target: 0.35 },
+  ]);
+  const userMsg = JSON.parse(llm.calls[0]!.user) as {
+    is_best_effort: boolean;
+    unmet_constraints: Array<{ constraint: string }>;
+  };
+  assert.equal(userMsg.is_best_effort, true);
+  assert.equal(userMsg.unmet_constraints[0]?.constraint, "max_drawdown");
 });
 
 test("finalize refuses when winner_candidate_id is not in proposal", async () => {
@@ -221,16 +275,16 @@ test("finalize refuses when winner_candidate_id is not in proposal", async () =>
         }),
         deps(llm),
       ),
-    /is not in the latest attempt's proposal/,
+    /is not in attempt 1's proposal/,
   );
 });
 
-test("finalize refuses when attempts is empty", async () => {
+test("finalize refuses when the winner's attempt is absent", async () => {
   const llm = fakeLLM([JSON.stringify(NARRATIVE)]);
 
   await assert.rejects(
     () => finalize(baseInput({ attempts: [] }), deps(llm)),
-    /requires at least one attempt/,
+    /no attempt with attempt_n 1/,
   );
   assert.equal(llm.calls.length, 0);
 });

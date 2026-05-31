@@ -238,7 +238,22 @@ function attempt(
     attempt_n,
     proposal,
     batch_id,
-    validation_summary: { passing_candidate_ids: passing, failing },
+    validation_summary: {
+      passing_candidate_ids: passing,
+      failing,
+      candidates: [
+        ...passing.map((id) => ({
+          candidate_id: id,
+          passed: true,
+          constraint_distance: 0,
+        })),
+        ...failing.map((f) => ({
+          candidate_id: f.candidate_id,
+          passed: false,
+          constraint_distance: 1,
+        })),
+      ],
+    },
     refinement_hint,
   };
 }
@@ -274,6 +289,8 @@ function objectiveSweep(objective: Objective): FinalizeInput {
       ]),
     ],
     winner_candidate_id: "c2",
+    winner_attempt_n: 1,
+    is_best_effort: false,
     decide_justification:
       "Candidate c2 (inverse-volatility weights rebalanced monthly) was the only configuration that held drawdown within the thesis limit.",
   };
@@ -293,6 +310,8 @@ const CASES: EvalCase[] = [
         attempt(1, BALANCED_PROPOSAL, "candidate_batch_eval_bal", ["c2"], BALANCED_FAILING),
       ],
       winner_candidate_id: "c2",
+      winner_attempt_n: 1,
+      is_best_effort: false,
       decide_justification:
         "Candidate c2 was the only configuration that satisfied all constraints; rebalancing kept weights within the per-asset cap and drawdown within the thesis limit.",
     },
@@ -337,6 +356,8 @@ const CASES: EvalCase[] = [
         ]),
       ],
       winner_candidate_id: "c1",
+      winner_attempt_n: 1,
+      is_best_effort: false,
       decide_justification:
         "Candidate c1 (quarterly equal-weight 7-asset basket) was the only configuration that stayed within both the weight cap and the drawdown limit while preserving growth exposure.",
     },
@@ -451,6 +472,8 @@ const CASES: EvalCase[] = [
         ]),
       ],
       winner_candidate_id: "c2",
+      winner_attempt_n: 2,
+      is_best_effort: false,
       decide_justification:
         "After the first round breached the 25% drawdown cap, the refined inverse-volatility monthly basket (c2) brought drawdown within limit while keeping diversified exposure.",
     },

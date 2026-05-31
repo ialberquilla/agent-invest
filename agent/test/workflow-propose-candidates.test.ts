@@ -277,6 +277,9 @@ test("proposeCandidates includes prior_attempts with RefinementHint in the user 
           ],
         },
       ],
+      candidates: [
+        { candidate_id: "c1", passed: false, constraint_distance: 0.2 },
+      ],
     },
     refinement_hint: hint,
   };

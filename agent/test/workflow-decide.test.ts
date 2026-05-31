@@ -65,6 +65,11 @@ function attemptWithPass(passing: string[]): Attempt {
     validation_summary: {
       passing_candidate_ids: passing,
       failing: [],
+      candidates: passing.map((id) => ({
+        candidate_id: id,
+        passed: true,
+        constraint_distance: 0,
+      })),
     },
   };
 }
@@ -80,6 +85,9 @@ function attemptWithFailures(
     validation_summary: {
       passing_candidate_ids: [],
       failing: [{ candidate_id: "c1", violations }],
+      candidates: [
+        { candidate_id: "c1", passed: false, constraint_distance: 1 },
+      ],
     },
   };
 }
@@ -130,7 +138,7 @@ test("decide routes stop_winner to finalize", async () => {
   assert.deepEqual(result.delta.decision, decision);
 });
 
-test("decide falls back to stop_no_viable when stop_winner picks a non-passing candidate twice", async () => {
+test("decide falls back to stop_best_effort when stop_winner picks a non-passing candidate twice", async () => {
   const bad: Decision = {
     action: "stop_winner",
     winner_candidate_id: "c2",
@@ -140,12 +148,14 @@ test("decide falls back to stop_no_viable when stop_winner picks a non-passing c
 
   const result = await decide(baseInput(), deps(llm));
 
-  assert.equal(result.next, "complete");
+  // The workflow always shows a strategy, so the fallback is best-effort
+  // (route to finalize), not a dead-end no_viable.
+  assert.equal(result.next, "finalize");
   const decision = result.delta.decision as Extract<
     Decision,
-    { action: "stop_no_viable" }
+    { action: "stop_best_effort" }
   >;
-  assert.equal(decision.action, "stop_no_viable");
+  assert.equal(decision.action, "stop_best_effort");
   assert.match(
     decision.reasons.join(" "),
     /could not parse a valid Decision after retries/,
@@ -251,9 +261,10 @@ test("decide rejects refine_candidates once attempts cap is hit", async () => {
 
   // Refine is forbidden by the validator; the LLM kept trying it.
   // After both attempts fail validation, decide falls back to
-  // stop_no_viable so the workflow finishes cleanly.
-  assert.equal(result.next, "complete");
-  assert.equal(result.delta.decision.action, "stop_no_viable");
+  // stop_best_effort and routes to finalize so the workflow still shows
+  // the closest-fit candidate.
+  assert.equal(result.next, "finalize");
+  assert.equal(result.delta.decision.action, "stop_best_effort");
 });
 
 test("decide routes broaden_universe to select_universe with hint", async () => {
@@ -282,7 +293,7 @@ test("decide routes broaden_universe to select_universe with hint", async () => 
   assert.equal(result.delta.decision.action, "broaden_universe");
 });
 
-test("decide falls back to stop_no_viable when broaden_universe is repeated at cap", async () => {
+test("decide falls back to stop_best_effort when broaden_universe is repeated at cap", async () => {
   const decision: Decision = {
     action: "broaden_universe",
     hint: {
@@ -305,7 +316,7 @@ test("decide falls back to stop_no_viable when broaden_universe is repeated at c
     deps(llm),
   );
 
-  assert.equal(result.delta.decision.action, "stop_no_viable");
+  assert.equal(result.delta.decision.action, "stop_best_effort");
 });
 
 test("decide routes reinterpret_brief to interpret_brief", async () => {
@@ -335,7 +346,7 @@ test("decide routes reinterpret_brief to interpret_brief", async () => {
   assert.equal(result.delta.decision.action, "reinterpret_brief");
 });
 
-test("decide falls back to stop_no_viable when reinterpret_brief is repeated at cap", async () => {
+test("decide falls back to stop_best_effort when reinterpret_brief is repeated at cap", async () => {
   const decision: Decision = {
     action: "reinterpret_brief",
     hint: {
@@ -358,7 +369,7 @@ test("decide falls back to stop_no_viable when reinterpret_brief is repeated at 
     deps(llm),
   );
 
-  assert.equal(result.delta.decision.action, "stop_no_viable");
+  assert.equal(result.delta.decision.action, "stop_best_effort");
 });
 
 test("decide retries once on parse failure", async () => {
@@ -395,11 +406,11 @@ test("decide retries with validation error in retry prompt", async () => {
   assert.match(llm.calls[1]!.system, /not in the latest attempt/);
 });
 
-test("decide falls back to stop_no_viable when the LLM cannot emit JSON", async () => {
+test("decide falls back to stop_best_effort when the LLM cannot emit JSON", async () => {
   // Mirrors the production failure: both attempts return prose
-  // instead of a Decision object. The step degrades to stop_no_viable
-  // with the parse error in reasons -- the workflow then ends with
-  // FinalNoViable cleanly instead of short-circuiting via step_error.
+  // instead of a Decision object. The step degrades to stop_best_effort
+  // with the parse error in reasons -- the workflow then shows the
+  // closest-fit candidate instead of short-circuiting via step_error.
   const llm = fakeLLM([
     "Given the constraints I'm not sure what to do here...",
     "I'd recommend rerunning with looser drawdown.",
@@ -422,12 +433,12 @@ test("decide falls back to stop_no_viable when the LLM cannot emit JSON", async 
 
   const result = await decide(input, deps(llm));
 
-  assert.equal(result.next, "complete");
+  assert.equal(result.next, "finalize");
   const decision = result.delta.decision as Extract<
     Decision,
-    { action: "stop_no_viable" }
+    { action: "stop_best_effort" }
   >;
-  assert.equal(decision.action, "stop_no_viable");
+  assert.equal(decision.action, "stop_best_effort");
   // The fallback includes the parse error, the failed constraint
   // names from the latest attempt, and how many refinement attempts
   // were used -- enough context for the human reader to diagnose.

@@ -8,6 +8,7 @@
 import {
   runCandidateBatch,
   runValidateAgainstThesis,
+  type RunCandidateBatchResponse,
   type RunCandidateBatchRequest,
   type ValidateAgainstThesisResponse,
 } from "../cli.ts";
@@ -15,6 +16,8 @@ import { createStepLogger, type StepLogger } from "../logging.ts";
 import type {
   Attempt,
   AttemptValidationSummary,
+  CandidateMetrics,
+  CandidateOutcome,
   Proposal,
   ProposedCandidate,
   RunAndValidateInput,
@@ -80,7 +83,7 @@ export async function runAndValidate(
       { timeoutSeconds },
     );
 
-    const summary = normalizeValidationSummary(validation);
+    const summary = normalizeValidationSummary(validation, batchResponse);
 
     logger.exit(NEXT_STEP, {
       batch_id: batchResponse.batch_id,
@@ -191,6 +194,7 @@ export function thesisForValidate(thesis: Thesis): Record<string, unknown> {
 
 export function normalizeValidationSummary(
   response: ValidateAgainstThesisResponse,
+  batch?: RunCandidateBatchResponse,
 ): AttemptValidationSummary {
   const failing = (response.results ?? [])
     .filter((row) => row.passed === false)
@@ -202,12 +206,82 @@ export function normalizeValidationSummary(
         target: coerceNumber(v.expected),
       })),
     }));
+
+  // Index backtest metrics from the batch result rows by candidate_id so
+  // each outcome carries its numbers. Tolerant of a missing batch (older
+  // callers / tests) -- candidates then have no metrics and rank last.
+  const metricsById = indexMetrics(batch);
+
+  const candidates: CandidateOutcome[] = (response.results ?? []).map((row) => {
+    const violations = (row.violations ?? []).map((v) => ({
+      observed: coerceNumber(v.actual),
+      target: coerceNumber(v.expected),
+    }));
+    return {
+      candidate_id: row.candidate_id,
+      passed: row.passed === true,
+      constraint_distance:
+        row.passed === true ? 0 : constraintDistance(violations),
+      metrics: metricsById.get(row.candidate_id),
+    };
+  });
+
   return {
     passing_candidate_ids: Array.isArray(response.passing_candidate_ids)
       ? response.passing_candidate_ids
       : [],
     failing,
+    candidates,
   };
+}
+
+// Sum of normalized constraint overshoot. Each violation contributes
+// |observed - target| / max(|target|, 1) so constraints on different
+// scales (a 0.4 drawdown vs a 5-asset count) are comparable. A
+// non-finite observed/target contributes a large fixed penalty rather
+// than NaN-poisoning the whole distance.
+function constraintDistance(
+  violations: Array<{ observed: number; target: number }>,
+): number {
+  let total = 0;
+  for (const v of violations) {
+    if (!Number.isFinite(v.observed) || !Number.isFinite(v.target)) {
+      total += 1;
+      continue;
+    }
+    total += Math.abs(v.observed - v.target) / Math.max(Math.abs(v.target), 1);
+  }
+  return total;
+}
+
+function indexMetrics(
+  batch: RunCandidateBatchResponse | undefined,
+): Map<string, CandidateMetrics> {
+  const out = new Map<string, CandidateMetrics>();
+  for (const row of batch?.results ?? []) {
+    if (typeof row !== "object" || row === null) continue;
+    const r = row as Record<string, unknown>;
+    const id = r.candidate_id;
+    if (typeof id !== "string") continue;
+    const m = r.metrics;
+    if (typeof m !== "object" || m === null) continue;
+    const mm = m as Record<string, unknown>;
+    out.set(id, {
+      total_return: coerceNumber(mm.total_return),
+      cagr: coerceNumber(mm.cagr),
+      volatility: coerceNumber(mm.volatility),
+      max_drawdown: coerceNumber(mm.max_drawdown),
+      sharpe: coerceNumber(mm.sharpe),
+      sortino: coerceNumber(mm.sortino),
+      calmar: coerceNumber(mm.calmar),
+      composite_score:
+        typeof r.composite_score === "number" &&
+        Number.isFinite(r.composite_score)
+          ? r.composite_score
+          : null,
+    });
+  }
+  return out;
 }
 
 function coerceNumber(value: unknown): number {
