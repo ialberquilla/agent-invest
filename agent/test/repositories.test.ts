@@ -12,6 +12,7 @@ import {
   createThread,
 } from "../src/db/repositories/conversations";
 import { markRunCompleted, markRunFailed } from "../src/db/repositories/runs";
+import { insertMandate } from "../src/db/repositories/strategy-mandates";
 import {
   ensureStrategy,
   readStrategySession,
@@ -50,8 +51,26 @@ function createDbDouble(options: { selectRows?: unknown[] } = {}) {
         values(values: unknown) {
           call.values = values;
           return {
-            async onConflictDoNothing() {
+            onConflictDoNothing() {
               call.conflictIgnored = true;
+              return {
+                async returning() {
+                  return [values];
+                },
+                then<TResult1 = undefined, TResult2 = never>(
+                  onfulfilled?:
+                    | ((value: undefined) => TResult1 | PromiseLike<TResult1>)
+                    | null,
+                  onrejected?:
+                    | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+                    | null,
+                ) {
+                  return Promise.resolve(undefined).then(
+                    onfulfilled,
+                    onrejected,
+                  );
+                },
+              };
             },
             async returning() {
               return [values];
@@ -369,6 +388,41 @@ test("createRequest and storeResult persist backtest rows", async () => {
     cagr: "0.12",
     report: { ok: true },
     runId: "run-1",
+  });
+});
+
+test("insertMandate promotes index columns and stores the full spec", async () => {
+  const { db, insertCalls } = createDbDouble();
+
+  const mandate = {
+    mandate_id: "mandate-1",
+    run_id: "run-1",
+    version: 1,
+    created_at: "2026-06-01T00:00:00.000Z",
+    template_id: "synthetic_long_allocation",
+    select_top: 5,
+    weighting: "equal",
+    objective: "growth",
+    rebalance_frequency: "monthly",
+    universe_hints: { top_n: 10, exclude_stablecoins: true, exclude_wrapped: true },
+    coin_ids: ["bitcoin", "ethereum"],
+    dynamic_universe: false,
+    constraints: { max_weight_per_asset: 0.3, max_cash_weight: 0.2, max_drawdown: 0.4 },
+    allowed_sides: "long_only",
+    initial_target_allocation: [{ coin_id: "bitcoin", weight: 1 }],
+    status: "pending",
+  } as never;
+
+  await insertMandate(mandate, db);
+
+  assert.equal(insertCalls.length, 1);
+  assert.deepEqual(insertCalls[0]?.values, {
+    mandateId: "mandate-1",
+    runId: "run-1",
+    version: 1,
+    status: "pending",
+    templateId: "synthetic_long_allocation",
+    spec: mandate,
   });
 });
 

@@ -172,6 +172,63 @@ export async function runCandidateBatch(
   return parsed as unknown as RunCandidateBatchResponse;
 }
 
+// Phase 3 of plans/integrate_contracts.md: a StrategyMandate projection the
+// live allocator runs to get the strategy's current target weights.
+export type LiveAllocationRequest = {
+  template_id: string;
+  select_top: number;
+  config: Record<string, unknown>;
+  coin_ids: string[];
+  objective: "high_growth" | "balanced" | "preserve_capital" | "income";
+  horizon_days?: number;
+  // Null/omitted => latest available data ("today"). Set for backfill/parity.
+  as_of?: string;
+  window?: { start: string; end: string };
+};
+
+export type LiveAllocationLeg = {
+  coin_id: string;
+  weight: number;
+  side: "long" | "short";
+};
+
+export type LiveAllocationResponse = {
+  as_of: string | null;
+  rebalance_date: string;
+  weights: LiveAllocationLeg[];
+  net_weight: number;
+  gross_weight: number;
+  cash_weight: number;
+  template_id: string;
+  coin_ids: string[];
+};
+
+export async function computeLiveAllocation(
+  request: LiveAllocationRequest,
+  options: { execFile?: ExecFileLike; timeoutSeconds?: number } = {},
+): Promise<LiveAllocationResponse> {
+  const args: string[] = ["--input", JSON.stringify(request)];
+  if (options.timeoutSeconds !== undefined) {
+    args.push("--timeout-seconds", String(options.timeoutSeconds));
+  }
+  const stdout = await runScript(
+    "compute_live_allocation",
+    args,
+    options.execFile ?? execFile,
+  );
+  const parsed = JSON.parse(stdout) as Record<string, unknown>;
+  if (parsed && typeof parsed === "object" && "error" in parsed) {
+    const err = parsed.error as { message?: string; type?: string };
+    throw new Error(
+      `compute_live_allocation failed: ${err.type ?? "Error"} ${err.message ?? ""}`.trim(),
+    );
+  }
+  if (!Array.isArray(parsed.weights)) {
+    throw new Error("compute_live_allocation did not return weights");
+  }
+  return parsed as unknown as LiveAllocationResponse;
+}
+
 // validate_against_thesis input. The validator now takes the full
 // candidate-batch payload inline via --input (no filesystem coupling).
 // The thesis here is the *trimmed* shape the Python validator expects

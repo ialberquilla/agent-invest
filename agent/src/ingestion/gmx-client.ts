@@ -25,6 +25,32 @@ export interface FetchCandlesOptions {
   limit: number;
 }
 
+// GMX /markets row (Phase 2). marketToken is the GM market address an order
+// targets; indexToken identifies the traded asset; long/short are collateral.
+export interface GmxMarket {
+  name: string;
+  marketToken: string;
+  indexToken: string;
+  longToken: string;
+  shortToken: string;
+  isListed: boolean;
+  listingDate?: string;
+}
+
+interface FetchMarketsResponse {
+  markets: GmxMarket[];
+}
+
+// GMX /prices/tickers row: oracle min/max price (integer strings) per token.
+export interface GmxTicker {
+  tokenAddress: string;
+  tokenSymbol: string;
+  minPrice: string;
+  maxPrice: string;
+  updatedAt?: number;
+  timestamp?: number;
+}
+
 export class GmxHttpError extends Error {
   constructor(
     message: string,
@@ -142,6 +168,18 @@ export async function fetchTokens(): Promise<GmxToken[]> {
   );
 
   return Array.isArray(response) ? response : response.tokens;
+}
+
+export async function fetchMarkets(): Promise<GmxMarket[]> {
+  const response = await requestJson<GmxMarket[] | FetchMarketsResponse>(
+    "/markets",
+  );
+
+  return Array.isArray(response) ? response : response.markets;
+}
+
+export async function fetchTickers(): Promise<GmxTicker[]> {
+  return requestJson<GmxTicker[]>("/prices/tickers");
 }
 
 export async function fetchCandles({
