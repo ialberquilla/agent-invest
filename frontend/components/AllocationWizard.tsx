@@ -645,7 +645,7 @@ export function AllocationWizard({
                   Pond3r agent
                 </Badge>
                 <h1 className="text-xl font-semibold tracking-tight sm:text-3xl lg:text-4xl">
-                  DeFi allocation copilot for crypto portfolio research.
+                  DeFi allocation copilot for asset portfolio research.
                 </h1>
                 <p className="text-sm leading-5 text-muted-foreground sm:text-base sm:leading-6">
                   Give Pond3r the core allocation inputs, review the mandate,
@@ -1096,7 +1096,7 @@ export function AllocationWizard({
                     riskPreferenceOptions,
                     state.riskPreference,
                   ).toLowerCase()}{" "}
-                  crypto allocation for a{" "}
+                  asset allocation for a{" "}
                   {getLabel(horizonOptions, state.horizon).toLowerCase()}{" "}
                   horizon using{" "}
                   {getLabel(universeOptions, state.universe).toLowerCase()}.
@@ -1134,7 +1134,7 @@ export function AllocationWizard({
                     riskPreferenceOptions,
                     state.riskPreference,
                   ).toLowerCase()}{" "}
-                  crypto allocation for a{" "}
+                  asset allocation for a{" "}
                   {getLabel(horizonOptions, state.horizon).toLowerCase()}{" "}
                   horizon using{" "}
                   {getLabel(universeOptions, state.universe).toLowerCase()}.

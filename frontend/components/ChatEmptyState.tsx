@@ -17,25 +17,25 @@ const suggestions: Suggestion[] = [
     title: "Build a balanced portfolio",
     subtitle: "top-25 assets, 1-year horizon",
     prompt:
-      "Build a balanced crypto allocation from the top 25 assets by market cap for a 1-year horizon, with no single token above 20%.",
+      "Build a balanced asset allocation from the top 25 assets by market cap for a 1-year horizon, with no single token above 20%.",
   },
   {
     title: "Aim to beat Bitcoin",
     subtitle: "aggressive growth, 6 months",
     prompt:
-      "Design an aggressive growth crypto allocation that tries to outperform Bitcoin over a 6-month horizon, and backtest it.",
+      "Design an aggressive growth asset allocation that tries to outperform Bitcoin over a 6-month horizon, and backtest it.",
   },
   {
     title: "Play it safe",
     subtitle: "preserve capital, low drawdown",
     prompt:
-      "Create a capital-preserving crypto allocation that keeps the maximum drawdown around 20% with no single token above 20%.",
+      "Create a capital-preserving asset allocation that keeps the maximum drawdown around 20% with no single token above 20%.",
   },
   {
     title: "Explain the basics",
     subtitle: "backtests & max drawdown",
     prompt:
-      "Explain how backtesting and maximum drawdown work when designing a crypto portfolio.",
+      "Explain how backtesting and maximum drawdown work when designing an asset portfolio.",
   },
 ];
 
@@ -60,7 +60,7 @@ export function ChatEmptyState({
           What should we build?
         </h2>
         <p className="text-sm leading-6 text-muted-foreground">
-          Describe a crypto allocation and the agent will research, design, and
+          Describe an asset allocation and the agent will research, design, and
           backtest it for you.
         </p>
       </div>
@@ -84,15 +84,14 @@ export function ChatEmptyState({
         ))}
       </div>
 
-      <div className="flex flex-col items-center gap-2">
+      <div className="flex flex-col items-center gap-2.5">
         <p className="text-xs text-muted-foreground">Not sure where to start?</p>
         <Button
           type="button"
-          variant="outline"
-          size="sm"
+          size="lg"
           disabled={disabled}
           onClick={onOpenWizard}
-          className="gap-2"
+          className="gap-2 px-6 shadow-lg shadow-primary/25 ring-1 ring-primary/40 transition-transform hover:scale-[1.02]"
         >
           <Compass className="size-4" />
           Try the guided setup
