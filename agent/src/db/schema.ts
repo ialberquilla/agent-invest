@@ -156,6 +156,78 @@ export const runs = pgTable(
   ],
 );
 
+// Executable strategy mandate emitted when a run finalizes a winner (Phase 1 of
+// plans/integrate_contracts.md). The full self-contained mandate payload lives
+// in `spec` (a StrategyMandate from agent/workflow/mandate.ts); a few fields are
+// promoted to columns for indexing/lifecycle. One active mandate per strategy is
+// enforced at the app layer for now (no on-chain vault concept yet).
+export const strategyMandates = pgTable(
+  "strategy_mandates",
+  {
+    mandateId: text("mandate_id").primaryKey(),
+    runId: text("run_id")
+      .notNull()
+      .references(() => runs.runId, { onDelete: "cascade" }),
+    version: integer("version").notNull().default(1),
+    status: text("status").notNull().default("pending"),
+    templateId: text("template_id").notNull(),
+    spec: jsonb("spec").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("strategy_mandates_run_id_idx").on(table.runId),
+    index("strategy_mandates_status_idx").on(table.status),
+  ],
+);
+
+export type StrategyMandateRow = typeof strategyMandates.$inferSelect;
+export type NewStrategyMandateRow = typeof strategyMandates.$inferInsert;
+
+// GMX V2 token directory (Phase 2 of plans/integrate_contracts.md), fed from
+// the GMX /tokens endpoint. address + decimals are the execution identifiers a
+// coin_id (= symbol) resolves to; `synthetic` flags price-only index tokens.
+export const gmxTokens = pgTable("gmx_tokens", {
+  symbol: text("symbol").primaryKey(),
+  address: text("address").notNull(),
+  decimals: integer("decimals").notNull(),
+  synthetic: boolean("synthetic").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});
+
+export type GmxTokenRow = typeof gmxTokens.$inferSelect;
+export type NewGmxTokenRow = typeof gmxTokens.$inferInsert;
+
+// GMX V2 market directory, fed from the GMX /markets endpoint. marketToken is
+// the GM market address an order targets; indexToken identifies the traded
+// asset; long/short are collateral tokens. Resolution joins markets to tokens
+// by indexToken/shortToken address.
+export const gmxMarkets = pgTable(
+  "gmx_markets",
+  {
+    marketToken: text("market_token").primaryKey(),
+    name: text("name").notNull(),
+    indexToken: text("index_token").notNull(),
+    longToken: text("long_token").notNull(),
+    shortToken: text("short_token").notNull(),
+    isListed: boolean("is_listed").notNull().default(true),
+    listingDate: timestamp("listing_date", { withTimezone: true }),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [index("gmx_markets_index_token_idx").on(table.indexToken)],
+);
+
+export type GmxMarketRow = typeof gmxMarkets.$inferSelect;
+export type NewGmxMarketRow = typeof gmxMarkets.$inferInsert;
+
 export const stageRuns = pgTable(
   "stage_runs",
   {

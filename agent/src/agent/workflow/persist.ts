@@ -5,9 +5,13 @@
 
 import { eq, sql } from "drizzle-orm";
 
+import { randomUUID } from "node:crypto";
+
 import { db as defaultDb } from "../../db/client.ts";
+import { insertMandate } from "../../db/repositories/strategy-mandates.ts";
 import { runs } from "../../db/schema.ts";
 import { runWorkflow, type WorkflowDeps } from "./controller.ts";
+import { buildMandate } from "./mandate.ts";
 import type {
   CandidateBacktest,
   EquityPoint,
@@ -103,6 +107,33 @@ async function persistFinal(
       metadata: metadata as never,
     })
     .where(eq(runs.runId, run_id));
+
+  // Phase 1 of plans/integrate_contracts.md: on a finalized winner, emit a
+  // pending executable mandate alongside the run. Additive and best-effort --
+  // a mandate failure must never break the existing run persistence.
+  if (final.kind === "winner") {
+    await persistMandate(db, final, state);
+  }
+}
+
+async function persistMandate(
+  db: Db,
+  final: FinalWinner,
+  state: WorkflowState,
+): Promise<void> {
+  try {
+    const mandate = buildMandate(final, state, { mandateId: randomUUID() });
+    if (!mandate) {
+      console.error(
+        `[persist] winner ${final.run_id} produced no mandate (winning candidate not found)`,
+      );
+      return;
+    }
+    await insertMandate(mandate, db);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[persist] failed to write mandate for ${final.run_id}: ${message}`);
+  }
 }
 
 function buildMetadata(state: WorkflowState, duration_ms: number) {
