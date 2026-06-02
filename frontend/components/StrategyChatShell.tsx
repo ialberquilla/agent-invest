@@ -17,6 +17,28 @@ import {
 } from "@/lib/local-store";
 import { StrategyCreateResponse } from "@/lib/types";
 
+type AuthState = {
+  ready: boolean;
+  authenticated: boolean;
+  user?: {
+    id?: string;
+    email?: { address?: string | null } | null;
+    wallet?: { address?: string | null } | null;
+  } | null;
+  login: () => void;
+  logout: () => void;
+  getAccessToken: () => Promise<string | null>;
+};
+
+const anonymousAuth: AuthState = {
+  ready: true,
+  authenticated: false,
+  user: null,
+  login: () => undefined,
+  logout: () => undefined,
+  getAccessToken: async () => null,
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -41,18 +63,26 @@ function getErrorMessage(payload: unknown) {
   return "Unable to create a strategy";
 }
 
-async function authHeaders(getAccessToken: () => Promise<string | null>) {
+async function authHeaders(
+  authenticated: boolean,
+  getAccessToken: () => Promise<string | null>,
+) {
+  if (!authenticated) return undefined;
+
   const token = await getAccessToken();
   return token ? { authorization: `Bearer ${token}` } : undefined;
 }
 
-async function requestStrategy(getAccessToken: () => Promise<string | null>) {
+async function requestStrategy(
+  authenticated: boolean,
+  getAccessToken: () => Promise<string | null>,
+) {
   const anonymousUserId = getAnonymousUserId();
   const response = await fetch("/api/strategies", {
     method: "POST",
     headers: {
       "content-type": "application/json",
-      ...(await authHeaders(getAccessToken)),
+      ...(await authHeaders(authenticated, getAccessToken)),
     },
     cache: "no-store",
     body: JSON.stringify({ user_id: anonymousUserId }),
@@ -71,8 +101,26 @@ async function requestStrategy(getAccessToken: () => Promise<string | null>) {
 }
 
 export function StrategyChatShell() {
+  if (!process.env.NEXT_PUBLIC_PRIVY_APP_ID) {
+    return <StrategyChatShellContent auth={anonymousAuth} />;
+  }
+
+  return <PrivyStrategyChatShell />;
+}
+
+function PrivyStrategyChatShell() {
   const { ready, authenticated, user, login, logout, getAccessToken } =
     usePrivy();
+
+  return (
+    <StrategyChatShellContent
+      auth={{ ready, authenticated, user, login, logout, getAccessToken }}
+    />
+  );
+}
+
+function StrategyChatShellContent({ auth }: { auth: AuthState }) {
+  const { ready, authenticated, user, login, logout, getAccessToken } = auth;
   const [strategyId, setStrategyId] = useState<string | null>(null);
   const [knownStrategies, setKnownStrategies] = useState(() =>
     getKnownStrategies(),
@@ -98,7 +146,7 @@ export function StrategyChatShell() {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          ...(await authHeaders(getAccessToken)),
+          ...(await authHeaders(authenticated, getAccessToken)),
         },
         body: JSON.stringify({ user_id: anonymousUserId }),
       }).catch(() => null);
@@ -132,7 +180,7 @@ export function StrategyChatShell() {
       }
 
       try {
-        const next = await requestStrategy(getAccessToken);
+        const next = await requestStrategy(authenticated, getAccessToken);
 
         if (!isActive) {
           return;
@@ -161,7 +209,7 @@ export function StrategyChatShell() {
     return () => {
       isActive = false;
     };
-  }, [bootstrapKey, ready, getAccessToken]);
+  }, [bootstrapKey, ready, authenticated, getAccessToken]);
 
   async function handleNewStrategy() {
     if (isCreatingStrategy || isChatBusy) {
@@ -172,7 +220,7 @@ export function StrategyChatShell() {
     setIsCreatingStrategy(true);
 
     try {
-      const next = await requestStrategy(getAccessToken);
+      const next = await requestStrategy(authenticated, getAccessToken);
 
       ensureKnownStrategy(next.strategy_id);
       persistStrategyId(next.strategy_id);
@@ -275,6 +323,7 @@ export function StrategyChatShell() {
           onBusyChange={setIsChatBusy}
           onKnownStrategiesChange={refreshKnownStrategies}
           onNewStrategy={handleNewStrategy}
+          authenticated={authenticated}
           getAccessToken={getAccessToken}
         />
       </div>
