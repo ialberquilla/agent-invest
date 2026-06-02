@@ -14,6 +14,7 @@ import {
 } from "recharts";
 
 import { Badge } from "@/components/ui/badge";
+import { DeployVaultButton } from "@/components/DeployVaultButton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
 import type {
@@ -25,6 +26,7 @@ import type {
 
 type StrategyResultReportProps = {
   result: StrategyResult;
+  runId?: string;
 };
 
 const KPI_ITEMS: Array<{
@@ -360,7 +362,10 @@ function TextList({ items }: { items: string[] }) {
   );
 }
 
-export function StrategyResultReport({ result }: StrategyResultReportProps) {
+export function StrategyResultReport({
+  result,
+  runId,
+}: StrategyResultReportProps) {
   const allocation = result.allocation ?? [];
   const backtest = result.backtest ?? {};
   const charts = result.charts ?? {};
@@ -381,6 +386,7 @@ export function StrategyResultReport({ result }: StrategyResultReportProps) {
               {formatMissing(result.title)}
             </CardTitle>
           </div>
+          {runId ? <DeployVaultButton runId={runId} /> : null}
         </div>
       </CardHeader>
       <CardContent className="space-y-5 p-4 sm:p-6">

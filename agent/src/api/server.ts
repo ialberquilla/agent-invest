@@ -47,6 +47,11 @@ import {
   ensureStrategy as defaultEnsureStrategy,
   touchStrategy as defaultTouchStrategy,
 } from "../db/repositories/strategies";
+import { readMandatesForRun as defaultReadMandatesForRun } from "../db/repositories/strategy-mandates";
+import {
+  bindVaultToMandate as defaultBindVaultToMandate,
+  readVaultForMandate as defaultReadVaultForMandate,
+} from "../db/repositories/vaults";
 import {
   runCoinGeckoMarketCapIngestion,
   toUtcDayTimestamp,
@@ -72,6 +77,9 @@ type Repositories = {
   listStageRunsByRunId: typeof defaultListStageRunsByRunId;
   readRun: typeof defaultReadRun;
   touchStrategy: typeof defaultTouchStrategy;
+  readMandatesForRun: typeof defaultReadMandatesForRun;
+  bindVaultToMandate: typeof defaultBindVaultToMandate;
+  readVaultForMandate: typeof defaultReadVaultForMandate;
 };
 type IngestionRunners = {
   gmx: (options: GmxHistoryOptions) => Promise<GmxHistorySummary>;
@@ -152,6 +160,15 @@ function requiredText(body: Record<string, unknown>, key: string) {
     );
   }
   return value.trim();
+}
+
+function requiredNumber(body: Record<string, unknown>, key: string) {
+  const value = body[key];
+  const parsed = typeof value === "string" ? Number(value) : value;
+  if (typeof parsed !== "number" || !Number.isFinite(parsed)) {
+    throw httpError(400, `Request body field '${key}' must be a number`);
+  }
+  return parsed;
 }
 
 function requiredChoice<T extends readonly string[]>(
@@ -768,6 +785,9 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     listStageRunsByRunId: defaultListStageRunsByRunId,
     readRun: defaultReadRun,
     touchStrategy: defaultTouchStrategy,
+    readMandatesForRun: defaultReadMandatesForRun,
+    bindVaultToMandate: defaultBindVaultToMandate,
+    readVaultForMandate: defaultReadVaultForMandate,
     ...dependencies.repositories,
   };
   const ingestionRunners: IngestionRunners = {
@@ -874,6 +894,46 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       throw httpError(404, "Strategy not found");
     return { strategy_id: strategyId };
   });
+
+  // Bind a deployed StrategyVault to the run's finalized mandate and promote it
+  // to `active`. The on-chain deploy happens client-side (the broadcast is wired
+  // later via Privy); this just persists the resulting address + chain.
+  app.post<{ Params: { id: string } }>(
+    "/runs/:id/vault",
+    async (request) => {
+      const runId = request.params.id;
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      const chainId = requiredNumber(body, "chain_id");
+      const vaultAddress = requiredText(body, "vault_address");
+      const assetAddress = requiredText(body, "asset_address");
+
+      const mandates = await repositories.readMandatesForRun(runId);
+      const mandate = mandates[0];
+      if (!mandate)
+        throw httpError(404, "No strategy mandate for this run yet");
+
+      const existing = await repositories.readVaultForMandate(
+        mandate.mandateId,
+      );
+      if (existing)
+        throw httpError(409, "This strategy is already bound to a vault");
+
+      await repositories.bindVaultToMandate({
+        chainId,
+        vaultAddress,
+        mandateId: mandate.mandateId,
+        assetAddress,
+      });
+
+      return {
+        mandate_id: mandate.mandateId,
+        chain_id: chainId,
+        vault_address: vaultAddress,
+        asset_address: assetAddress,
+        status: "active",
+      };
+    },
+  );
 
   app.post("/messages", async (request) => {
     const body = (request.body ?? {}) as Record<string, unknown>;

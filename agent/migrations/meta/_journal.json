@@ -92,6 +92,13 @@
       "when": 1780333641838,
       "tag": "0012_gmx_markets",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1780333641839,
+      "tag": "0013_vaults",
+      "breakpoints": true
     }
   ]
 }

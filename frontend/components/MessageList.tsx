@@ -95,7 +95,7 @@ export function MessageList({
           // render as plain flowing text (Open WebUI style). Rich report cards
           // and errors are the exceptions and get their own treatment.
           const body = report ? (
-            <StrategyResultReport result={report} />
+            <StrategyResultReport result={report} runId={runId ?? undefined} />
           ) : message.error ? (
             <div className="rounded-xl bg-destructive/10 px-4 py-3 text-sm leading-6 text-destructive ring-1 ring-destructive/20">
               {message.error}

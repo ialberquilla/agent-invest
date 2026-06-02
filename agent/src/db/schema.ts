@@ -188,6 +188,40 @@ export const strategyMandates = pgTable(
 export type StrategyMandateRow = typeof strategyMandates.$inferSelect;
 export type NewStrategyMandateRow = typeof strategyMandates.$inferInsert;
 
+// A deployed StrategyVault (ERC-4626 over USDC) bound to the mandate it executes.
+// This is the on-chain anchor the plan calls the "vault<->mandate binding"
+// (plans/integrate_contracts.md): it links a finalized run's mandate to the
+// concrete vault address + chain it trades on, and is the seam Phase 4+ reads
+// NAV/positions against. One active mandate per vault: `mandate_id` is unique, so
+// rebinding on a strategy refresh (Phase 7) repoints the row to the new mandate.
+export const vaults = pgTable(
+  "vaults",
+  {
+    chainId: integer("chain_id").notNull(),
+    vaultAddress: text("vault_address").notNull(),
+    mandateId: text("mandate_id")
+      .notNull()
+      .references(() => strategyMandates.mandateId, { onDelete: "restrict" }),
+    // ERC-4626 underlying (USDC). Stored so the engine never has to re-read it.
+    assetAddress: text("asset_address").notNull(),
+    status: text("status").notNull().default("active"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.chainId, table.vaultAddress] }),
+    uniqueIndex("vaults_mandate_id_idx").on(table.mandateId),
+    index("vaults_status_idx").on(table.status),
+  ],
+);
+
+export type VaultRow = typeof vaults.$inferSelect;
+export type NewVaultRow = typeof vaults.$inferInsert;
+
 // GMX V2 token directory (Phase 2 of plans/integrate_contracts.md), fed from
 // the GMX /tokens endpoint. address + decimals are the execution identifiers a
 // coin_id (= symbol) resolves to; `synthetic` flags price-only index tokens.
