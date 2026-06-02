@@ -34,6 +34,7 @@ type ChatViewProps = {
   onBusyChange?: (isBusy: boolean) => void;
   onKnownStrategiesChange?: () => void;
   onNewStrategy: () => void | Promise<void>;
+  authenticated: boolean;
   getAccessToken: () => Promise<string | null>;
 };
 
@@ -87,6 +88,7 @@ export function ChatView({
   onBusyChange,
   onKnownStrategiesChange,
   onNewStrategy,
+  authenticated,
   getAccessToken,
 }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
@@ -146,7 +148,7 @@ export function ChatView({
     setLiveTimeline(initialTimeline);
 
     try {
-      const accessToken = await getAccessToken();
+      const accessToken = authenticated ? await getAccessToken() : null;
       const response = await fetch("/api/messages/stream", {
         method: "POST",
         headers: {
