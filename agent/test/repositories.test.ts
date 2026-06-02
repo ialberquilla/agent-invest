@@ -14,6 +14,10 @@ import {
 import { markRunCompleted, markRunFailed } from "../src/db/repositories/runs";
 import { insertMandate } from "../src/db/repositories/strategy-mandates";
 import {
+  bindVaultToMandate,
+  insertVault,
+} from "../src/db/repositories/vaults";
+import {
   ensureStrategy,
   readStrategySession,
   updateStrategySession,
@@ -424,6 +428,49 @@ test("insertMandate promotes index columns and stores the full spec", async () =
     templateId: "synthetic_long_allocation",
     spec: mandate,
   });
+});
+
+test("insertVault writes a deployed vault row with conflict ignored", async () => {
+  const { db, insertCalls } = createDbDouble();
+
+  await insertVault(
+    {
+      chainId: 42161,
+      vaultAddress: "0xVault",
+      mandateId: "mandate-1",
+      assetAddress: "0xUSDC",
+    },
+    db,
+  );
+
+  assert.equal(insertCalls.length, 1);
+  assert.equal(insertCalls[0]?.conflictIgnored, true);
+  assert.deepEqual(insertCalls[0]?.values, {
+    chainId: 42161,
+    vaultAddress: "0xVault",
+    mandateId: "mandate-1",
+    assetAddress: "0xUSDC",
+    status: "active",
+  });
+});
+
+test("bindVaultToMandate inserts the vault and promotes the mandate to active", async () => {
+  const { db, insertCalls, updateCalls } = createDbDouble();
+
+  await bindVaultToMandate(
+    {
+      chainId: 42161,
+      vaultAddress: "0xVault",
+      mandateId: "mandate-1",
+      assetAddress: "0xUSDC",
+    },
+    db,
+  );
+
+  assert.equal(insertCalls.length, 1);
+  assert.equal(insertCalls[0]?.values && (insertCalls[0].values as { mandateId: string }).mandateId, "mandate-1");
+  assert.equal(updateCalls.length, 1);
+  assert.equal(updateCalls[0]?.set.status, "active");
 });
 
 test("createArtifact inserts an artifact row", async () => {

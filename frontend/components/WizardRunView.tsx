@@ -486,7 +486,10 @@ export function WizardRunView() {
           </section>
         ) : structuredResult ? (
           <section className="w-full">
-            <StrategyResultReport result={structuredResult} />
+            <StrategyResultReport
+              result={structuredResult}
+              runId={runState.runId ?? undefined}
+            />
           </section>
         ) : (
           <section className="w-full">
