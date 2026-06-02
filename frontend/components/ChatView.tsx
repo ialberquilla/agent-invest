@@ -19,6 +19,7 @@ import {
   deriveStrategyLabel,
   ensureKnownStrategy,
   getMessages,
+  getAnonymousUserId,
   setMessages as persistMessages,
   setStrategyId as persistStrategyId,
   upsertKnownStrategy,
@@ -33,6 +34,7 @@ type ChatViewProps = {
   onBusyChange?: (isBusy: boolean) => void;
   onKnownStrategiesChange?: () => void;
   onNewStrategy: () => void | Promise<void>;
+  getAccessToken: () => Promise<string | null>;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -85,6 +87,7 @@ export function ChatView({
   onBusyChange,
   onKnownStrategiesChange,
   onNewStrategy,
+  getAccessToken,
 }: ChatViewProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(() =>
     getMessages(strategyId),
@@ -143,18 +146,27 @@ export function ChatView({
     setLiveTimeline(initialTimeline);
 
     try {
+      const accessToken = await getAccessToken();
       const response = await fetch("/api/messages/stream", {
         method: "POST",
         headers: {
           "content-type": "application/json",
+          ...(accessToken
+            ? { authorization: `Bearer ${accessToken}` }
+            : {}),
         },
         cache: "no-store",
         body: JSON.stringify(
           "text" in submission
-            ? { strategy_id: strategyId, text: submission.text }
+            ? {
+                strategy_id: strategyId,
+                text: submission.text,
+                user_id: getAnonymousUserId(),
+              }
             : {
                 strategy_id: strategyId,
                 wizard_params: submission.wizard_params,
+                user_id: getAnonymousUserId(),
               },
         ),
       });

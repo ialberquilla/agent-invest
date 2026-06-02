@@ -1,6 +1,7 @@
 "use client";
 
 import { startTransition, useEffect, useState } from "react";
+import { usePrivy } from "@privy-io/react-auth";
 
 import { ChatView } from "@/components/ChatView";
 import { StrategySidebar } from "@/components/StrategySidebar";
@@ -10,6 +11,7 @@ import {
   clearStrategyId,
   ensureKnownStrategy,
   getKnownStrategies,
+  getAnonymousUserId,
   getStrategyId,
   setStrategyId as persistStrategyId,
 } from "@/lib/local-store";
@@ -39,10 +41,21 @@ function getErrorMessage(payload: unknown) {
   return "Unable to create a strategy";
 }
 
-async function requestStrategy() {
+async function authHeaders(getAccessToken: () => Promise<string | null>) {
+  const token = await getAccessToken();
+  return token ? { authorization: `Bearer ${token}` } : undefined;
+}
+
+async function requestStrategy(getAccessToken: () => Promise<string | null>) {
+  const anonymousUserId = getAnonymousUserId();
   const response = await fetch("/api/strategies", {
     method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(await authHeaders(getAccessToken)),
+    },
     cache: "no-store",
+    body: JSON.stringify({ user_id: anonymousUserId }),
   });
   const payload = await readJson(response);
 
@@ -58,6 +71,8 @@ async function requestStrategy() {
 }
 
 export function StrategyChatShell() {
+  const { ready, authenticated, user, login, logout, getAccessToken } =
+    usePrivy();
   const [strategyId, setStrategyId] = useState<string | null>(null);
   const [knownStrategies, setKnownStrategies] = useState(() =>
     getKnownStrategies(),
@@ -73,11 +88,37 @@ export function StrategyChatShell() {
   }
 
   useEffect(() => {
+    if (!ready || !authenticated) return;
+
+    let isActive = true;
+    async function claimAnonymousStrategies() {
+      const anonymousUserId = getAnonymousUserId();
+      if (!anonymousUserId) return;
+      await fetch("/api/users/claim", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(await authHeaders(getAccessToken)),
+        },
+        body: JSON.stringify({ user_id: anonymousUserId }),
+      }).catch(() => null);
+      if (isActive) setBootstrapKey((current) => current + 1);
+    }
+
+    void claimAnonymousStrategies();
+    return () => {
+      isActive = false;
+    };
+  }, [ready, authenticated, getAccessToken]);
+
+  useEffect(() => {
     let isActive = true;
 
     async function bootstrap() {
       setBootstrapError(null);
       setStrategyError(null);
+
+      if (!ready) return;
 
       const cachedStrategyId = getStrategyId();
       if (cachedStrategyId) {
@@ -91,7 +132,7 @@ export function StrategyChatShell() {
       }
 
       try {
-        const next = await requestStrategy();
+        const next = await requestStrategy(getAccessToken);
 
         if (!isActive) {
           return;
@@ -120,7 +161,7 @@ export function StrategyChatShell() {
     return () => {
       isActive = false;
     };
-  }, [bootstrapKey]);
+  }, [bootstrapKey, ready, getAccessToken]);
 
   async function handleNewStrategy() {
     if (isCreatingStrategy || isChatBusy) {
@@ -131,7 +172,7 @@ export function StrategyChatShell() {
     setIsCreatingStrategy(true);
 
     try {
-      const next = await requestStrategy();
+      const next = await requestStrategy(getAccessToken);
 
       ensureKnownStrategy(next.strategy_id);
       persistStrategyId(next.strategy_id);
@@ -182,7 +223,7 @@ export function StrategyChatShell() {
       </main>
     );
   }
-  if (!strategyId) {
+  if (!ready || !strategyId) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-muted/30 px-4 py-6 sm:px-6">
         <Card className="w-full max-w-md border-border/70 bg-background shadow-sm">
@@ -210,6 +251,22 @@ export function StrategyChatShell() {
       />
 
       <div className="min-w-0 flex-1">
+        <div className="flex items-center justify-end gap-3 border-b border-border/60 px-4 py-2 text-sm">
+          {authenticated ? (
+            <>
+              <span className="truncate text-muted-foreground">
+                {user?.email?.address ?? user?.wallet?.address ?? user?.id}
+              </span>
+              <Button variant="outline" size="sm" onClick={logout}>
+                Log out
+              </Button>
+            </>
+          ) : (
+            <Button variant="outline" size="sm" onClick={login}>
+              Log in
+            </Button>
+          )}
+        </div>
         <ChatView
           key={strategyId}
           strategyId={strategyId}
@@ -218,6 +275,7 @@ export function StrategyChatShell() {
           onBusyChange={setIsChatBusy}
           onKnownStrategiesChange={refreshKnownStrategies}
           onNewStrategy={handleNewStrategy}
+          getAccessToken={getAccessToken}
         />
       </div>
     </main>
