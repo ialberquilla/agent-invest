@@ -45,6 +45,7 @@ import {
 import type { StageRun } from "../db/schema";
 import {
   ensureStrategy as defaultEnsureStrategy,
+  claimStrategies as defaultClaimStrategies,
   touchStrategy as defaultTouchStrategy,
 } from "../db/repositories/strategies";
 import { readMandatesForRun as defaultReadMandatesForRun } from "../db/repositories/strategy-mandates";
@@ -68,6 +69,7 @@ import { isStorageDisabled } from "../storage/local";
 type Repositories = {
   createRun: typeof defaultCreateRun;
   ensureStrategy: typeof defaultEnsureStrategy;
+  claimStrategies: typeof defaultClaimStrategies;
   markRunCompleted: typeof defaultMarkRunCompleted;
   markRunFailed: typeof defaultMarkRunFailed;
   getStageRun: typeof defaultGetStageRun;
@@ -776,6 +778,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   const repositories: Repositories = {
     createRun: defaultCreateRun,
     ensureStrategy: defaultEnsureStrategy,
+    claimStrategies: defaultClaimStrategies,
     markRunCompleted: defaultMarkRunCompleted,
     markRunFailed: defaultMarkRunFailed,
     getEvalRun: defaultGetEvalRun,
@@ -817,6 +820,27 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   });
 
   app.get("/health", async () => ({ ok: true }));
+
+  app.post<{ Params: { id: string } }>("/users/:id/claim", async (request) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    if (!isRecord(body)) {
+      throw httpError(400, "Request body must be a JSON object");
+    }
+    const targetUserId = request.params.id.trim();
+    const anonymousUserId = requiredText(body, "anonymous_user_id");
+    if (!targetUserId.startsWith("privy:")) {
+      throw httpError(400, "Target user must be a Privy user");
+    }
+    if (!anonymousUserId.startsWith("anon:")) {
+      throw httpError(400, "Anonymous user id is invalid");
+    }
+
+    const claimed = await repositories.claimStrategies(
+      targetUserId,
+      anonymousUserId,
+    );
+    return { claimed };
+  });
 
   app.get<{
     Querystring: { stage?: string; fixture_id?: string; limit?: string };

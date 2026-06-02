@@ -1,3 +1,12 @@
+import {
+  createPublicClient,
+  createWalletClient,
+  custom,
+  http,
+  type Hex,
+} from "viem";
+import { arbitrum } from "viem/chains";
+
 // Client-side vault deployment seam.
 //
 // The on-chain broadcast (deploy StrategyVault from a connected wallet) is wired
@@ -23,23 +32,75 @@ export type VaultBindingResponse = {
   status: string;
 };
 
-// TODO(privy): connect wallet, broadcast `DeployStrategyVault.s.sol`
-// (StrategyVault(asset, owner, ...)), wait for the receipt, and return the
-// deployed address. Until then this throws so the button surfaces a clear state.
-export async function deployVaultOnChain(): Promise<VaultDeployment> {
-  throw new Error("On-chain deploy is not wired yet (Privy wallet coming soon)");
+type EthereumProvider = Parameters<typeof custom>[0];
+
+const STRATEGY_VAULT_ABI = [
+  {
+    type: "constructor",
+    inputs: [
+      { name: "asset_", type: "address" },
+      { name: "owner_", type: "address" },
+    ],
+  },
+] as const;
+
+function strategyVaultBytecode() {
+  const bytecode = process.env.NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE;
+  if (!bytecode?.startsWith("0x")) {
+    throw new Error("NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE is not configured");
+  }
+  return bytecode as Hex;
+}
+
+export async function deployVaultOnChain(
+  provider: EthereumProvider,
+): Promise<VaultDeployment> {
+  const walletClient = createWalletClient({
+    chain: arbitrum,
+    transport: custom(provider),
+  });
+  const publicClient = createPublicClient({ chain: arbitrum, transport: http() });
+  const [account] = await walletClient.getAddresses();
+  if (!account) throw new Error("Connect a wallet before deploying");
+
+  const currentChainId = await walletClient.getChainId();
+  if (currentChainId !== STRATEGY_VAULT_CHAIN_ID) {
+    await walletClient.switchChain({ id: STRATEGY_VAULT_CHAIN_ID });
+  }
+
+  const hash = await walletClient.deployContract({
+    abi: STRATEGY_VAULT_ABI,
+    account,
+    args: [STRATEGY_VAULT_ASSET, account],
+    bytecode: strategyVaultBytecode(),
+    chain: arbitrum,
+  });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  if (!receipt.contractAddress) {
+    throw new Error("Vault deployment receipt did not include a contract address");
+  }
+
+  return {
+    chainId: STRATEGY_VAULT_CHAIN_ID,
+    vaultAddress: receipt.contractAddress,
+    assetAddress: STRATEGY_VAULT_ASSET,
+  };
 }
 
 // Persist the deployed vault and promote the run's mandate to `active`.
 export async function saveVaultBinding(
   runId: string,
   deployment: VaultDeployment,
+  accessToken?: string | null,
 ): Promise<VaultBindingResponse> {
   const response = await fetch(
     `/api/runs/${encodeURIComponent(runId)}/vault`,
     {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+      },
       body: JSON.stringify({
         chain_id: deployment.chainId,
         vault_address: deployment.vaultAddress,

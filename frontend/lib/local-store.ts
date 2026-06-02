@@ -18,6 +18,7 @@ export type KnownStrategy = {
 
 const STRATEGY_ID_KEY = "agent-invest:strategy-id";
 const KNOWN_STRATEGIES_KEY = "agent-invest:known-strategies";
+const ANONYMOUS_USER_ID_KEY = "agent-invest:anonymous-user-id";
 const MESSAGE_KEY_PREFIX = "agent-invest:messages:";
 const STRATEGY_LABEL_MAX_LENGTH = 40;
 
@@ -163,6 +164,21 @@ export function clearStrategyId() {
   }
 
   window.localStorage.removeItem(STRATEGY_ID_KEY);
+}
+
+export function getAnonymousUserId() {
+  const userId = parseStoredJson(
+    ANONYMOUS_USER_ID_KEY,
+    (value): value is string =>
+      isNonEmptyString(value) && value.startsWith("anon:"),
+  );
+
+  if (userId) return userId;
+  if (!canUseLocalStorage()) return null;
+
+  const next = `anon:${crypto.randomUUID()}`;
+  window.localStorage.setItem(ANONYMOUS_USER_ID_KEY, JSON.stringify(next));
+  return next;
 }
 
 export function getKnownStrategies() {

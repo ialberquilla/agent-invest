@@ -21,6 +21,27 @@ services:
       - ${HOME}/.local/share/opencode:/root/.local/share/opencode
       - ./.data:/app/.data
 
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      args:
+        NEXT_PUBLIC_GA_MEASUREMENT_ID: ${NEXT_PUBLIC_GA_MEASUREMENT_ID:-}
+        NEXT_PUBLIC_PRIVY_APP_ID: ${NEXT_PUBLIC_PRIVY_APP_ID:-}
+        NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE: ${NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE:-}
+    depends_on:
+      - agent
+    environment:
+      AGENT_URL: http://agent:8000
+      AGENT_API_KEY: ${AGENT_API_KEY:-}
+      NEXT_PUBLIC_GA_MEASUREMENT_ID: ${NEXT_PUBLIC_GA_MEASUREMENT_ID:-}
+      NEXT_PUBLIC_PRIVY_APP_ID: ${NEXT_PUBLIC_PRIVY_APP_ID:-}
+      NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE: ${NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE:-}
+      PRIVY_APP_ID: ${PRIVY_APP_ID:-}
+      PRIVY_APP_SECRET: ${PRIVY_APP_SECRET:-}
+    ports:
+      - "${FRONTEND_PORT:-4000}:4000"
+
   postgres:
     image: postgres:16
     environment:

@@ -10,18 +10,21 @@ function errorResponse(error: unknown) {
 }
 
 export async function POST(request: Request) {
-  try {
-    const body = (await request.json().catch(() => ({}))) as Record<
-      string,
-      unknown
-    >;
-    const identity = await resolveUserIdentity(request, body);
-    const response = await agentFetch("/strategies", {
-      method: "POST",
-      body: { user_id: identity.userId },
-    });
+  const body = (await request.json().catch(() => ({}))) as Record<
+    string,
+    unknown
+  >;
+  const identity = await resolveUserIdentity(request, body);
+  if (!identity.authenticated) {
+    return Response.json({ message: "Login required" }, { status: 401 });
+  }
 
-    return Response.json((await response.json()) as { strategy_id: string });
+  try {
+    const response = await agentFetch(
+      `/users/${encodeURIComponent(identity.userId)}/claim`,
+      { method: "POST", body: { anonymous_user_id: body.user_id } },
+    );
+    return Response.json(await response.json());
   } catch (error) {
     return errorResponse(error);
   }

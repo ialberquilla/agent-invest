@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import { db as defaultDb } from "../client";
 import { strategies } from "../schema";
@@ -98,6 +98,25 @@ export async function updateStrategySession(
     .update(strategies)
     .set({ opencodeSessionId })
     .where(eq(strategies.strategyId, strategyId));
+
+  return result.rowCount ?? 0;
+}
+
+export async function claimStrategies(
+  targetUserId: string,
+  anonymousUserId: string,
+  db: Db = defaultDb,
+) {
+  await ensureUser(targetUserId, db);
+  const result = await db
+    .update(strategies)
+    .set({ userId: targetUserId })
+    .where(
+      and(
+        eq(strategies.userId, anonymousUserId),
+        sql`${strategies.strategyId} IS NOT NULL`,
+      ),
+    );
 
   return result.rowCount ?? 0;
 }

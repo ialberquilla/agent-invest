@@ -4,6 +4,7 @@ import Script from "next/script";
 import { Suspense } from "react";
 import "./globals.css";
 import { RoutePageViewTracker } from "@/components/RoutePageViewTracker";
+import { Providers } from "@/components/Providers";
 import { gaMeasurementId } from "@/lib/analytics";
 
 const inter = Inter({
@@ -52,7 +53,7 @@ export default function RootLayout({
         />
       </head>
       <body className="min-h-full flex flex-col">
-        {children}
+        <Providers>{children}</Providers>
         {shouldLoadGoogleAnalytics ? (
           <Suspense fallback={null}>
             <RoutePageViewTracker />
