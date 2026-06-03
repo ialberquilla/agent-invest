@@ -15,10 +15,17 @@ import {VaultFactory} from "src/VaultFactory.sol";
 contract DeployStrategyVault is Script {
     function run() external returns (StrategyVault implementation, VaultFactory factory, address vault) {
         IERC20 asset = IERC20(vm.envAddress("STRATEGY_VAULT_ASSET"));
-        address owner = vm.envAddress("STRATEGY_VAULT_OWNER");
+        uint256 deployerPrivateKey = vm.envOr("TESTNET_PRIVATE_KEY", uint256(0));
+        address owner = vm.envOr("STRATEGY_VAULT_OWNER", address(0));
+        if (owner == address(0) && deployerPrivateKey != 0) owner = vm.addr(deployerPrivateKey);
+        if (owner == address(0)) owner = msg.sender;
         address beaconOwner = vm.envOr("BEACON_OWNER", owner);
 
-        vm.startBroadcast();
+        if (deployerPrivateKey == 0) {
+            vm.startBroadcast();
+        } else {
+            vm.startBroadcast(deployerPrivateKey);
+        }
         implementation = new StrategyVault();
         factory = new VaultFactory(address(implementation), beaconOwner);
         vault = factory.createVault(asset, owner);
