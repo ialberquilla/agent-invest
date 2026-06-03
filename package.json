@@ -12,9 +12,9 @@
     "contracts:build": "pnpm --filter @agent-invest/contracts build",
     "contracts:test": "pnpm --filter @agent-invest/contracts test",
     "contracts:fmt": "pnpm --filter @agent-invest/contracts fmt",
-    "py:lock": "sh -c 'cd agent/scripts && ./uv-age-policy.sh lock \"$@\"' --",
-    "py:sync": "sh -c 'cd agent/scripts && ./uv-age-policy.sh sync \"$@\"' --",
-    "py:sync:frozen": "sh -c 'cd agent/scripts && ./uv-age-policy.sh sync --frozen \"$@\"' --",
+    "py:lock": "sh -c 'cd agent/scripts && uv lock \"$@\"' --",
+    "py:sync": "sh -c 'cd agent/scripts && uv sync \"$@\"' --",
+    "py:sync:frozen": "sh -c 'cd agent/scripts && uv sync --frozen \"$@\"' --",
     "test": "pnpm --filter @agent-invest/agent test",
     "lint": "eslint .",
     "format": "prettier --check ."

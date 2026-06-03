@@ -78,7 +78,7 @@ pnpm contracts:build / contracts:test / contracts:fmt
 
 Use `pnpm` for all JavaScript dependency operations. Do not use `npm` or `npx`.
 
-Use the root scripts for Python dependency operations so uv applies the 7-day package age gate:
+Use the root scripts for Python dependency operations so uv applies the 7-day package age gate from `agent/scripts/pyproject.toml`:
 
 ```sh
 pnpm py:lock
@@ -86,7 +86,7 @@ pnpm py:sync
 pnpm py:sync:frozen
 ```
 
-Do not run raw `uv lock` or `uv sync`; those commands can resolve packages that were uploaded less than 7 days ago.
+For production or CI installs, use `pnpm py:sync:frozen` so workloads stay aligned with `agent/scripts/uv.lock`.
 
 ## Secrets
 
