@@ -63,6 +63,13 @@ function getErrorMessage(payload: unknown) {
   return "Unable to create a strategy";
 }
 
+function shortenIdentity(value: string) {
+  if (value.includes("@")) return value;
+  if (value.length <= 14) return value;
+
+  return `${value.slice(0, 6)}...${value.slice(-4)}`;
+}
+
 async function authHeaders(
   authenticated: boolean,
   getAccessToken: () => Promise<string | null>,
@@ -121,6 +128,8 @@ function PrivyStrategyChatShell() {
 
 function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   const { ready, authenticated, user, login, logout, getAccessToken } = auth;
+  const identity = user?.email?.address ?? user?.wallet?.address ?? user?.id;
+  const identityLabel = identity ? shortenIdentity(identity) : "Connected";
   const [strategyId, setStrategyId] = useState<string | null>(null);
   const [knownStrategies, setKnownStrategies] = useState(() =>
     getKnownStrategies(),
@@ -298,19 +307,27 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
         onNewStrategy={handleNewStrategy}
       />
 
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center justify-end gap-3 border-b border-border/60 px-4 py-2 text-sm">
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-center justify-end gap-2 border-b border-border/60 px-4 py-2 text-sm">
           {authenticated ? (
             <>
-              <span className="truncate text-muted-foreground">
-                {user?.email?.address ?? user?.wallet?.address ?? user?.id}
+              <span
+                className="inline-flex min-w-0 max-w-[13rem] items-center gap-2 rounded-full border border-border/70 bg-muted/45 px-3 py-1.5 text-muted-foreground shadow-xs sm:max-w-[18rem]"
+                title={identity}
+              >
+                <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
+                <span className="truncate font-mono text-xs">{identityLabel}</span>
               </span>
-              <Button variant="outline" size="sm" onClick={logout}>
-                Log out
+              <Button
+                size="sm"
+                className="rounded-full px-4 shadow-sm"
+                onClick={logout}
+              >
+                Sign out
               </Button>
             </>
           ) : (
-            <Button variant="outline" size="sm" onClick={login}>
+            <Button className="rounded-full px-4" size="sm" onClick={login}>
               Log in
             </Button>
           )}

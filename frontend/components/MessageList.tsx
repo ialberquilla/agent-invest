@@ -50,9 +50,18 @@ export function MessageList({
   onOpenWizard,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
+  const latestReportRef = useRef<HTMLDivElement | null>(null);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isThinking && latestReportRef.current) {
+      latestReportRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+      return;
+    }
+
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [isThinking, liveParts, messages]);
 
@@ -137,38 +146,42 @@ export function MessageList({
               ) : null}
             </div>
           );
+          const activityToggle = runId ? (
+            <div className="space-y-2">
+              <button
+                type="button"
+                className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-3.5 py-2 text-sm font-semibold text-primary shadow-sm transition-colors hover:bg-primary/15 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() =>
+                  setExpandedRunId((current) =>
+                    current === runId ? null : runId,
+                  )
+                }
+              >
+                {isActivityExpanded
+                  ? "Hide run activity"
+                  : "Show run activity"}
+              </button>
+              {isActivityExpanded ? (
+                <LiveActivity runId={runId} fullWidth />
+              ) : null}
+            </div>
+          ) : null;
 
           return (
             <div
               key={`${message.role}-${message.run_id ?? index}`}
               className="flex w-full flex-col gap-2"
+              ref={report && index === messages.length - 1 ? latestReportRef : null}
             >
+              {report ? activityToggle : null}
+
               {body}
 
               {hasArtifacts && message.artifacts ? (
                 <ArtifactGallery artifacts={message.artifacts} />
               ) : null}
 
-              {runId ? (
-                <div className="space-y-2">
-                  <button
-                    type="button"
-                    className="text-xs font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
-                    onClick={() =>
-                      setExpandedRunId((current) =>
-                        current === runId ? null : runId,
-                      )
-                    }
-                  >
-                    {isActivityExpanded
-                      ? "Hide run activity"
-                      : "Show run activity"}
-                  </button>
-                  {isActivityExpanded ? (
-                    <LiveActivity runId={runId} fullWidth />
-                  ) : null}
-                </div>
-              ) : null}
+              {report ? null : activityToggle}
             </div>
           );
         })}
