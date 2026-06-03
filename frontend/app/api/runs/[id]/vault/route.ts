@@ -30,3 +30,19 @@ export async function POST(
     return errorResponse(error);
   }
 }
+
+export async function GET(
+  request: Request,
+  context: { params: Promise<{ id: string }> },
+) {
+  const { id } = await context.params;
+
+  try {
+    const response = await agentFetch(`/runs/${encodeURIComponent(id)}/vault`, {
+      method: "GET",
+    });
+    return Response.json(await response.json());
+  } catch (error) {
+    return errorResponse(error);
+  }
+}

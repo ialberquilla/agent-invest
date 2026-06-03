@@ -2,8 +2,11 @@ import {
   createPublicClient,
   createWalletClient,
   custom,
+  erc20Abi,
+  formatUnits,
   http,
   parseEventLogs,
+  parseUnits,
   type Hex,
 } from "viem";
 import { arbitrum, arbitrumSepolia } from "viem/chains";
@@ -41,8 +44,34 @@ export type VaultBindingResponse = {
   status: string;
 };
 
+export type VaultDeployabilityResponse =
+  | {
+      deployable: true;
+      mandate_id: string;
+      status: string;
+    }
+  | ({
+      deployable: false;
+      reason: string;
+    } & Partial<VaultBindingResponse>);
+
+export type VaultAllocationReadiness = {
+  executable: boolean;
+  reason?: string;
+  mandate_id: string;
+  chain_id: number;
+  vault_address: string;
+  asset_address: string;
+  template_id: string | null;
+  allowed_sides: string | null;
+  target_allocation: Array<{ coin_id?: string; weight?: number }>;
+  missing?: string[];
+};
+
 type EthereumProvider = Parameters<typeof custom>[0];
 type VaultCreatedLog = { args: { vault: `0x${string}` } };
+
+const ASSET_DECIMALS = 6;
 
 const STRATEGY_VAULT_BYTECODE = strategyVaultArtifact.bytecode.object as Hex;
 const STRATEGY_VAULT_ABI = [] as const;
@@ -72,6 +101,22 @@ const VAULT_FACTORY_ABI = [
       { name: "owner", type: "address", indexed: true },
       { name: "asset", type: "address", indexed: true },
     ],
+  },
+] as const;
+const STRATEGY_VAULT_USER_ABI = [
+  {
+    type: "function",
+    name: "deposit",
+    inputs: [{ name: "amount", type: "uint256" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "idleBalance",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
   },
 ] as const;
 const VAULT_FACTORY_BYTECODE = vaultFactoryArtifact.bytecode.object as Hex;
@@ -189,6 +234,30 @@ function vaultAddressFromReceipt(logs: Parameters<typeof parseEventLogs>[0]["log
 }
 
 // Persist the deployed vault and promote the run's mandate to `active`.
+export async function assertVaultDeployable(
+  runId: string,
+  accessToken?: string | null,
+): Promise<VaultDeployabilityResponse> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/vault`, {
+    headers: {
+      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+    },
+  });
+
+  const payload = (await response.json().catch(() => null)) as
+    | (VaultDeployabilityResponse & { message?: string })
+    | null;
+
+  if (!response.ok) {
+    throw new Error(payload?.message ?? "Failed to check vault deployability");
+  }
+  if (!payload?.deployable) {
+    throw new Error(payload?.reason ?? "Vault is not ready to deploy");
+  }
+
+  return payload;
+}
+
 export async function saveVaultBinding(
   runId: string,
   deployment: VaultDeployment,
@@ -219,4 +288,82 @@ export async function saveVaultBinding(
   }
 
   return payload as VaultBindingResponse;
+}
+
+export async function fundVaultOnChain(
+  provider: EthereumProvider,
+  vaultAddress: string,
+  amount: string,
+) {
+  const chain = strategyVaultChain();
+  const walletClient = createWalletClient({
+    chain,
+    transport: custom(provider),
+  });
+  const publicClient = createPublicClient({ chain, transport: http() });
+  const [account] = await walletClient.getAddresses();
+  if (!account) throw new Error("Connect a wallet before funding");
+
+  const currentChainId = await walletClient.getChainId();
+  if (currentChainId !== STRATEGY_VAULT_CHAIN_ID) {
+    await walletClient.switchChain({ id: STRATEGY_VAULT_CHAIN_ID });
+  }
+
+  const amountUnits = parseUnits(amount, ASSET_DECIMALS);
+  if (amountUnits <= BigInt(0)) {
+    throw new Error("Enter an amount greater than zero");
+  }
+
+  const approveHash = await walletClient.writeContract({
+    address: STRATEGY_VAULT_ASSET as `0x${string}`,
+    abi: erc20Abi,
+    functionName: "approve",
+    args: [vaultAddress as `0x${string}`, amountUnits],
+    account,
+    chain,
+  });
+  await publicClient.waitForTransactionReceipt({ hash: approveHash });
+
+  const depositHash = await walletClient.writeContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "deposit",
+    args: [amountUnits],
+    account,
+    chain,
+  });
+  await publicClient.waitForTransactionReceipt({ hash: depositHash });
+
+  return readVaultIdleBalance(provider, vaultAddress);
+}
+
+export async function readVaultIdleBalance(
+  provider: EthereumProvider,
+  vaultAddress: string,
+) {
+  const chain = strategyVaultChain();
+  const publicClient = createPublicClient({ chain, transport: custom(provider) });
+  const balance = await publicClient.readContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "idleBalance",
+  });
+  return formatUnits(balance, ASSET_DECIMALS);
+}
+
+export async function readAllocationReadiness(
+  runId: string,
+): Promise<VaultAllocationReadiness> {
+  const response = await fetch(
+    `/api/runs/${encodeURIComponent(runId)}/vault/allocation`,
+  );
+  const payload = (await response.json().catch(() => null)) as
+    | (VaultAllocationReadiness & { message?: string })
+    | null;
+
+  if (!response.ok) {
+    throw new Error(payload?.message ?? "Failed to check allocation readiness");
+  }
+
+  return payload as VaultAllocationReadiness;
 }
