@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity 0.8.26;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {Test} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
+import {Test} from "forge-std/Test.sol";
 import {IGmxV2ExchangeRouter} from "src/interfaces/IGmxV2ExchangeRouter.sol";
 import {StrategyVault} from "src/StrategyVault.sol";
+import {VaultFactory} from "src/VaultFactory.sol";
 
 contract MockAsset is ERC20 {
     constructor() ERC20("Mock USDC", "mUSDC") {}
@@ -107,42 +109,501 @@ contract MockGmxExchangeRouter is IGmxV2ExchangeRouter {
     }
 }
 
+/// @dev A v2 implementation used to prove beacon upgrades swap logic for live vaults while
+///      preserving ERC-7201 namespaced storage (the original `asset` survives the upgrade).
+contract StrategyVaultV2 is StrategyVault {
+    function version() external pure returns (uint256) {
+        return 2;
+    }
+}
+
 contract StrategyVaultTest is Test {
     MockAsset internal asset;
+    VaultFactory internal factory;
     StrategyVault internal vault;
     address internal owner = address(0xA11CE);
+    address internal beaconOwner = address(0xBEAC0);
+    address internal keeper = address(0xC0FFEE);
+    address internal market = address(0xBEEF);
 
     function setUp() external {
         asset = new MockAsset();
-        vault = new StrategyVault(asset, owner, "Agent Invest Strategy Vault", "aisUSDC");
+        StrategyVault implementation = new StrategyVault();
+        factory = new VaultFactory(address(implementation), beaconOwner);
+        vault = StrategyVault(payable(factory.createVault(asset, owner)));
     }
 
-    function test_DepositMintsShares(uint256 amount) external {
+    /// @dev Standard permissive mandate so GMX happy-paths reach the router; per-test we tighten it.
+    function _configure(uint256 minInterval, address keeper_) internal {
+        vm.startPrank(owner);
+        vault.setMandate(
+            StrategyVault.Mandate({maxLeverage: 5, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: minInterval})
+        );
+        vault.addMarket(market);
+        if (keeper_ != address(0)) vault.setKeeper(keeper_);
+        vm.stopPrank();
+    }
+
+    function _gmx() internal returns (MockGmxExchangeRouter exchangeRouter, address router) {
+        router = address(new MockGmxRouter());
+        exchangeRouter = new MockGmxExchangeRouter(router);
+        // pin the vault's canonical routing to these mocks (orderVault matches the order structs)
+        vm.prank(owner);
+        vault.setGmxRouting(address(exchangeRouter), router, address(0x5678));
+    }
+
+    function _increaseOrder(address exchangeRouter, address router, uint256 sizeDeltaUsd, uint256 collateralAmount)
+        internal
+        view
+        returns (StrategyVault.GmxMarketIncreaseOrder memory)
+    {
+        return StrategyVault.GmxMarketIncreaseOrder({
+            exchangeRouter: exchangeRouter,
+            router: router,
+            orderVault: address(0x5678),
+            market: market,
+            collateralToken: address(asset),
+            receiver: address(0),
+            cancellationReceiver: address(0),
+            callbackContract: address(0),
+            uiFeeReceiver: address(0),
+            isLong: true,
+            shouldUnwrapNativeToken: false,
+            sizeDeltaUsd: sizeDeltaUsd,
+            collateralAmount: collateralAmount,
+            acceptablePrice: 51_000e30,
+            executionFee: 0.01 ether,
+            callbackGasLimit: 0,
+            referralCode: bytes32("agent-invest")
+        });
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                          FACTORY / UPGRADEABILITY
+    //////////////////////////////////////////////////////////////*/
+
+    function test_FactoryRecordsVault() external view {
+        assertEq(factory.vaultCount(), 1);
+        assertEq(factory.vaults(0), address(vault));
+        assertEq(factory.vaultOwner(address(vault)), owner);
+        assertEq(vault.owner(), owner);
+        assertEq(address(vault.asset()), address(asset));
+    }
+
+    function test_ImplementationIsLocked() external {
+        StrategyVault implementation = new StrategyVault();
+        vm.expectRevert(); // InvalidInitialization: initializers disabled in the implementation
+        implementation.initialize(asset, owner);
+    }
+
+    function test_InitializeCannotBeCalledTwice() external {
+        vm.expectRevert(); // InvalidInitialization
+        vault.initialize(asset, owner);
+    }
+
+    function test_BeaconUpgradeSwapsLogicAndPreservesStorage() external {
+        asset.mint(owner, 1_000e18);
+        vm.startPrank(owner);
+        asset.approve(address(vault), 1_000e18);
+        vault.deposit(1_000e18);
+        vault.setKeeper(keeper);
+        vm.stopPrank();
+
+        StrategyVaultV2 v2 = new StrategyVaultV2();
+        UpgradeableBeacon beacon = factory.beacon();
+        vm.prank(beaconOwner);
+        beacon.upgradeTo(address(v2));
+
+        // new logic is live on the existing proxy...
+        assertEq(StrategyVaultV2(payable(address(vault))).version(), 2);
+        // ...and namespaced storage is intact.
+        assertEq(address(vault.asset()), address(asset));
+        assertEq(vault.idleBalance(), 1_000e18);
+        assertEq(vault.owner(), owner);
+        assertEq(vault.keeper(), keeper);
+    }
+
+    function test_OnlyBeaconOwnerCanUpgrade() external {
+        StrategyVaultV2 v2 = new StrategyVaultV2();
+        UpgradeableBeacon beacon = factory.beacon();
+        vm.expectRevert(); // OwnableUnauthorizedAccount
+        beacon.upgradeTo(address(v2));
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                              DEPOSIT / WITHDRAW
+    //////////////////////////////////////////////////////////////*/
+
+    function test_DepositPullsFunds(uint256 amount) external {
         amount = bound(amount, 1, type(uint128).max);
         asset.mint(owner, amount);
 
         vm.startPrank(owner);
         asset.approve(address(vault), amount);
-        uint256 shares = vault.deposit(amount, owner);
+        vault.deposit(amount);
         vm.stopPrank();
 
-        assertEq(shares, amount);
-        assertEq(vault.balanceOf(owner), amount);
-        assertEq(vault.totalAssets(), amount);
+        assertEq(vault.idleBalance(), amount);
+        assertEq(asset.balanceOf(address(vault)), amount);
     }
 
-    function test_PauseBlocksDeposits() external {
-        asset.mint(owner, 1 ether);
+    function test_OnlyOwnerCanDeposit() external {
+        asset.mint(address(this), 1e18);
+        asset.approve(address(vault), 1e18);
+        vm.expectRevert(); // OwnableUnauthorizedAccount
+        vault.deposit(1e18);
+    }
 
+    function test_DepositRevertsOnZero() external {
         vm.prank(owner);
+        vm.expectRevert(StrategyVault.StrategyVault__ZeroAmount.selector);
+        vault.deposit(0);
+    }
+
+    function test_WithdrawReturnsIdleFunds() external {
+        asset.mint(owner, 500e18);
+        vm.startPrank(owner);
+        asset.approve(address(vault), 500e18);
+        vault.deposit(500e18);
+        vault.withdraw(200e18, owner);
+        vm.stopPrank();
+
+        assertEq(vault.idleBalance(), 300e18);
+        assertEq(asset.balanceOf(owner), 200e18);
+    }
+
+    function test_OnlyOwnerCanWithdraw() external {
+        asset.mint(owner, 100e18);
+        vm.startPrank(owner);
+        asset.approve(address(vault), 100e18);
+        vault.deposit(100e18);
+        vm.stopPrank();
+
+        vm.expectRevert(); // OwnableUnauthorizedAccount
+        vault.withdraw(1e18, address(this));
+    }
+
+    function test_WithdrawRevertsWhenExceedsIdle() external {
+        asset.mint(owner, 100e18);
+        vm.startPrank(owner);
+        asset.approve(address(vault), 100e18);
+        vault.deposit(100e18);
+        vm.expectRevert(StrategyVault.StrategyVault__InsufficientIdleBalance.selector);
+        vault.withdraw(100e18 + 1, owner);
+        vm.stopPrank();
+    }
+
+    function test_WithdrawWorksWhilePaused() external {
+        asset.mint(owner, 100e18);
+        vm.startPrank(owner);
+        asset.approve(address(vault), 100e18);
+        vault.deposit(100e18);
         vault.pause();
+        vault.withdraw(100e18, owner); // pause must not trap owner custody of idle funds
+        vm.stopPrank();
+
+        assertEq(asset.balanceOf(owner), 100e18);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                          MANDATE / KEEPER CONFIG
+    //////////////////////////////////////////////////////////////*/
+
+    function test_OnlyOwnerCanSetKeeper() external {
+        vm.expectRevert(); // OwnableUnauthorizedAccount
+        vault.setKeeper(keeper);
+    }
+
+    function test_SetKeeper() external {
+        vm.prank(owner);
+        vault.setKeeper(keeper);
+        assertEq(vault.keeper(), keeper);
+    }
+
+    function test_OnlyOwnerCanSetMandate() external {
+        vm.expectRevert(); // OwnableUnauthorizedAccount
+        vault.setMandate(StrategyVault.Mandate({maxLeverage: 5, maxPositionSizeUsd: 1e30, minRebalanceInterval: 0}));
+    }
+
+    function test_SetMandateRevertsOnZeroLeverage() external {
+        vm.prank(owner);
+        vm.expectRevert(StrategyVault.StrategyVault__InvalidMandate.selector);
+        vault.setMandate(StrategyVault.Mandate({maxLeverage: 0, maxPositionSizeUsd: 1e30, minRebalanceInterval: 0}));
+    }
+
+    function test_SetMandateRevertsOnZeroPositionSize() external {
+        vm.prank(owner);
+        vm.expectRevert(StrategyVault.StrategyVault__InvalidMandate.selector);
+        vault.setMandate(StrategyVault.Mandate({maxLeverage: 3, maxPositionSizeUsd: 0, minRebalanceInterval: 0}));
+    }
+
+    function test_AddAndRemoveMarket() external {
+        vm.startPrank(owner);
+        vault.addMarket(market);
+        assertTrue(vault.isMarketAllowed(market));
+        assertEq(vault.allowedMarkets().length, 1);
+        vault.removeMarket(market);
+        assertFalse(vault.isMarketAllowed(market));
+        assertEq(vault.allowedMarkets().length, 0);
+        vm.stopPrank();
+    }
+
+    function test_OnlyOwnerCanAddMarket() external {
+        vm.expectRevert(); // OwnableUnauthorizedAccount
+        vault.addMarket(market);
+    }
+
+    function test_AddMarketRevertsAboveCap() external {
+        vm.startPrank(owner);
+        for (uint160 i = 1; i <= 32; ++i) {
+            vault.addMarket(address(i));
+        }
+        vm.expectRevert(StrategyVault.StrategyVault__MaxMarketsExceeded.selector);
+        vault.addMarket(address(0xDEAD));
+        vm.stopPrank();
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                       MANDATE ENFORCEMENT (THE CORE)
+    //////////////////////////////////////////////////////////////*/
+
+    function test_KeeperCanSubmitConformingIncrease() external {
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 2_000e30, 1_000e18);
+
+        vm.prank(keeper);
+        bytes32 orderKey = vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+        assertEq(orderKey, keccak256("order-key"));
+    }
+
+    function test_RevertsOnDisallowedMarket() external {
+        // mandate set but market NOT added
+        vm.startPrank(owner);
+        vault.setMandate(
+            StrategyVault.Mandate({maxLeverage: 5, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0})
+        );
+        vault.setKeeper(keeper);
+        vm.stopPrank();
+
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(keeper, 0.01 ether);
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 2_000e30, 1_000e18);
+
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(StrategyVault.StrategyVault__MarketNotAllowed.selector, market));
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_RevertsOnPositionSizeExceeded() external {
+        vm.startPrank(owner);
+        vault.setMandate(
+            StrategyVault.Mandate({maxLeverage: 100, maxPositionSizeUsd: 1_000e30, minRebalanceInterval: 0})
+        );
+        vault.addMarket(market);
+        vault.setKeeper(keeper);
+        vm.stopPrank();
+
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(keeper, 0.01 ether);
+        // size 2_000e30 > cap 1_000e30
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 2_000e30, 1_000e18);
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__PositionSizeExceeded.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_RevertsOnLeverageExceeded() external {
+        vm.startPrank(owner);
+        vault.setMandate(
+            StrategyVault.Mandate({maxLeverage: 2, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0})
+        );
+        vault.addMarket(market);
+        vault.setKeeper(keeper);
+        vm.stopPrank();
+
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(keeper, 0.01 ether);
+        // collateral $1000 (1_000e18 * 1e12 = 1e33), size 3_000e30 => 3x > 2x cap
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 3_000e30, 1_000e18);
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__LeverageExceeded.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_KeeperRateLimited() external {
+        _configure(1 hours, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 2_000e18);
+        vm.deal(keeper, 1 ether);
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+
+        vm.prank(keeper);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+
+        // second keeper order within the interval reverts
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__RebalanceTooSoon.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+
+        // after the interval, it succeeds
+        vm.warp(block.timestamp + 1 hours);
+        vm.prank(keeper);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_OwnerNotRateLimited() external {
+        _configure(1 hours, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 2_000e18);
+        vm.deal(owner, 1 ether);
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
 
         vm.startPrank(owner);
-        asset.approve(address(vault), 1 ether);
-        vm.expectRevert();
-        vault.deposit(1 ether, owner);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order); // no throttle for the human owner
         vm.stopPrank();
     }
+
+    function test_NonOwnerNonKeeperCannotSubmit() external {
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+
+        vm.deal(address(this), 0.01 ether);
+        vm.expectRevert(StrategyVault.StrategyVault__NotAuthorized.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_RevertsOnUntrustedRouter() external {
+        // valid mandate + market, routing pinned to the real mocks, but the order points router elsewhere
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+        order.router = address(0xBAD); // attacker-controlled spender
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__UntrustedRouting.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_RevertsOnUntrustedCollateralToken() external {
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+        order.collateralToken = address(0xBAD); // not the vault asset
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__UntrustedRouting.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_ReceiverIsForcedToVault() external {
+        // even if the keeper sets receiver to itself, the built GMX params point back at the vault
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+        order.receiver = keeper;
+        order.cancellationReceiver = keeper;
+
+        vm.prank(keeper);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+
+        (IGmxV2ExchangeRouter.CreateOrderParamsAddresses memory addresses,,,,,,,) = er.lastOrder();
+        assertEq(addresses.receiver, address(vault));
+        assertEq(addresses.cancellationReceiver, address(vault));
+        assertEq(addresses.uiFeeReceiver, address(0));
+        assertEq(addresses.callbackContract, address(0));
+    }
+
+    function test_ZeroCollateralSizeUpReverts() external {
+        // closing the leverage-bypass: an increase with no added collateral is rejected
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 0);
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__LeverageExceeded.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_OnlyOwnerCanSetGmxRouting() external {
+        vm.expectRevert(); // OwnableUnauthorizedAccount
+        vault.setGmxRouting(address(1), address(2), address(3));
+    }
+
+    function test_SetGmxRoutingRevertsOnZero() external {
+        vm.prank(owner);
+        vm.expectRevert(StrategyVault.StrategyVault__ZeroAddress.selector);
+        vault.setGmxRouting(address(0), address(2), address(3));
+    }
+
+    function test_DecreaseRevertsOnDisallowedMarket() external {
+        // keeper set, mandate set, but market not allowed
+        vm.startPrank(owner);
+        vault.setMandate(
+            StrategyVault.Mandate({maxLeverage: 5, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0})
+        );
+        vault.setKeeper(keeper);
+        vm.stopPrank();
+
+        (MockGmxExchangeRouter er,) = _gmx();
+        vm.deal(keeper, 0.01 ether);
+        StrategyVault.GmxMarketDecreaseOrder memory order = _decreaseOrder(address(er));
+
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(StrategyVault.StrategyVault__MarketNotAllowed.selector, market));
+        vault.createGmxMarketDecreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function _decreaseOrder(address exchangeRouter)
+        internal
+        view
+        returns (StrategyVault.GmxMarketDecreaseOrder memory)
+    {
+        return StrategyVault.GmxMarketDecreaseOrder({
+            exchangeRouter: exchangeRouter,
+            orderVault: address(0x5678),
+            market: market,
+            collateralToken: address(asset),
+            receiver: address(0),
+            cancellationReceiver: address(0),
+            callbackContract: address(0),
+            uiFeeReceiver: address(0),
+            isLong: true,
+            shouldUnwrapNativeToken: false,
+            sizeDeltaUsd: 500e30,
+            collateralWithdrawalAmount: 100e18,
+            acceptablePrice: 49_000e30,
+            executionFee: 0.01 ether,
+            callbackGasLimit: 0,
+            minOutputAmount: 95e18,
+            decreasePositionSwapType: IGmxV2ExchangeRouter.DecreasePositionSwapType.NoSwap,
+            referralCode: bytes32("agent-invest")
+        });
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                 EXECUTE
+    //////////////////////////////////////////////////////////////*/
 
     function test_ExecuteCallsTarget() external {
         CallTarget target = new CallTarget();
@@ -157,9 +618,32 @@ contract StrategyVaultTest is Test {
     function test_OnlyOwnerCanExecute() external {
         CallTarget target = new CallTarget();
 
-        vm.expectRevert();
+        vm.expectRevert(); // OwnableUnauthorizedAccount
         vault.execute(address(target), 0, abi.encodeCall(CallTarget.record, ()));
     }
+
+    function test_KeeperCannotExecute() external {
+        _configure(0, keeper);
+        CallTarget target = new CallTarget();
+
+        vm.prank(keeper);
+        vm.expectRevert(); // keeper is not the owner; execute is owner-only
+        vault.execute(address(target), 0, abi.encodeCall(CallTarget.record, ()));
+    }
+
+    function test_ExecuteRevertsWhenPaused() external {
+        CallTarget target = new CallTarget();
+
+        vm.startPrank(owner);
+        vault.pause();
+        vm.expectRevert(); // EnforcedPause
+        vault.execute(address(target), 0, abi.encodeCall(CallTarget.record, ()));
+        vm.stopPrank();
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                          GMX ORDERS (HAPPY PATH)
+    //////////////////////////////////////////////////////////////*/
 
     function test_CreateGmxMarketIncreaseOrderLong() external {
         _testCreateGmxMarketIncreaseOrder(true);
@@ -170,35 +654,18 @@ contract StrategyVaultTest is Test {
     }
 
     function _testCreateGmxMarketIncreaseOrder(bool isLong) internal {
-        address router = address(new MockGmxRouter());
-        address orderVault = address(0x5678);
-        address market = address(0xBEEF);
+        _configure(0, address(0));
+        (MockGmxExchangeRouter exchangeRouter, address router) = _gmx();
         uint256 collateralAmount = 1_000e18;
         uint256 executionFee = 0.01 ether;
-        MockGmxExchangeRouter exchangeRouter = new MockGmxExchangeRouter(router);
 
         asset.mint(address(vault), collateralAmount);
         vm.deal(owner, executionFee);
 
-        StrategyVault.GmxMarketIncreaseOrder memory order = StrategyVault.GmxMarketIncreaseOrder({
-            exchangeRouter: address(exchangeRouter),
-            router: router,
-            orderVault: orderVault,
-            market: market,
-            collateralToken: address(asset),
-            receiver: address(0),
-            cancellationReceiver: address(0),
-            callbackContract: address(0),
-            uiFeeReceiver: address(0),
-            isLong: isLong,
-            shouldUnwrapNativeToken: false,
-            sizeDeltaUsd: 2_000e30,
-            collateralAmount: collateralAmount,
-            acceptablePrice: isLong ? 51_000e30 : 49_000e30,
-            executionFee: executionFee,
-            callbackGasLimit: 0,
-            referralCode: bytes32("agent-invest")
-        });
+        StrategyVault.GmxMarketIncreaseOrder memory order =
+            _increaseOrder(address(exchangeRouter), router, 2_000e30, collateralAmount);
+        order.isLong = isLong;
+        order.acceptablePrice = isLong ? 51_000e30 : 49_000e30;
 
         vm.prank(owner);
         bytes32 orderKey = vault.createGmxMarketIncreaseOrder{value: executionFee}(order);
@@ -206,12 +673,12 @@ contract StrategyVaultTest is Test {
         assertEq(orderKey, keccak256("order-key"));
 
         assertEq(exchangeRouter.lastMsgValue(), executionFee);
-        assertEq(exchangeRouter.lastWntReceiver(), orderVault);
+        assertEq(exchangeRouter.lastWntReceiver(), order.orderVault);
         assertEq(exchangeRouter.lastWntAmount(), executionFee);
         assertEq(exchangeRouter.lastToken(), address(asset));
-        assertEq(exchangeRouter.lastTokenReceiver(), orderVault);
+        assertEq(exchangeRouter.lastTokenReceiver(), order.orderVault);
         assertEq(exchangeRouter.lastTokenAmount(), collateralAmount);
-        assertEq(asset.balanceOf(orderVault), collateralAmount);
+        assertEq(asset.balanceOf(order.orderVault), collateralAmount);
 
         (
             IGmxV2ExchangeRouter.CreateOrderParamsAddresses memory addresses,
@@ -232,41 +699,34 @@ contract StrategyVaultTest is Test {
         assertEq(actualIsLong, isLong);
     }
 
+    function test_CreateGmxOrderRevertsOnBadExecutionFee() external {
+        _configure(0, address(0));
+        (MockGmxExchangeRouter exchangeRouter, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(owner, 1 ether);
+
+        StrategyVault.GmxMarketIncreaseOrder memory order =
+            _increaseOrder(address(exchangeRouter), router, 2_000e30, 1_000e18);
+
+        vm.prank(owner);
+        vm.expectRevert(StrategyVault.StrategyVault__InvalidExecutionFee.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.02 ether}(order);
+    }
+
     function test_CreateGmxMarketDecreaseOrder() external {
-        address orderVault = address(0x5678);
-        address market = address(0xBEEF);
+        _configure(0, address(0));
         uint256 executionFee = 0.01 ether;
-        MockGmxExchangeRouter exchangeRouter = new MockGmxExchangeRouter(address(new MockGmxRouter()));
+        (MockGmxExchangeRouter exchangeRouter,) = _gmx();
 
         vm.deal(owner, executionFee);
-
-        StrategyVault.GmxMarketDecreaseOrder memory order = StrategyVault.GmxMarketDecreaseOrder({
-            exchangeRouter: address(exchangeRouter),
-            orderVault: orderVault,
-            market: market,
-            collateralToken: address(asset),
-            receiver: address(0),
-            cancellationReceiver: address(0),
-            callbackContract: address(0),
-            uiFeeReceiver: address(0),
-            isLong: true,
-            shouldUnwrapNativeToken: false,
-            sizeDeltaUsd: 500e30,
-            collateralWithdrawalAmount: 100e18,
-            acceptablePrice: 49_000e30,
-            executionFee: executionFee,
-            callbackGasLimit: 0,
-            minOutputAmount: 95e18,
-            decreasePositionSwapType: IGmxV2ExchangeRouter.DecreasePositionSwapType.NoSwap,
-            referralCode: bytes32("agent-invest")
-        });
+        StrategyVault.GmxMarketDecreaseOrder memory order = _decreaseOrder(address(exchangeRouter));
 
         vm.prank(owner);
         bytes32 orderKey = vault.createGmxMarketDecreaseOrder{value: executionFee}(order);
 
         assertEq(orderKey, keccak256("order-key"));
         assertEq(exchangeRouter.lastMsgValue(), executionFee);
-        assertEq(exchangeRouter.lastWntReceiver(), orderVault);
+        assertEq(exchangeRouter.lastWntReceiver(), order.orderVault);
         assertEq(exchangeRouter.lastWntAmount(), executionFee);
         assertEq(exchangeRouter.lastTokenAmount(), 0);
 
@@ -303,5 +763,121 @@ contract StrategyVaultTest is Test {
 
         assertEq(exchangeRouter.lastCancelledOrderKey(), orderKey);
         assertEq(exchangeRouter.lastCancelMsgValue(), executionFee);
+    }
+
+    function test_GmxOrderRevertsWhenPaused() external {
+        MockGmxExchangeRouter exchangeRouter = new MockGmxExchangeRouter(address(new MockGmxRouter()));
+        vm.deal(owner, 0.01 ether);
+
+        vm.startPrank(owner);
+        vault.pause();
+        vm.expectRevert(); // EnforcedPause
+        vault.cancelGmxOrder{value: 0.01 ether}(address(exchangeRouter), keccak256("k"), 0.01 ether);
+        vm.stopPrank();
+    }
+
+    function test_OnlyOwnerOrKeeperCanCancelGmxOrder() external {
+        MockGmxExchangeRouter exchangeRouter = new MockGmxExchangeRouter(address(new MockGmxRouter()));
+        vm.expectRevert(StrategyVault.StrategyVault__NotAuthorized.selector);
+        vault.cancelGmxOrder(address(exchangeRouter), keccak256("k"), 0);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                          HARDENING / EDGE CASES
+    //////////////////////////////////////////////////////////////*/
+
+    function test_ExecuteRevertsOnZeroTarget() external {
+        vm.prank(owner);
+        vm.expectRevert(StrategyVault.StrategyVault__ZeroTarget.selector);
+        vault.execute(address(0), 0, "");
+    }
+
+    function test_WithdrawRevertsOnZeroAddress() external {
+        asset.mint(owner, 1e18);
+        vm.startPrank(owner);
+        asset.approve(address(vault), 1e18);
+        vault.deposit(1e18);
+        vm.expectRevert(StrategyVault.StrategyVault__ZeroAddress.selector);
+        vault.withdraw(1e18, address(0));
+        vm.stopPrank();
+    }
+
+    function test_IncreaseRevertsOnZeroAddressField() external {
+        _configure(0, address(0));
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+        order.exchangeRouter = address(0); // validated before the mandate/fee checks
+
+        vm.deal(owner, 0.01 ether);
+        vm.prank(owner);
+        vm.expectRevert(StrategyVault.StrategyVault__ZeroAddress.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_SetKeeperToZeroDisablesKeeper() external {
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(keeper, 0.01 ether);
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+
+        vm.prank(owner);
+        vault.setKeeper(address(0));
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__NotAuthorized.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_UnpauseResumesTrading() external {
+        _configure(0, address(0));
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(owner, 0.02 ether);
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+
+        vm.startPrank(owner);
+        vault.pause();
+        vm.expectRevert(); // EnforcedPause
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+        vault.unpause();
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order); // resumes
+        vm.stopPrank();
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                                 FACTORY
+    //////////////////////////////////////////////////////////////*/
+
+    function test_FactoryConstructorRevertsOnZeroImplementation() external {
+        vm.expectRevert(VaultFactory.VaultFactory__ZeroAddress.selector);
+        new VaultFactory(address(0), beaconOwner);
+    }
+
+    function test_FactoryConstructorRevertsOnZeroBeaconOwner() external {
+        StrategyVault implementation = new StrategyVault();
+        vm.expectRevert(VaultFactory.VaultFactory__ZeroAddress.selector);
+        new VaultFactory(address(implementation), address(0));
+    }
+
+    function test_FactoryCreateVaultRevertsOnZeroAsset() external {
+        vm.expectRevert(VaultFactory.VaultFactory__ZeroAddress.selector);
+        factory.createVault(IERC20(address(0)), owner);
+    }
+
+    function test_FactoryCreateVaultRevertsOnZeroOwner() external {
+        vm.expectRevert(VaultFactory.VaultFactory__ZeroAddress.selector);
+        factory.createVault(asset, address(0));
+    }
+
+    function test_FactoryDeploysIndependentVaults() external {
+        address other = address(0xD00D);
+        address vault2 = factory.createVault(asset, other);
+
+        assertEq(factory.vaultCount(), 2);
+        assertEq(factory.vaultOwner(vault2), other);
+        assertTrue(vault2 != address(vault));
+        assertEq(StrategyVault(payable(vault2)).owner(), other);
+        assertEq(address(StrategyVault(payable(vault2)).asset()), address(asset));
     }
 }
