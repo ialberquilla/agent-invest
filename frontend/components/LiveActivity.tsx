@@ -61,6 +61,56 @@ const STAGE_EVENT_TONE: Record<StageEventType, string> = {
   "stage.failed": "bg-destructive/15 text-destructive",
 };
 
+const DEBUG_ACTIVITY = isDebugEnabled(
+  process.env.NEXT_PUBLIC_DEBUG ?? process.env.DEBUG,
+);
+
+const WORKFLOW_STEP_COPY: Record<string, { title: string; description: string }> = {
+  interpret_brief: {
+    title: "Understanding your goal",
+    description: "Turning your brief into clear objectives and risk limits.",
+  },
+  select_templates: {
+    title: "Choosing strategy styles",
+    description: "Finding strategy families that match your thesis.",
+  },
+  select_universe: {
+    title: "Picking the market universe",
+    description: "Selecting which assets are eligible for testing.",
+  },
+  select_window: {
+    title: "Checking market history",
+    description: "Choosing a data window with enough history to test fairly.",
+  },
+  propose_candidates: {
+    title: "Building candidate strategies",
+    description: "Creating several concrete allocations to compare.",
+  },
+  run_and_validate: {
+    title: "Backtesting and validating",
+    description: "Testing candidates with costs and checking your constraints.",
+  },
+  decide: {
+    title: "Reviewing the results",
+    description: "Deciding whether to refine, broaden, or select a winner.",
+  },
+  finalize: {
+    title: "Preparing the recommendation",
+    description: "Packaging the chosen strategy into a readable report.",
+  },
+  workflow: {
+    title: "Strategy research run",
+    description: "Coordinating the research workflow end to end.",
+  },
+};
+
+type FriendlyStepStatus = "running" | "completed" | "failed";
+
+type FriendlyHighlight = {
+  label: string;
+  values: string[];
+};
+
 export function LiveActivity({
   runId,
   parts = [],
@@ -173,7 +223,7 @@ export function LiveActivity({
     isVisible(part, includeText),
   );
 
-  if (visibleParts.length > 0) {
+  if (DEBUG_ACTIVITY && visibleParts.length > 0) {
     return (
       <div className="flex justify-start">
         <Card
@@ -198,8 +248,41 @@ export function LiveActivity({
     );
   }
 
+  if (!DEBUG_ACTIVITY && visibleParts.length > 0 && !runId) {
+    return (
+      <div className="flex justify-start">
+        <Card
+          size="sm"
+          className={cn(
+            "border-dashed bg-muted/30 py-3",
+            fullWidth ? "w-full" : "max-w-[90%] sm:max-w-[80%]",
+          )}
+        >
+          <CardContent className="space-y-1">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              strategy progress
+            </p>
+            <p className="text-sm text-muted-foreground">
+              Researching candidate strategies and checking them against your constraints.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   if (runId) {
     if (status !== "loading" && groups.length === 0) return null;
+
+    if (!DEBUG_ACTIVITY) {
+      return (
+        <FriendlyWorkflowActivity
+          groups={groups}
+          status={status}
+          fullWidth={fullWidth}
+        />
+      );
+    }
 
     return (
       <div className="flex justify-start">
@@ -245,6 +328,112 @@ export function LiveActivity({
   }
 
   return null;
+}
+
+function FriendlyWorkflowActivity({
+  groups,
+  status,
+  fullWidth,
+}: {
+  groups: EventGroup[];
+  status: "idle" | "loading" | "error";
+  fullWidth: boolean;
+}) {
+  const steps = groups
+    .filter((group) => group.stage !== "workflow")
+    .map(toFriendlyStep);
+  const current = [...steps]
+    .reverse()
+    .find((step) => step.status === "running");
+
+  if (status !== "loading" && steps.length === 0) return null;
+
+  return (
+    <div className="flex justify-start">
+      <Card
+        size="sm"
+        className={cn(
+          "border-dashed bg-muted/30 py-3",
+          fullWidth ? "w-full" : "max-w-[90%] sm:max-w-[80%]",
+        )}
+      >
+        <CardContent className="space-y-3">
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              strategy progress
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {current
+                ? current.description
+                : "Researching candidate strategies and checking them against your constraints."}
+            </p>
+            {status === "error" ? (
+              <p className="mt-1 text-xs text-destructive">
+                Unable to load the latest progress.
+              </p>
+            ) : null}
+          </div>
+          <div className="space-y-2">
+            {steps.map((step) => (
+              <FriendlyStepView key={step.key} step={step} />
+            ))}
+            {status === "loading" && steps.length === 0 ? (
+              <p className="text-sm italic text-muted-foreground">
+                starting research...
+              </p>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function FriendlyStepView({
+  step,
+}: {
+  step: ReturnType<typeof toFriendlyStep>;
+}) {
+  const tone =
+    step.status === "completed"
+      ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+      : step.status === "failed"
+        ? "bg-destructive/15 text-destructive"
+        : "bg-blue-500/15 text-blue-700 dark:text-blue-300";
+
+  return (
+    <section className="rounded-lg border bg-background/70 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-sm font-medium">{step.title}</p>
+          <p className="text-xs text-muted-foreground">{step.summary}</p>
+        </div>
+        <Badge className={cn("text-[10px]", tone)}>{step.label}</Badge>
+      </div>
+      {step.highlights.length > 0 ? (
+        <div className="mt-2 space-y-1.5">
+          {step.highlights.map((highlight) => (
+            <div key={highlight.label} className="space-y-1">
+              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {highlight.label}
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {highlight.values.map((value) => (
+                  <Badge
+                    key={value}
+                    variant="secondary"
+                    className="rounded-full px-2 py-0.5 text-[10px] font-medium"
+                  >
+                    {value}
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
 }
 
 function ActivityFilters({
@@ -527,6 +716,158 @@ function PartView({ part }: { part: TimelinePart }) {
 function truncate(text: string, max: number): string {
   if (text.length <= max) return text;
   return `…${text.slice(-max)}`;
+}
+
+function toFriendlyStep(group: EventGroup) {
+  const lastEvent = group.events.at(-1);
+  const completed = group.events.find(
+    (event) => event.event_type === "stage.completed",
+  );
+  const failed = group.events.find((event) => event.event_type === "stage.failed");
+  const copy = WORKFLOW_STEP_COPY[group.stage] ?? {
+    title: titleize(group.stage),
+    description: "Working through this part of the strategy research.",
+  };
+  const status: FriendlyStepStatus = failed
+    ? "failed"
+    : completed
+      ? "completed"
+      : "running";
+
+  return {
+    key: group.key,
+    title: copy.title,
+    description: copy.description,
+    status,
+    label: status === "completed" ? "done" : status,
+    summary: friendlyStepSummary(group.stage, completed?.payload ?? lastEvent?.payload),
+    highlights:
+      status === "completed"
+        ? friendlyStepHighlights(group.stage, completed?.payload)
+        : [],
+  };
+}
+
+function friendlyStepHighlights(
+  stage: string,
+  payload: StageEvent["payload"] | undefined,
+): FriendlyHighlight[] {
+  if (!payload) return [];
+  const details: Record<string, unknown> = payload;
+
+  if (stage === "select_templates") {
+    const families = stringArray(details.families).map(prettyStrategyFamily);
+    return families.length > 0 ? [{ label: "Selected styles", values: families }] : [];
+  }
+
+  if (stage === "select_universe") {
+    const coins = stringArray(details.coins).map(prettyToken);
+    return coins.length > 0 ? [{ label: "Selected tokens", values: coins }] : [];
+  }
+
+  return [];
+}
+
+function friendlyStepSummary(
+  stage: string,
+  payload: StageEvent["payload"] | undefined,
+) {
+  if (!payload) return WORKFLOW_STEP_COPY[stage]?.description ?? "In progress.";
+  const details: Record<string, unknown> = payload;
+
+  switch (stage) {
+    case "interpret_brief": {
+      const objective = details.objective;
+      return typeof objective === "string" && objective.trim()
+        ? `Goal: ${objective}`
+        : "Clarified the goal, horizon, and risk limits.";
+    }
+    case "select_templates": {
+      const families = Array.isArray(details.families) ? details.families : [];
+      return families.length > 0
+        ? `Considering ${families.length} strategy style${families.length === 1 ? "" : "s"}.`
+        : "Selected strategy styles to explore.";
+    }
+    case "select_universe": {
+      const count = typeof details.universe_size === "number" ? details.universe_size : null;
+      return count ? `Selected ${count} eligible assets.` : "Selected eligible assets.";
+    }
+    case "select_window": {
+      const days = typeof details.window_length_days === "number" ? details.window_length_days : null;
+      return days ? `Using ${days} days of market history.` : "Selected a backtest window.";
+    }
+    case "propose_candidates": {
+      const count = typeof details.candidate_count === "number" ? details.candidate_count : null;
+      return count ? `Built ${count} candidate strategies.` : "Built candidate strategies.";
+    }
+    case "run_and_validate": {
+      const passing = typeof details.passing === "number" ? details.passing : null;
+      const failing = typeof details.failing === "number" ? details.failing : null;
+      return passing !== null && failing !== null
+        ? `${passing} candidate${passing === 1 ? "" : "s"} passed, ${failing} need${failing === 1 ? "s" : ""} refinement.`
+        : "Backtested candidates and checked constraints.";
+    }
+    case "decide":
+      return decisionSummary(details.action);
+    case "finalize": {
+      const title = details.title;
+      return typeof title === "string" && title.trim()
+        ? `Recommendation ready: ${title}`
+        : "Prepared the final recommendation.";
+    }
+    default:
+      return WORKFLOW_STEP_COPY[stage]?.description ?? "Completed this research step.";
+  }
+}
+
+function decisionSummary(action: unknown) {
+  switch (action) {
+    case "stop_winner":
+      return "Found a strategy that fits the thesis.";
+    case "stop_best_effort":
+      return "Selected the best available strategy with caveats.";
+    case "stop_no_viable":
+      return "No candidate fit the constraints well enough.";
+    case "refine_candidates":
+      return "Refining the candidates for another pass.";
+    case "broaden_universe":
+      return "Expanding the asset universe for another pass.";
+    case "reinterpret_brief":
+      return "Revisiting the brief before continuing.";
+    default:
+      return "Reviewed the tested candidates.";
+  }
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+}
+
+function prettyStrategyFamily(value: string) {
+  return titleize(value.replace(/-/g, "_"));
+}
+
+function prettyToken(value: string) {
+  return value
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((part) => part.toUpperCase())
+    .join(" ");
+}
+
+function titleize(value: string) {
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ");
+}
+
+function isDebugEnabled(value: string | undefined) {
+  if (!value) return false;
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
