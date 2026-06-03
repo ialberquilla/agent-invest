@@ -13,6 +13,7 @@ export type RunRow = {
   exitCode: number | null;
   reply: string | null;
   error: string | null;
+  metadata?: unknown;
 };
 
 type RunSummaryFields = {
@@ -29,6 +30,7 @@ const runColumns = {
   exitCode: runs.exitCode,
   reply: runs.reply,
   runId: runs.runId,
+  metadata: runs.metadata,
   startedAt: runs.startedAt,
   status: runs.status,
 };

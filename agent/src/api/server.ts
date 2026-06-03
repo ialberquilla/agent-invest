@@ -16,8 +16,10 @@ import { chatAgent, type ChatAgentResponse } from "../agent/chat";
 import { createOpencodeClient } from "../agent/session";
 import { runWorkflow } from "../agent/workflow/controller";
 import { createOpencodeLLMClient, type LLMClient } from "../agent/workflow/llm";
+import { buildMandate } from "../agent/workflow/mandate";
 import { workflowStateToStructuredResult } from "../agent/workflow/persist";
 import type {
+  FinalWinner,
   WizardBrief,
   WorkflowState,
 } from "../agent/workflow/state";
@@ -48,7 +50,10 @@ import {
   claimStrategies as defaultClaimStrategies,
   touchStrategy as defaultTouchStrategy,
 } from "../db/repositories/strategies";
-import { readMandatesForRun as defaultReadMandatesForRun } from "../db/repositories/strategy-mandates";
+import {
+  insertMandate as defaultInsertMandate,
+  readMandatesForRun as defaultReadMandatesForRun,
+} from "../db/repositories/strategy-mandates";
 import {
   bindVaultToMandate as defaultBindVaultToMandate,
   readVaultForMandate as defaultReadVaultForMandate,
@@ -80,6 +85,7 @@ type Repositories = {
   readRun: typeof defaultReadRun;
   touchStrategy: typeof defaultTouchStrategy;
   readMandatesForRun: typeof defaultReadMandatesForRun;
+  insertMandate: typeof defaultInsertMandate;
   bindVaultToMandate: typeof defaultBindVaultToMandate;
   readVaultForMandate: typeof defaultReadVaultForMandate;
 };
@@ -743,7 +749,21 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function runSummaryFields(structuredResult: unknown) {
+function workflowMetadata(workflowState: WorkflowState | undefined) {
+  if (!workflowState) return {};
+  return {
+    final: workflowState.final,
+    thesis: workflowState.thesis,
+    universe: workflowState.universe,
+    window: workflowState.window,
+    attempts: workflowState.attempts,
+  };
+}
+
+function runSummaryFields(
+  structuredResult: unknown,
+  workflowState?: WorkflowState,
+) {
   if (!isRecord(structuredResult)) return undefined;
   return {
     winnerTemplateId:
@@ -763,8 +783,36 @@ function runSummaryFields(structuredResult: unknown) {
       // re-running the workflow. The streaming path only delivers it
       // over SSE otherwise.
       structured_result: structuredResult,
+      ...workflowMetadata(workflowState),
     },
   };
+}
+
+async function ensureMandateForRun(runId: string, repositories: Repositories) {
+  const existing = await repositories.readMandatesForRun(runId);
+  if (existing[0]) return existing[0];
+
+  const run = await repositories.readRun(runId);
+  if (!run) throw httpError(404, "Run not found");
+  const metadata = isRecord(run.metadata) ? run.metadata : null;
+  const final = isRecord(metadata?.final) ? metadata.final : null;
+  if (final?.kind !== "winner") return null;
+
+  const winner = final as FinalWinner;
+  const state = {
+    run_id: runId,
+    thesis: winner.thesis,
+    universe: winner.universe,
+    window: winner.window,
+    attempts: winner.attempts_summary,
+  } as WorkflowState;
+  const mandate = buildMandate(winner, state, {
+    mandateId: randomUUID(),
+  });
+  if (!mandate) return null;
+
+  await repositories.insertMandate(mandate);
+  return (await repositories.readMandatesForRun(runId))[0] ?? null;
 }
 
 export function buildServer(dependencies: ServerDependencies = {}) {
@@ -789,6 +837,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     readRun: defaultReadRun,
     touchStrategy: defaultTouchStrategy,
     readMandatesForRun: defaultReadMandatesForRun,
+    insertMandate: defaultInsertMandate,
     bindVaultToMandate: defaultBindVaultToMandate,
     readVaultForMandate: defaultReadVaultForMandate,
     ...dependencies.repositories,
@@ -922,6 +971,33 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   // Bind a deployed StrategyVault to the run's finalized mandate and promote it
   // to `active`. The on-chain deploy happens client-side (the broadcast is wired
   // later via Privy); this just persists the resulting address + chain.
+  app.get<{ Params: { id: string } }>("/runs/:id/vault", async (request) => {
+    const runId = request.params.id;
+    const mandate = await ensureMandateForRun(runId, repositories);
+    if (!mandate) {
+      return { deployable: false, reason: "No strategy mandate for this run yet" };
+    }
+
+    const existing = await repositories.readVaultForMandate(mandate.mandateId);
+    if (existing) {
+      return {
+        deployable: false,
+        reason: "This strategy is already bound to a vault",
+        mandate_id: mandate.mandateId,
+        chain_id: existing.chainId,
+        vault_address: existing.vaultAddress,
+        asset_address: existing.assetAddress,
+        status: existing.status,
+      };
+    }
+
+    return {
+      deployable: true,
+      mandate_id: mandate.mandateId,
+      status: mandate.status,
+    };
+  });
+
   app.post<{ Params: { id: string } }>(
     "/runs/:id/vault",
     async (request) => {
@@ -931,8 +1007,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       const vaultAddress = requiredText(body, "vault_address");
       const assetAddress = requiredText(body, "asset_address");
 
-      const mandates = await repositories.readMandatesForRun(runId);
-      const mandate = mandates[0];
+      const mandate = await ensureMandateForRun(runId, repositories);
       if (!mandate)
         throw httpError(404, "No strategy mandate for this run yet");
 
@@ -955,6 +1030,47 @@ export function buildServer(dependencies: ServerDependencies = {}) {
         vault_address: vaultAddress,
         asset_address: assetAddress,
         status: "active",
+      };
+    },
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/runs/:id/vault/allocation",
+    async (request) => {
+      const runId = request.params.id;
+      const mandate = await ensureMandateForRun(runId, repositories);
+      if (!mandate) throw httpError(404, "No strategy mandate for this run yet");
+
+      const vault = await repositories.readVaultForMandate(mandate.mandateId);
+      if (!vault) throw httpError(404, "No vault bound to this strategy yet");
+
+      const spec = mandate.spec as {
+        initial_target_allocation?: unknown;
+        allowed_sides?: unknown;
+        template_id?: unknown;
+      };
+
+      return {
+        executable: false,
+        reason:
+          vault.chainId === 421614
+            ? "GMX v2 execution is not configured for Arbitrum Sepolia"
+            : "GMX order execution is not wired for this vault yet",
+        mandate_id: mandate.mandateId,
+        chain_id: vault.chainId,
+        vault_address: vault.vaultAddress,
+        asset_address: vault.assetAddress,
+        template_id: spec.template_id ?? null,
+        allowed_sides: spec.allowed_sides ?? null,
+        target_allocation: Array.isArray(spec.initial_target_allocation)
+          ? spec.initial_target_allocation
+          : [],
+        missing: [
+          "GMX exchangeRouter/router/orderVault for the active chain",
+          "GMX market address for each target allocation leg",
+          "acceptable price and execution fee calculation",
+          "owner-signed vault mandate setup transactions",
+        ],
       };
     },
   );
@@ -997,7 +1113,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       await repositories.markRunCompleted(
         runId,
         replyFromStructuredResult(structuredResult),
-        runSummaryFields(structuredResult),
+        runSummaryFields(structuredResult, workflowState),
       );
     }
 
@@ -1330,7 +1446,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       await repositories.markRunCompleted(
         runId,
         replyFromStructuredResult(structuredResult),
-        runSummaryFields(structuredResult),
+        runSummaryFields(structuredResult, workflowState),
       );
     }
 
