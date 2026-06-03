@@ -1,17 +1,27 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.26;
+pragma solidity 0.8.26;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Script} from "forge-std/Script.sol";
 import {StrategyVault} from "src/StrategyVault.sol";
+import {VaultFactory} from "src/VaultFactory.sol";
 
+/**
+ * @notice Deploys the StrategyVault implementation, a VaultFactory (which creates the shared
+ *         UpgradeableBeacon), and one vault for STRATEGY_VAULT_OWNER over STRATEGY_VAULT_ASSET.
+ * @dev Set BEACON_OWNER to a Timelock + multisig in production; it is the upgrade authority over
+ *      every vault. Defaults to STRATEGY_VAULT_OWNER if unset (fine for local/testnet only).
+ */
 contract DeployStrategyVault is Script {
-    function run() external returns (StrategyVault vault) {
+    function run() external returns (StrategyVault implementation, VaultFactory factory, address vault) {
         IERC20 asset = IERC20(vm.envAddress("STRATEGY_VAULT_ASSET"));
         address owner = vm.envAddress("STRATEGY_VAULT_OWNER");
+        address beaconOwner = vm.envOr("BEACON_OWNER", owner);
 
         vm.startBroadcast();
-        vault = new StrategyVault(asset, owner, "Agent Invest Strategy Vault", "aisUSDC");
+        implementation = new StrategyVault();
+        factory = new VaultFactory(address(implementation), beaconOwner);
+        vault = factory.createVault(asset, owner);
         vm.stopBroadcast();
     }
 }

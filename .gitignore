@@ -3,6 +3,7 @@ dist/
 .data/
 tasks
 /tools
+/plans
 .claude
 plan.md
 task-decomposer.md
