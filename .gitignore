@@ -15,4 +15,5 @@ contracts/broadcast/
 contracts/.forge-snapshots/
 contracts/lcov.info
 contracts/report/
+contracts/plan_optimize.md
 .opencode/plugins/emdash-notifications.js
