@@ -71,7 +71,7 @@ function assertRegistryName(value: string): asserts value is RegistryName {
 
 function runScript(args: string[]) {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn("python", args, {
+    const child = spawn("uv", ["run", "--project", ".", "python", ...args], {
       cwd: scriptsDirectory(),
       env: { ...process.env, PYTHONPATH: scriptsDirectory() },
       stdio: ["ignore", "pipe", "pipe"],
