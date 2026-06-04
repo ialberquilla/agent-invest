@@ -5,6 +5,7 @@ import {
   CHAT_ALLOWED_TOOLS,
   createChatAgent,
   extractChatResponseText,
+  extractTextFromEvent,
 } from "../src/agent/chat";
 
 function createRunDbDouble(insertedRuns: unknown[]) {
@@ -94,4 +95,32 @@ test("extractChatResponseText omits reasoning parts", () => {
   });
 
   assert.equal(text, "Final answer.");
+});
+
+test("extractTextFromEvent ignores echoed user prompt text", () => {
+  const text = extractTextFromEvent(
+    {
+      type: "message.part.updated",
+      properties: {
+        part: { id: "part-1", type: "text", text: "what can you do?" },
+      },
+    },
+    "what can you do?",
+  );
+
+  assert.equal(text, "");
+});
+
+test("extractTextFromEvent keeps assistant text", () => {
+  const text = extractTextFromEvent(
+    {
+      type: "message.part.updated",
+      properties: {
+        part: { id: "part-2", type: "text", text: "I can help research strategies." },
+      },
+    },
+    "what can you do?",
+  );
+
+  assert.equal(text, "I can help research strategies.");
 });
