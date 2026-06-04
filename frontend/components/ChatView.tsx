@@ -86,6 +86,15 @@ function getChatContent(payload: unknown) {
     : "";
 }
 
+function getChatStreamPayload(data: string) {
+  try {
+    const payload = JSON.parse(data) as unknown;
+    return isRecord(payload) ? payload : null;
+  } catch {
+    return null;
+  }
+}
+
 function isRun(payload: unknown): payload is Run {
   return (
     isRecord(payload) &&
@@ -175,10 +184,17 @@ export function ChatView({
     try {
       const accessToken = authenticated ? await getAccessToken() : null;
       if ("text" in submission) {
-        const response = await fetch("/api/chat/messages", {
+        const placeholderIndex = messages.length + 1;
+        setMessages((current) => [
+          ...current,
+          { role: "agent", text: "", status: "streaming" },
+        ]);
+
+        const response = await fetch("/api/chat/messages/stream", {
           method: "POST",
           headers: {
             "content-type": "application/json",
+            accept: "text/event-stream",
             ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
           },
           cache: "no-store",
@@ -189,45 +205,87 @@ export function ChatView({
           }),
         });
 
-        const payload = await readJson(response);
         if (!response.ok) {
+          const payload = await readJson(response);
           setMessages((current) => [
-            ...current,
+            ...current.slice(0, placeholderIndex),
+            { ...current[placeholderIndex], status: String(response.status), error: getErrorMessage(payload) },
+          ]);
+          return;
+        }
+
+        if (!response.body) {
+          setMessages((current) => [
+            ...current.slice(0, placeholderIndex),
             {
-              role: "agent",
-              text: "",
-              status: String(response.status),
-              error: getErrorMessage(payload),
+              ...current[placeholderIndex],
+              status: "error",
+              error: "Stream returned no body",
             },
           ]);
           return;
         }
 
-        const runId = getChatRunId(payload);
-        const content = getChatContent(payload);
-        if (!runId) {
-          setMessages((current) => [
-            ...current,
-            { role: "agent", text: content || "I do not have a response." },
-          ]);
-          return;
+        let finalRunId: string | null = null;
+        let finalText = "";
+        let finalStatus = "completed";
+        for await (const sseMessage of readSse(response.body)) {
+          const payload = getChatStreamPayload(sseMessage.data);
+          if (!payload) continue;
+
+          if (sseMessage.event === "chat.delta") {
+            finalText = getChatContent(payload);
+            setMessages((current) => [
+              ...current.slice(0, placeholderIndex),
+              { ...current[placeholderIndex], text: finalText, status: "streaming" },
+            ]);
+          } else if (sseMessage.event === "tool.updated") {
+            const runId = getChatRunId(payload);
+            if (runId) {
+              finalRunId = runId;
+              setLiveRunId(runId);
+              setMessages((current) => [
+                ...current.slice(0, placeholderIndex),
+                { ...current[placeholderIndex], run_id: runId, status: "running" },
+              ]);
+            }
+          } else if (sseMessage.event === "chat.completed") {
+            finalText = getChatContent(payload) || finalText;
+            finalRunId = getChatRunId(payload) ?? finalRunId;
+            finalStatus = finalRunId ? "running" : "completed";
+          } else if (sseMessage.event === "chat.error") {
+            const message =
+              typeof payload.message === "string"
+                ? payload.message
+                : "Unable to reach the chat service";
+            setMessages((current) => [
+              ...current.slice(0, placeholderIndex),
+              { ...current[placeholderIndex], status: "error", error: message },
+            ]);
+            return;
+          }
         }
 
-        const startedText =
-          content.trim() || `Started strategy research run ${runId}.`;
-        setLiveRunId(runId);
+        const completedText = finalText || "I do not have a response.";
         setMessages((current) => [
-          ...current,
-          { role: "agent", text: startedText, run_id: runId, status: "running" },
+          ...current.slice(0, placeholderIndex),
+          {
+            ...current[placeholderIndex],
+            text: completedText,
+            run_id: finalRunId ?? undefined,
+            status: finalStatus,
+          },
         ]);
 
-        const run = await waitForRunCompletion(runId, accessToken);
+        if (!finalRunId) return;
+
+        const run = await waitForRunCompletion(finalRunId, accessToken);
         setMessages((current) =>
           current.map((message) =>
             message.run_id === run.run_id
               ? {
                   role: "agent",
-                  text: run.reply ?? startedText,
+                  text: run.reply ?? completedText,
                   run_id: run.run_id,
                   status: run.status,
                   error: run.error ?? undefined,

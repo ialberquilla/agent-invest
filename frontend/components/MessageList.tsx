@@ -5,6 +5,7 @@ import { type MouseEvent, useEffect, useRef, useState } from "react";
 import { ArtifactGallery } from "@/components/ArtifactGallery";
 import { ChatEmptyState } from "@/components/ChatEmptyState";
 import { LiveActivity } from "@/components/LiveActivity";
+import { MarkdownMessage } from "@/components/MarkdownMessage";
 import { StrategyResultReport } from "@/components/StrategyResultReport";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { TimelinePart } from "@/lib/agent-events";
@@ -138,9 +139,7 @@ export function MessageList({
                   }
                 : {})}
             >
-              <pre className="font-sans whitespace-pre-wrap break-words">
-                {message.text}
-              </pre>
+              <MarkdownMessage text={message.text} />
               {metadata ? (
                 <p className="mt-2 text-xs text-muted-foreground">{metadata}</p>
               ) : null}
