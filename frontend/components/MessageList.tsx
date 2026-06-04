@@ -53,6 +53,9 @@ export function MessageList({
   const endRef = useRef<HTMLDivElement | null>(null);
   const latestReportRef = useRef<HTMLDivElement | null>(null);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const hasStreamingAssistant = messages.some(
+    (message) => message.role === "agent" && message.status === "streaming",
+  );
 
   useEffect(() => {
     if (!isThinking && latestReportRef.current) {
@@ -89,7 +92,10 @@ export function MessageList({
             message.role === "agent" && typeof message.run_id === "string";
           const runId = isInspectable ? message.run_id : null;
           const isActivityExpanded = runId === expandedRunId;
-          const metadata = [message.status, message.run_id]
+          const metadata = [
+            message.status === "streaming" ? null : message.status,
+            message.run_id,
+          ]
             .filter(Boolean)
             .join(" · ");
           const hasArtifacts =
@@ -139,7 +145,13 @@ export function MessageList({
                   }
                 : {})}
             >
-              <MarkdownMessage text={message.text} />
+              {message.text ? (
+                <MarkdownMessage text={message.text} />
+              ) : message.status === "streaming" ? (
+                <p className="text-sm italic text-muted-foreground">
+                  thinking...
+                </p>
+              ) : null}
               {metadata ? (
                 <p className="mt-2 text-xs text-muted-foreground">{metadata}</p>
               ) : null}
@@ -185,7 +197,7 @@ export function MessageList({
           );
         })}
 
-        {isThinking ? (
+        {isThinking && !hasStreamingAssistant ? (
           liveRunId || liveParts.length > 0 ? (
             <LiveActivity
               runId={liveRunId ?? undefined}

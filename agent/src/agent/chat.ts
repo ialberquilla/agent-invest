@@ -169,6 +169,7 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
         appendEvent,
         recordToolCall,
         recordToolResult,
+        inputMessage: message,
         threadId: input.chatSessionId,
         sessionId,
         signal: abortEvents.signal,
@@ -310,6 +311,7 @@ type CollectChatSessionEventsInput = {
   appendEvent: typeof defaultAppendEvent;
   recordToolCall: typeof defaultRecordToolCall;
   recordToolResult: typeof defaultRecordToolResult;
+  inputMessage: string;
   threadId: string;
   sessionId: string;
   signal: AbortSignal;
@@ -321,6 +323,7 @@ async function collectChatSessionEvents({
   appendEvent,
   recordToolCall,
   recordToolResult,
+  inputMessage,
   threadId,
   sessionId,
   signal,
@@ -343,7 +346,7 @@ async function collectChatSessionEvents({
       });
       const rawEventId = rawEvent?.eventId ?? null;
 
-      const text = extractTextFromEvent(event);
+      const text = extractTextFromEvent(event, inputMessage);
       if (text && text !== lastText) {
         lastText = text;
         await onEvent?.({ type: "chat.delta", content: text });
@@ -484,9 +487,10 @@ function parseJson(value: string) {
   }
 }
 
-function extractTextFromEvent(event: unknown) {
+export function extractTextFromEvent(event: unknown, inputMessage = "") {
   if (!event || typeof event !== "object") return "";
   const texts: string[] = [];
+  const ignoredText = inputMessage.trim();
   const queue: Array<Record<string, unknown>> = [event as Record<string, unknown>];
   const seen = new Set<unknown>();
 
@@ -496,7 +500,8 @@ function extractTextFromEvent(event: unknown) {
     seen.add(value);
 
     if (value.type === "text" && typeof value.text === "string") {
-      texts.push(value.text);
+      const text = value.text.trim();
+      if (text && text !== ignoredText) texts.push(value.text);
     }
 
     for (const child of Object.values(value)) {

@@ -1584,6 +1584,56 @@ test("POST /chat/messages invokes chat agent and returns JSON response", async (
   }
 });
 
+test("POST /chat/messages/stream streams chat agent events", async () => {
+  let receivedInput: unknown;
+  const app = buildServer({
+    chatAgent: {
+      async run(input) {
+        receivedInput = input;
+        return {
+          content: "I can help with that.",
+          opencode_session_id: "opencode-chat-1",
+        };
+      },
+    },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        chat_session_id: "chat-1",
+        message: "Explain momentum.",
+      },
+      url: "/chat/messages/stream",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.headers["content-type"], "text/event-stream");
+    assert.deepEqual(receivedInput, {
+      chatSessionId: "chat-1",
+      message: "Explain momentum.",
+      userId: "chat-1",
+    });
+    assert.deepEqual(parseSseEvents(response.body), [
+      {
+        data: { type: "chat.delta", content: "I can help with that." },
+        event: "chat.delta",
+      },
+      {
+        data: {
+          type: "chat.completed",
+          content: "I can help with that.",
+          opencode_session_id: "opencode-chat-1",
+        },
+        event: "chat.completed",
+      },
+    ]);
+  } finally {
+    await app.close();
+  }
+});
+
 test("POST /chat/messages includes run_id when chat agent starts pipeline", async () => {
   const app = buildServer({
     chatAgent: {

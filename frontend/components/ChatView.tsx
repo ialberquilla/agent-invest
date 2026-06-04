@@ -81,9 +81,18 @@ function getChatRunId(payload: unknown) {
 }
 
 function getChatContent(payload: unknown) {
-  return isRecord(payload) && typeof payload.content === "string"
-    ? payload.content
-    : "";
+  if (!isRecord(payload)) return "";
+  for (const key of ["content", "delta", "text"] as const) {
+    const value = payload[key];
+    if (typeof value === "string") return value;
+  }
+  return "";
+}
+
+function mergeChatDelta(current: string, next: string) {
+  if (!next) return current;
+  if (!current || next.startsWith(current)) return next;
+  return `${current}${next}`;
 }
 
 function getChatStreamPayload(data: string) {
@@ -234,7 +243,7 @@ export function ChatView({
           if (!payload) continue;
 
           if (sseMessage.event === "chat.delta") {
-            finalText = getChatContent(payload);
+            finalText = mergeChatDelta(finalText, getChatContent(payload));
             setMessages((current) => [
               ...current.slice(0, placeholderIndex),
               { ...current[placeholderIndex], text: finalText, status: "streaming" },
