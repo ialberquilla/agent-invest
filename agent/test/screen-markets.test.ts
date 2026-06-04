@@ -1,10 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
-  screenMarkets,
-  screenerRequestFromMessage,
-} from "../src/tools/screen-markets";
+import { screenMarkets } from "../src/tools/screen-markets";
 import type { ResolvedMarket } from "../src/market/gmx";
 
 function market(coinId: string, symbol: string): ResolvedMarket {
@@ -22,19 +19,6 @@ function market(coinId: string, symbol: string): ResolvedMarket {
     collateralDecimals: 6,
   };
 }
-
-test("screenerRequestFromMessage maps top momentum requests", () => {
-  assert.deepEqual(
-    screenerRequestFromMessage("top 10 tickers with best momentum"),
-    {
-      query: "top 10 tickers with best momentum",
-      factor: "momentum",
-      limit: 10,
-      gmxOnly: true,
-    },
-  );
-  assert.equal(screenerRequestFromMessage("build a BTC strategy"), null);
-});
 
 test("screenMarkets filters to GMX-tradeable rows and gates actions", async () => {
   const result = await screenMarkets(

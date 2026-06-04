@@ -118,34 +118,6 @@ const METRIC_LABELS: Record<string, { label: string; format: ScreenerMetric["for
   volatility_180d: { label: "180d vol", format: "percent" },
 };
 
-export function screenerRequestFromMessage(
-  message: string,
-): ScreenMarketsInput | null {
-  const normalized = message.toLowerCase();
-  const looksLikeScreener =
-    /\b(screen|screener|rank|ranking|top|best|tickers?|assets?|coins?|markets?)\b/.test(
-      normalized,
-    ) &&
-    /\b(momentum|sharpe|risk[ -]?adjusted|low[ -]?vol|volatility)\b/.test(
-      normalized,
-    );
-  if (!looksLikeScreener) return null;
-
-  const limitMatch = /\b(?:top|best)\s+(\d{1,2})\b/.exec(normalized);
-  const parsedLimit = limitMatch ? Number(limitMatch[1]) : 10;
-  const limit = clampLimit(parsedLimit);
-  const factor = normalized.includes("low vol") || normalized.includes("volatility")
-    ? "low_volatility"
-    : normalized.includes("sharpe") || normalized.includes("risk-adjusted") || normalized.includes("risk adjusted")
-      ? "risk_adjusted"
-      : "momentum";
-  const gmxOnly = !/\b(non-gmx|all assets|research-only|research only|broader)\b/.test(
-    normalized,
-  );
-
-  return { query: message, factor, limit, gmxOnly };
-}
-
 export async function screenMarkets(
   input: ScreenMarketsInput,
   dependencies: ScreenMarketsDependencies = {},

@@ -21,7 +21,6 @@ import {
 } from "./session";
 import {
   screenMarkets as defaultScreenMarkets,
-  screenerRequestFromMessage,
   type ScreenerResult,
 } from "../tools/screen-markets";
 import { createOpencodeLLMClient } from "./workflow/llm";
@@ -36,7 +35,13 @@ You have exactly two tools available:
 - ${RUN_STRATEGY_PIPELINE_TOOL}({ brief, chat_session_id }): starts an asynchronous strategy pipeline from the user's brief and returns { run_id } immediately.
 - ${SCREEN_MARKETS_TOOL}({ query, factor, limit, gmxOnly }): returns a read-only structured market screener backed by ingested data and GMX market resolution.
 
-Use ${SCREEN_MARKETS_TOOL} for screener-style requests such as ranking top momentum, Sharpe, or low-volatility tickers. Use ${RUN_STRATEGY_PIPELINE_TOOL} only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy. Do not launch a strategy pipeline for a market screen, watchlist, or discretionary single-position trade idea. When recent strategy pipeline run context is provided, use it to answer follow-up questions about those prior runs. Never invent unavailable details; progress and new run results are delivered through the run's event streams.`;
+STRICT TOOL ROUTING RULES:
+- For any request asking to list, rank, screen, compare, find top/best/worst, or build a watchlist of coins/tickers/assets/markets, you MUST call ${SCREEN_MARKETS_TOOL}. This includes informal phrasing and typos.
+- Never answer market screen/ranking/list/watchlist requests with markdown tables, numbered lists, or remembered ticker rankings. The frontend can only render pin/refresh actions when ${SCREEN_MARKETS_TOOL} is called and returns structured data.
+- Use ${RUN_STRATEGY_PIPELINE_TOOL} only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy.
+- Do not launch a strategy pipeline for a market screen, watchlist, or discretionary single-position trade idea.
+- When recent strategy pipeline run context is provided, use it to answer follow-up questions about those prior runs.
+- Never invent unavailable details; progress and new run results are delivered through the run's event streams.`;
 
 export const CHAT_ALLOWED_TOOLS = {
   [RUN_STRATEGY_PIPELINE_TOOL]: true,
@@ -176,18 +181,6 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
         opencode_session_id: sessionId,
       });
 
-      const screenerRequest = screenerRequestFromMessage(message);
-      if (screenerRequest) {
-        const structuredResult = await executeScreenMarkets(screenerRequest);
-        const content = screenerReply(structuredResult);
-        await onEvent?.({ type: "chat.delta", content });
-        return {
-          content,
-          opencode_session_id: sessionId,
-          structured_result: structuredResult,
-        };
-      }
-
       const events = collectChatSessionEvents({
         managed,
         appendEvent,
@@ -201,6 +194,7 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
       });
 
       let response: Awaited<ReturnType<typeof managed.client.session.prompt>>;
+      let eventScreenerResult: ScreenerResult | null = null;
       try {
         response = await managed.client.session.prompt({
           path: { id: sessionId },
@@ -220,7 +214,7 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
         });
       } finally {
         abortEvents.abort();
-        await events;
+        eventScreenerResult = await events;
       }
 
       for (const part of response.data?.parts ?? []) {
@@ -233,8 +227,10 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
       }
 
       const runId = extractRunId(response.data);
-      const structuredResult = extractScreenerResult(response.data);
-      const content = extractChatResponseText(response.data);
+      const structuredResult = extractScreenerResult(response.data) ?? eventScreenerResult;
+      const content = structuredResult
+        ? screenerReply(structuredResult)
+        : extractChatResponseText(response.data);
       if (content) await onEvent?.({ type: "chat.delta", content });
       if (runId) await onEvent?.({ type: "tool.updated", run_id: runId });
       return {
@@ -358,6 +354,7 @@ async function collectChatSessionEvents({
   const seenCallIds = new Set<string>();
   const finishedCallIds = new Set<string>();
   let lastText = "";
+  let screenerResult: ScreenerResult | null = null;
 
   try {
     const response = await managed.client.event.subscribe({ signal });
@@ -380,6 +377,10 @@ async function collectChatSessionEvents({
 
       const toolPart = extractToolPart(event);
       if (!toolPart) continue;
+      if (toolPart.tool === SCREEN_MARKETS_TOOL) {
+        const parsed = parseToolOutput(toolPart.state?.output);
+        if (isScreenerResult(parsed)) screenerResult = parsed;
+      }
       await onEvent?.({
         type: "tool.updated",
         status: toolPart.state?.status,
@@ -438,6 +439,7 @@ async function collectChatSessionEvents({
   } catch (error) {
     if (!signal.aborted) throw error;
   }
+  return screenerResult;
 }
 
 function extractSessionId(event: unknown): string | null {
@@ -507,6 +509,8 @@ function extractRunId(result: { parts?: unknown[] }) {
 
 function extractScreenerResult(result: { parts?: unknown[] }): ScreenerResult | null {
   for (const part of result.parts ?? []) {
+    const nested = findScreenerResult(part);
+    if (nested) return nested;
     if (!part || typeof part !== "object") continue;
     const toolPart = part as {
       type?: unknown;
@@ -519,6 +523,27 @@ function extractScreenerResult(result: { parts?: unknown[] }): ScreenerResult | 
 
     const parsed = parseToolOutput(toolPart.state?.output);
     if (isScreenerResult(parsed)) return parsed;
+  }
+  return null;
+}
+
+function findScreenerResult(value: unknown): ScreenerResult | null {
+  if (isScreenerResult(value)) return value;
+  const parsed = typeof value === "string" ? parseJson(value) : null;
+  if (isScreenerResult(parsed)) return parsed;
+  if (!value || typeof value !== "object") return null;
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = findScreenerResult(entry);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  for (const entry of Object.values(value)) {
+    const found = findScreenerResult(entry);
+    if (found) return found;
   }
   return null;
 }

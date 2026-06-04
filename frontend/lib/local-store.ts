@@ -113,7 +113,7 @@ function isPinnedScreener(value: unknown): value is PinnedScreener {
   );
 }
 
-function screenerId(definition: ScreenerResult["definition"]) {
+export function screenerId(definition: ScreenerResult["definition"]) {
   return [
     definition.factor,
     definition.limit,

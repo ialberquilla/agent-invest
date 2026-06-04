@@ -222,6 +222,35 @@ export const vaults = pgTable(
 export type VaultRow = typeof vaults.$inferSelect;
 export type NewVaultRow = typeof vaults.$inferInsert;
 
+export const pinnedScreeners = pgTable(
+  "pinned_screeners",
+  {
+    screenerId: text("screener_id").notNull(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.userId, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    definition: jsonb("definition").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    lastRefreshedAt: timestamp("last_refreshed_at", { withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.screenerId] }),
+    index("pinned_screeners_user_id_updated_at_idx").on(
+      table.userId,
+      desc(table.updatedAt),
+    ),
+  ],
+);
+
+export type PinnedScreenerRow = typeof pinnedScreeners.$inferSelect;
+export type NewPinnedScreenerRow = typeof pinnedScreeners.$inferInsert;
+
 // GMX V2 token directory (Phase 2 of plans/integrate_contracts.md), fed from
 // the GMX /tokens endpoint. address + decimals are the execution identifiers a
 // coin_id (= symbol) resolves to; `synthetic` flags price-only index tokens.
