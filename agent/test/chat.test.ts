@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   CHAT_ALLOWED_TOOLS,
   createChatAgent,
+  extractChatResponseText,
 } from "../src/agent/chat";
 
 function createRunDbDouble(insertedRuns: unknown[]) {
@@ -79,4 +80,16 @@ test("runStrategyPipeline creates a run and does not await workflow completion",
   ]);
 
   finishWorkflow();
+});
+
+test("extractChatResponseText omits reasoning parts", () => {
+  const text = extractChatResponseText({
+    parts: [
+      { type: "reasoning", text: "I should think this through." },
+      { type: "text", text: "Final answer." },
+      { type: "tool", state: { output: "{}" } },
+    ],
+  });
+
+  assert.equal(text, "Final answer.");
 });

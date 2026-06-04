@@ -168,7 +168,7 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
 
       const runId = extractRunId(response.data);
       return {
-        content: extractText(response.data),
+        content: extractChatResponseText(response.data),
         opencode_session_id: sessionId,
         ...(runId ? { run_id: runId } : {}),
       };
@@ -383,10 +383,11 @@ function extractEventType(event: unknown): string {
   return typeof type === "string" && type.trim() ? type : "opencode.event";
 }
 
-function extractText(result: { parts?: unknown[] }) {
+export function extractChatResponseText(result: { parts?: unknown[] }) {
   return (result.parts ?? [])
     .map((part) => {
       if (!part || typeof part !== "object") return "";
+      if ((part as { type?: unknown }).type !== "text") return "";
       const text = (part as { text?: unknown }).text;
       return typeof text === "string" ? text : "";
     })
