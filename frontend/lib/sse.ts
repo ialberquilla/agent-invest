@@ -27,13 +27,16 @@ export async function* readSse(
         return;
       }
       buffer += decoder.decode(value, { stream: true });
-      let separator = buffer.indexOf("\n\n");
+      let separator = findEventSeparator(buffer);
       while (separator !== -1) {
+        const separatorLength = buffer.startsWith("\r\n\r\n", separator)
+          ? 4
+          : 2;
         const rawEvent = buffer.slice(0, separator);
-        buffer = buffer.slice(separator + 2);
+        buffer = buffer.slice(separator + separatorLength);
         const message = parseEvent(rawEvent);
         if (message) yield message;
-        separator = buffer.indexOf("\n\n");
+        separator = findEventSeparator(buffer);
       }
     }
   } finally {
@@ -45,7 +48,7 @@ export async function* readSse(
 function parseEvent(rawEvent: string): SseMessage | null {
   let eventName = "message";
   const dataLines: string[] = [];
-  for (const line of rawEvent.split("\n")) {
+  for (const line of rawEvent.replaceAll("\r\n", "\n").split("\n")) {
     if (line.startsWith("event: ")) {
       eventName = line.slice(7).trim();
     } else if (line.startsWith("data: ")) {
@@ -54,4 +57,12 @@ function parseEvent(rawEvent: string): SseMessage | null {
   }
   if (dataLines.length === 0) return null;
   return { event: eventName, data: dataLines.join("\n") };
+}
+
+function findEventSeparator(buffer: string) {
+  const lf = buffer.indexOf("\n\n");
+  const crlf = buffer.indexOf("\r\n\r\n");
+  if (lf === -1) return crlf;
+  if (crlf === -1) return lf;
+  return Math.min(lf, crlf);
 }

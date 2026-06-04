@@ -47,6 +47,17 @@ export type ChatAgentResponse = {
   run_id?: string;
 };
 
+export type ChatStreamEvent =
+  | {
+      type: "chat.started";
+      chat_session_id: string;
+      opencode_session_id: string;
+    }
+  | { type: "chat.delta"; content: string }
+  | { type: "tool.updated"; run_id?: string; status?: string }
+  | (ChatAgentResponse & { type: "chat.completed" })
+  | { type: "chat.error"; message: string };
+
 export type RunStrategyPipelineInput = {
   brief: string;
 };
@@ -111,6 +122,30 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
     allowedTools: CHAT_ALLOWED_TOOLS,
     runStrategyPipeline,
     async run(input: ChatAgentInput): Promise<ChatAgentResponse> {
+      return runChat(input);
+    },
+    async runStream(
+      input: ChatAgentInput,
+      onEvent: (event: ChatStreamEvent) => void | Promise<void>,
+    ): Promise<ChatAgentResponse> {
+      try {
+        const response = await runChat(input, onEvent);
+        await onEvent({ type: "chat.completed", ...response });
+        return response;
+      } catch (error) {
+        await onEvent({
+          type: "chat.error",
+          message: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    },
+  };
+
+  async function runChat(
+    input: ChatAgentInput,
+    onEvent?: (event: ChatStreamEvent) => void | Promise<void>,
+  ): Promise<ChatAgentResponse> {
       const message = input.message.trim();
       if (!message) throw new Error("chat message is required");
 
@@ -124,6 +159,11 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
 
       const runContext = await strategyRunContext(db, input.chatSessionId);
       const abortEvents = new AbortController();
+      await onEvent?.({
+        type: "chat.started",
+        chat_session_id: input.chatSessionId,
+        opencode_session_id: sessionId,
+      });
       const events = collectChatSessionEvents({
         managed,
         appendEvent,
@@ -132,6 +172,7 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
         threadId: input.chatSessionId,
         sessionId,
         signal: abortEvents.signal,
+        onEvent,
       });
 
       let response: Awaited<ReturnType<typeof managed.client.session.prompt>>;
@@ -167,13 +208,15 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
       }
 
       const runId = extractRunId(response.data);
+      const content = extractChatResponseText(response.data);
+      if (content) await onEvent?.({ type: "chat.delta", content });
+      if (runId) await onEvent?.({ type: "tool.updated", run_id: runId });
       return {
-        content: extractChatResponseText(response.data),
+        content,
         opencode_session_id: sessionId,
         ...(runId ? { run_id: runId } : {}),
       };
-    },
-  };
+    }
 }
 
 export const chatAgent = createChatAgent();
@@ -270,6 +313,7 @@ type CollectChatSessionEventsInput = {
   threadId: string;
   sessionId: string;
   signal: AbortSignal;
+  onEvent?: (event: ChatStreamEvent) => void | Promise<void>;
 };
 
 async function collectChatSessionEvents({
@@ -280,9 +324,11 @@ async function collectChatSessionEvents({
   threadId,
   sessionId,
   signal,
+  onEvent,
 }: CollectChatSessionEventsInput) {
   const seenCallIds = new Set<string>();
   const finishedCallIds = new Set<string>();
+  let lastText = "";
 
   try {
     const response = await managed.client.event.subscribe({ signal });
@@ -297,8 +343,19 @@ async function collectChatSessionEvents({
       });
       const rawEventId = rawEvent?.eventId ?? null;
 
+      const text = extractTextFromEvent(event);
+      if (text && text !== lastText) {
+        lastText = text;
+        await onEvent?.({ type: "chat.delta", content: text });
+      }
+
       const toolPart = extractToolPart(event);
       if (!toolPart) continue;
+      await onEvent?.({
+        type: "tool.updated",
+        status: toolPart.state?.status,
+        run_id: extractRunId({ parts: [toolPart] }) ?? undefined,
+      });
 
       const status = toolPart.state?.status;
       const hasArgs =
@@ -425,6 +482,39 @@ function parseJson(value: string) {
   } catch {
     return null;
   }
+}
+
+function extractTextFromEvent(event: unknown) {
+  if (!event || typeof event !== "object") return "";
+  const texts: string[] = [];
+  const queue: Array<Record<string, unknown>> = [event as Record<string, unknown>];
+  const seen = new Set<unknown>();
+
+  while (queue.length > 0) {
+    const value = queue.shift()!;
+    if (seen.has(value)) continue;
+    seen.add(value);
+
+    if (value.type === "text" && typeof value.text === "string") {
+      texts.push(value.text);
+    }
+
+    for (const child of Object.values(value)) {
+      if (child && typeof child === "object") {
+        if (Array.isArray(child)) {
+          for (const item of child) {
+            if (item && typeof item === "object") {
+              queue.push(item as Record<string, unknown>);
+            }
+          }
+        } else {
+          queue.push(child as Record<string, unknown>);
+        }
+      }
+    }
+  }
+
+  return texts.join("\n").trim();
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -115,6 +115,10 @@ type ServerDependencies = {
       userId: string;
       message: string;
     }): Promise<ChatAgentResponse>;
+    runStream?(
+      input: { chatSessionId: string; userId: string; message: string },
+      onEvent: (event: unknown) => void | Promise<void>,
+    ): Promise<ChatAgentResponse>;
     runStrategyPipeline?(
       input: { brief: string },
       chatSessionId?: string,
@@ -1285,6 +1289,64 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       opencode_session_id: response.opencode_session_id,
       ...(response.run_id ? { run_id: response.run_id } : {}),
     };
+  });
+
+  app.post("/chat/messages/stream", async (request, reply) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    if (!isRecord(body)) {
+      throw httpError(400, "Request body must be a JSON object");
+    }
+
+    const chatSessionId = requiredText(body, "chat_session_id");
+    const message = requiredText(body, "message");
+    const userId =
+      typeof body.user_id === "string" && body.user_id.trim()
+        ? body.user_id.trim()
+        : chatSessionId;
+
+    reply.hijack();
+    const raw = reply.raw;
+    raw.setHeader("Content-Type", "text/event-stream");
+    raw.setHeader("Cache-Control", "no-cache, no-transform");
+    raw.setHeader("Connection", "keep-alive");
+    raw.setHeader("X-Accel-Buffering", "no");
+    raw.flushHeaders?.();
+
+    let clientGone = false;
+    raw.on("close", () => {
+      clientGone = true;
+    });
+
+    const send = (payload: unknown) => {
+      if (clientGone || raw.writableEnded) return;
+      const eventName =
+        isRecord(payload) && typeof payload.type === "string"
+          ? payload.type
+          : "message";
+      raw.write(`event: ${eventName}\n`);
+      raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    try {
+      if (executeChatAgent.runStream) {
+        await executeChatAgent.runStream(
+          { chatSessionId, message, userId },
+          (event) => send(event),
+        );
+      } else {
+        const response = await executeChatAgent.run({
+          chatSessionId,
+          message,
+          userId,
+        });
+        send({ type: "chat.delta", content: response.content });
+        send({ type: "chat.completed", ...response });
+      }
+    } catch (error) {
+      send({ type: "chat.error", message: errorMessage(error) });
+    } finally {
+      if (!clientGone && !raw.writableEnded) raw.end();
+    }
   });
 
   app.get<{ Params: { id: string } }>("/runs/:id", async (request) => {
