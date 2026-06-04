@@ -4,11 +4,13 @@ pragma solidity 0.8.26;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
+import {EIP712Upgradeable} from "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol";
 
 import {IGmxV2ExchangeRouter} from "./interfaces/IGmxV2ExchangeRouter.sol";
 
@@ -20,13 +22,15 @@ import {IGmxV2ExchangeRouter} from "./interfaces/IGmxV2ExchangeRouter.sol";
  *
  *      Mandate enforcement (the core idea): the offchain AI agent runs as a bounded `keeper`. The
  *      owner commits a `Mandate` on-chain (allowed markets, max leverage, max per-order notional,
- *      keeper rebalance interval) and the contract enforces it on every GMX order. The keeper can
- *      ONLY submit conforming GMX orders — it can never move assets out (deposit/withdraw/execute
- *      stay owner-only). Even a fully compromised agent cannot exceed the user-approved limits.
+ *      keeper rebalance interval, max keeper slippage) and the contract enforces it on every GMX
+ *      order. The keeper can ONLY submit conforming GMX orders — it can never move assets out
+ *      (deposit/withdraw/execute stay owner-only). Even a fully compromised agent cannot exceed
+ *      the user-approved limits.
  *
  *      Enforcement is risk-asymmetric: increases (taking on exposure) get the full mandate check;
- *      decreases (de-risking) only require an allowed market; cancels are unrestricted. The
- *      rebalance interval throttles the keeper only, never the human owner.
+ *      decreases (de-risking) only require an allowed market; keeper increases and decreases also
+ *      require an owner-signed EIP-712 price intent. Cancels are unrestricted. The rebalance
+ *      interval throttles the keeper only, never the human owner.
  *
  *      Routing is pinned: the owner sets the canonical GMX `exchangeRouter`/`router`/`orderVault`
  *      via {setGmxRouting} and every keeper order is validated against them + the vault asset, and
@@ -37,14 +41,34 @@ import {IGmxV2ExchangeRouter} from "./interfaces/IGmxV2ExchangeRouter.sol";
  *      - `maxLeverage` is a per-order ratio of added collateral to size delta, assuming $1 stable
  *        collateral; it does not track total position leverage. Zero-collateral size-ups are rejected
  *        so the cap cannot be bypassed, but the true running leverage of a position is not yet read.
- *      - No total gross-exposure cap and no oracle-based slippage bound yet.
+ *      - No total gross-exposure cap and no autonomous oracle-based slippage bound yet; keeper
+ *        price bounds rely on an owner-signed offchain reference price with a short expiry.
  */
-contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgradeable, ReentrancyGuardTransient {
+contract StrategyVault is
+    Initializable,
+    Ownable2StepUpgradeable,
+    PausableUpgradeable,
+    EIP712Upgradeable,
+    ReentrancyGuardTransient
+{
     using SafeERC20 for IERC20;
     using EnumerableSet for EnumerableSet.AddressSet;
 
     /// @notice Upper bound on the allowlist size (bounds gas + keeps the mandate legible).
     uint256 public constant MAX_ALLOWED_MARKETS = 32;
+
+    /// @notice Keeper intents cannot allow more than 10% price slippage from the signed reference price.
+    uint256 public constant MAX_KEEPER_SLIPPAGE_BPS = 1_000;
+
+    uint256 private constant BPS_DIVISOR = 10_000;
+
+    bytes32 private constant KEEPER_INCREASE_ORDER_INTENT_TYPEHASH = keccak256(
+        "KeeperIncreaseOrderIntent(address keeper,bytes32 orderHash,uint256 referencePrice,uint256 maxSlippageBps,uint256 nonce,uint256 deadline)"
+    );
+
+    bytes32 private constant KEEPER_DECREASE_ORDER_INTENT_TYPEHASH = keccak256(
+        "KeeperDecreaseOrderIntent(address keeper,bytes32 orderHash,uint256 referencePrice,uint256 maxSlippageBps,uint256 nonce,uint256 deadline)"
+    );
 
     /// @notice Owner-committed limits the keeper is bound by. `allowedMarkets` is managed separately
     ///         (it is an EnumerableSet and cannot live in a memory struct).
@@ -52,6 +76,7 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
         uint256 maxLeverage; // integer multiple, e.g. 3 == 3x (per-order, see limitations)
         uint256 maxPositionSizeUsd; // GMX 1e30 USD, cap on a single increase's sizeDeltaUsd
         uint256 minRebalanceInterval; // seconds between keeper increase orders
+        uint256 maxKeeperSlippageBps; // max owner-signed keeper slippage from the signed reference price
     }
 
     /// @custom:storage-location erc7201:agentinvest.storage.StrategyVault
@@ -67,6 +92,7 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
         address gmxExchangeRouter;
         address gmxRouter;
         address gmxOrderVault;
+        mapping(uint256 nonce => bool used) usedKeeperOrderIntentNonces;
     }
 
     // keccak256(abi.encode(uint256(keccak256("agentinvest.storage.StrategyVault")) - 1)) & ~bytes32(uint256(0xff))
@@ -83,7 +109,9 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
     event Withdrawn(address indexed to, uint256 amount);
     event KeeperUpdated(address indexed keeper);
     event GmxRoutingUpdated(address indexed exchangeRouter, address indexed router, address indexed orderVault);
-    event MandateUpdated(uint256 maxLeverage, uint256 maxPositionSizeUsd, uint256 minRebalanceInterval);
+    event MandateUpdated(
+        uint256 maxLeverage, uint256 maxPositionSizeUsd, uint256 minRebalanceInterval, uint256 maxKeeperSlippageBps
+    );
     event MarketAllowed(address indexed market);
     event MarketDisallowed(address indexed market);
     event Executed(address indexed target, uint256 value, bytes result);
@@ -108,6 +136,7 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
         uint256 executionFee
     );
     event GmxOrderCancelled(bytes32 indexed orderKey, address indexed exchangeRouter, uint256 executionFee);
+    event KeeperOrderIntentConsumed(bytes32 indexed digest, uint256 indexed nonce, address indexed keeper);
 
     struct GmxMarketIncreaseOrder {
         address exchangeRouter;
@@ -125,8 +154,13 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
         uint256 collateralAmount;
         uint256 acceptablePrice;
         uint256 executionFee;
+        uint256 referencePrice;
+        uint256 maxSlippageBps;
+        uint256 intentNonce;
+        uint256 intentDeadline;
         uint256 callbackGasLimit;
         bytes32 referralCode;
+        bytes ownerSignature;
     }
 
     struct GmxMarketDecreaseOrder {
@@ -144,10 +178,15 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
         uint256 collateralWithdrawalAmount;
         uint256 acceptablePrice;
         uint256 executionFee;
+        uint256 referencePrice;
+        uint256 maxSlippageBps;
+        uint256 intentNonce;
+        uint256 intentDeadline;
         uint256 callbackGasLimit;
         uint256 minOutputAmount;
         IGmxV2ExchangeRouter.DecreasePositionSwapType decreasePositionSwapType;
         bytes32 referralCode;
+        bytes ownerSignature;
     }
 
     error StrategyVault__ZeroOwner();
@@ -166,6 +205,11 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
     error StrategyVault__UnsupportedCollateralDecimals();
     error StrategyVault__InsufficientIdleBalance();
     error StrategyVault__InvalidExecutionFee();
+    error StrategyVault__InvalidOrderIntent();
+    error StrategyVault__OrderIntentExpired();
+    error StrategyVault__OrderIntentNonceUsed(uint256 nonce);
+    error StrategyVault__KeeperSlippageExceeded();
+    error StrategyVault__InvalidReferencePrice();
     error StrategyVault__CallFailed(bytes returndata);
 
     /// @dev GMX orders may be submitted by the owner or the bounded keeper; both are mandate-checked.
@@ -187,6 +231,7 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
         __Ownable_init(owner_);
         __Ownable2Step_init();
         __Pausable_init();
+        __EIP712_init("AgentInvestStrategyVault", "1");
 
         uint8 decimals = IERC20Metadata(address(asset_)).decimals();
         if (decimals > 30) revert StrategyVault__UnsupportedCollateralDecimals();
@@ -238,6 +283,11 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
         return _strategyVaultStorage().allowedMarkets.values();
     }
 
+    /// @notice Whether a keeper order intent nonce has already been consumed.
+    function isKeeperOrderIntentNonceUsed(uint256 nonce) external view returns (bool) {
+        return _strategyVaultStorage().usedKeeperOrderIntentNonces[nonce];
+    }
+
     /*//////////////////////////////////////////////////////////////
                               OWNER CONFIG
     //////////////////////////////////////////////////////////////*/
@@ -263,9 +313,17 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
 
     /// @notice Commit the mandate scalar limits.
     function setMandate(Mandate calldata mandate_) external onlyOwner {
-        if (mandate_.maxLeverage == 0 || mandate_.maxPositionSizeUsd == 0) revert StrategyVault__InvalidMandate();
+        if (
+            mandate_.maxLeverage == 0 || mandate_.maxPositionSizeUsd == 0
+                || mandate_.maxKeeperSlippageBps > MAX_KEEPER_SLIPPAGE_BPS
+        ) revert StrategyVault__InvalidMandate();
         _strategyVaultStorage().mandate = mandate_;
-        emit MandateUpdated(mandate_.maxLeverage, mandate_.maxPositionSizeUsd, mandate_.minRebalanceInterval);
+        emit MandateUpdated(
+            mandate_.maxLeverage,
+            mandate_.maxPositionSizeUsd,
+            mandate_.minRebalanceInterval,
+            mandate_.maxKeeperSlippageBps
+        );
     }
 
     /// @notice Add a GMX market to the mandate allowlist.
@@ -342,6 +400,7 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
         _validateGmxOrder(order);
         if (msg.value != order.executionFee) revert StrategyVault__InvalidExecutionFee();
         _enforceIncreaseMandate(order);
+        _enforceKeeperIncreaseIntent(order);
 
         IERC20(order.collateralToken).forceApprove(order.router, order.collateralAmount);
 
@@ -384,6 +443,7 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
         ) revert StrategyVault__UntrustedRouting();
         // De-risking: only require the market be on the allowlist; no size/leverage/interval gate.
         if (!$.allowedMarkets.contains(order.market)) revert StrategyVault__MarketNotAllowed(order.market);
+        _enforceKeeperDecreaseIntent(order, $.mandate.maxKeeperSlippageBps);
 
         bytes[] memory calls = new bytes[](2);
         calls[0] = abi.encodeCall(IGmxV2ExchangeRouter.sendWnt, (order.orderVault, order.executionFee));
@@ -450,6 +510,143 @@ contract StrategyVault is Initializable, Ownable2StepUpgradeable, PausableUpgrad
             }
             $.lastKeeperIncreaseAt = block.timestamp;
         }
+    }
+
+    function _enforceKeeperIncreaseIntent(GmxMarketIncreaseOrder calldata order) internal {
+        StrategyVaultStorage storage $ = _strategyVaultStorage();
+        if (msg.sender != $.keeper) return;
+
+        _validateKeeperPriceBound(order.acceptablePrice, order.referencePrice, order.maxSlippageBps, true, order.isLong);
+        if (order.maxSlippageBps > $.mandate.maxKeeperSlippageBps) revert StrategyVault__KeeperSlippageExceeded();
+
+        bytes32 digest = _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    KEEPER_INCREASE_ORDER_INTENT_TYPEHASH,
+                    msg.sender,
+                    _hashKeeperIncreaseOrderFields(order),
+                    order.referencePrice,
+                    order.maxSlippageBps,
+                    order.intentNonce,
+                    order.intentDeadline
+                )
+            )
+        );
+
+        _consumeKeeperOrderIntent($, order.intentNonce, order.intentDeadline, digest, order.ownerSignature);
+    }
+
+    function _enforceKeeperDecreaseIntent(GmxMarketDecreaseOrder calldata order, uint256 mandateMaxSlippageBps)
+        internal
+    {
+        StrategyVaultStorage storage $ = _strategyVaultStorage();
+        if (msg.sender != $.keeper) return;
+
+        _validateKeeperPriceBound(
+            order.acceptablePrice, order.referencePrice, order.maxSlippageBps, false, order.isLong
+        );
+        if (order.maxSlippageBps > mandateMaxSlippageBps) revert StrategyVault__KeeperSlippageExceeded();
+
+        bytes32 digest = _hashTypedDataV4(
+            keccak256(
+                abi.encode(
+                    KEEPER_DECREASE_ORDER_INTENT_TYPEHASH,
+                    msg.sender,
+                    _hashKeeperDecreaseOrderFields(order),
+                    order.referencePrice,
+                    order.maxSlippageBps,
+                    order.intentNonce,
+                    order.intentDeadline
+                )
+            )
+        );
+
+        _consumeKeeperOrderIntent($, order.intentNonce, order.intentDeadline, digest, order.ownerSignature);
+    }
+
+    function _hashKeeperIncreaseOrderFields(GmxMarketIncreaseOrder calldata order) internal pure returns (bytes32) {
+        bytes32 routingHash = keccak256(
+            abi.encode(
+                order.exchangeRouter,
+                order.router,
+                order.orderVault,
+                order.market,
+                order.collateralToken,
+                order.isLong,
+                order.shouldUnwrapNativeToken
+            )
+        );
+        bytes32 numbersHash = keccak256(
+            abi.encode(order.sizeDeltaUsd, order.collateralAmount, order.acceptablePrice, order.executionFee)
+        );
+        return keccak256(abi.encode(routingHash, numbersHash, order.referralCode));
+    }
+
+    function _hashKeeperDecreaseOrderFields(GmxMarketDecreaseOrder calldata order) internal pure returns (bytes32) {
+        bytes32 routingHash = keccak256(
+            abi.encode(
+                order.exchangeRouter,
+                order.orderVault,
+                order.market,
+                order.collateralToken,
+                order.isLong,
+                order.shouldUnwrapNativeToken
+            )
+        );
+        bytes32 numbersHash = keccak256(
+            abi.encode(
+                order.sizeDeltaUsd,
+                order.collateralWithdrawalAmount,
+                order.acceptablePrice,
+                order.executionFee,
+                order.minOutputAmount,
+                uint8(order.decreasePositionSwapType)
+            )
+        );
+        return keccak256(abi.encode(routingHash, numbersHash, order.referralCode));
+    }
+
+    function _consumeKeeperOrderIntent(
+        StrategyVaultStorage storage $,
+        uint256 nonce,
+        uint256 deadline,
+        bytes32 digest,
+        bytes calldata signature
+    ) internal {
+        if (deadline < block.timestamp) revert StrategyVault__OrderIntentExpired();
+        if ($.usedKeeperOrderIntentNonces[nonce]) revert StrategyVault__OrderIntentNonceUsed(nonce);
+
+        (address recovered, ECDSA.RecoverError recoverError,) = ECDSA.tryRecoverCalldata(digest, signature);
+        if (recoverError != ECDSA.RecoverError.NoError || recovered != owner()) {
+            revert StrategyVault__InvalidOrderIntent();
+        }
+
+        $.usedKeeperOrderIntentNonces[nonce] = true;
+        emit KeeperOrderIntentConsumed(digest, nonce, msg.sender);
+    }
+
+    function _validateKeeperPriceBound(
+        uint256 acceptablePrice,
+        uint256 referencePrice,
+        uint256 maxSlippageBps,
+        bool isIncrease,
+        bool isLong
+    ) internal pure {
+        if (referencePrice == 0) revert StrategyVault__InvalidReferencePrice();
+        if (maxSlippageBps > MAX_KEEPER_SLIPPAGE_BPS) revert StrategyVault__KeeperSlippageExceeded();
+
+        if (_usesMaxAcceptablePrice(isIncrease, isLong)) {
+            uint256 maxAcceptablePrice = referencePrice * (BPS_DIVISOR + maxSlippageBps) / BPS_DIVISOR;
+            if (acceptablePrice > maxAcceptablePrice) revert StrategyVault__KeeperSlippageExceeded();
+            return;
+        }
+
+        uint256 minAcceptablePrice = referencePrice * (BPS_DIVISOR - maxSlippageBps) / BPS_DIVISOR;
+        if (acceptablePrice < minAcceptablePrice) revert StrategyVault__KeeperSlippageExceeded();
+    }
+
+    function _usesMaxAcceptablePrice(bool isIncrease, bool isLong) internal pure returns (bool) {
+        return isIncrease == isLong;
     }
 
     function _validateGmxOrder(GmxMarketIncreaseOrder calldata order) internal pure {

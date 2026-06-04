@@ -64,6 +64,13 @@ interface IGmxV2Reader {
 }
 
 contract GmxOrderForkTest is Test {
+    uint256 internal constant OWNER_PRIVATE_KEY = 0xA11CE;
+    bytes32 internal constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 internal constant KEEPER_INCREASE_ORDER_INTENT_TYPEHASH = keccak256(
+        "KeeperIncreaseOrderIntent(address keeper,bytes32 orderHash,uint256 referencePrice,uint256 maxSlippageBps,uint256 nonce,uint256 deadline)"
+    );
+
     address internal constant ARBITRUM_USDC = 0xaf88d065e77c8cC2239327C5EDb3A432268e5831;
     address internal constant GMX_EXCHANGE_ROUTER = 0x1C3fa76e6E1088bCE750f23a5BFcffa1efEF6A41;
     address internal constant GMX_ROUTER = 0x7452c558d45f8afC8c83dAe62C3f8A5BE19c71f6;
@@ -71,7 +78,7 @@ contract GmxOrderForkTest is Test {
     address internal constant GMX_READER = 0x470fbC46bcC0f16532691Df360A07d8Bf5ee0789;
     address internal constant GMX_BTC_USD_MARKET = 0x47c031236e19d024b42f8AE6780E44A573170703;
 
-    address internal owner = makeAddr("owner");
+    address internal owner;
     address internal keeper = makeAddr("keeper");
     StrategyVault internal vault;
 
@@ -80,13 +87,16 @@ contract GmxOrderForkTest is Test {
         if (bytes(rpcUrl).length == 0) return;
 
         vm.createSelectFork(rpcUrl, 452_780_000);
+        owner = vm.addr(OWNER_PRIVATE_KEY);
         StrategyVault implementation = new StrategyVault();
         VaultFactory factory = new VaultFactory(address(implementation), address(this));
         vault = StrategyVault(payable(factory.createVault(IERC20(ARBITRUM_USDC), owner)));
 
         vm.startPrank(owner);
         vault.setMandate(
-            StrategyVault.Mandate({maxLeverage: 5, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0})
+            StrategyVault.Mandate({
+                maxLeverage: 5, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0, maxKeeperSlippageBps: 200
+            })
         );
         vault.addMarket(GMX_BTC_USD_MARKET);
         vault.setGmxRouting(GMX_EXCHANGE_ROUTER, GMX_ROUTER, GMX_ORDER_VAULT);
@@ -117,6 +127,7 @@ contract GmxOrderForkTest is Test {
 
         // bounded keeper submits a mandate-conforming order against real GMX
         StrategyVault.GmxMarketIncreaseOrder memory order = _buildOrder(GMX_BTC_USD_MARKET, 50e30, 120_000e30);
+        order = _signKeeperIncreaseOrder(order);
         vm.prank(keeper);
         bytes32 orderKey = vault.createGmxMarketIncreaseOrder{value: order.executionFee}(order);
 
@@ -178,9 +189,67 @@ contract GmxOrderForkTest is Test {
             collateralAmount: collateralAmount,
             acceptablePrice: acceptablePrice,
             executionFee: executionFee,
+            referencePrice: acceptablePrice,
+            maxSlippageBps: 200,
+            intentNonce: 0,
+            intentDeadline: block.timestamp + 5 minutes,
             callbackGasLimit: 0,
-            referralCode: bytes32("agent-invest")
+            referralCode: bytes32("agent-invest"),
+            ownerSignature: ""
         });
+    }
+
+    function _signKeeperIncreaseOrder(StrategyVault.GmxMarketIncreaseOrder memory order)
+        internal
+        view
+        returns (StrategyVault.GmxMarketIncreaseOrder memory)
+    {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                KEEPER_INCREASE_ORDER_INTENT_TYPEHASH,
+                keeper,
+                _hashKeeperIncreaseOrderFields(order),
+                order.referencePrice,
+                order.maxSlippageBps,
+                order.intentNonce,
+                order.intentDeadline
+            )
+        );
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("AgentInvestStrategyVault")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(vault)
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OWNER_PRIVATE_KEY, digest);
+        order.ownerSignature = abi.encodePacked(r, s, v);
+        return order;
+    }
+
+    function _hashKeeperIncreaseOrderFields(StrategyVault.GmxMarketIncreaseOrder memory order)
+        internal
+        pure
+        returns (bytes32)
+    {
+        bytes32 routingHash = keccak256(
+            abi.encode(
+                order.exchangeRouter,
+                order.router,
+                order.orderVault,
+                order.market,
+                order.collateralToken,
+                order.isLong,
+                order.shouldUnwrapNativeToken
+            )
+        );
+        bytes32 numbersHash = keccak256(
+            abi.encode(order.sizeDeltaUsd, order.collateralAmount, order.acceptablePrice, order.executionFee)
+        );
+        return keccak256(abi.encode(routingHash, numbersHash, order.referralCode));
     }
 
     function _assertPendingOrder(
