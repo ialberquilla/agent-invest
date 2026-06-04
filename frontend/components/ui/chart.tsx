@@ -11,7 +11,7 @@ function ChartContainer({
     <div
       data-slot="chart"
       className={cn(
-        "flex aspect-video justify-center text-xs text-muted-foreground [&_.recharts-cartesian-axis-tick_text]:fill-muted-foreground [&_.recharts-curve.recharts-tooltip-cursor]:stroke-border [&_.recharts-dot[stroke='#fff']]:stroke-transparent [&_.recharts-layer]:outline-hidden [&_.recharts-sector]:outline-hidden [&_.recharts-surface]:outline-hidden",
+        "flex aspect-video justify-center text-xs text-chart-legend [&_.recharts-cartesian-axis-tick_text]:fill-chart-axis [&_.recharts-curve.recharts-tooltip-cursor]:stroke-[var(--chart-grid)] [&_.recharts-dot[stroke='#fff']]:stroke-transparent [&_.recharts-layer]:outline-hidden [&_.recharts-legend-item-text]:!text-chart-legend [&_.recharts-sector]:outline-hidden [&_.recharts-surface]:outline-hidden",
         className,
       )}
       {...props}
@@ -42,9 +42,9 @@ function ChartTooltipContent({
   if (!active || !payload?.length) return null;
 
   return (
-    <div className="grid min-w-32 gap-1.5 rounded-lg border bg-background/95 px-2.5 py-2 text-xs shadow-xl shadow-primary/10 backdrop-blur">
+    <div className="grid min-w-32 gap-1.5 rounded-lg border bg-popover/95 px-2.5 py-2 text-xs text-popover-foreground shadow-xl shadow-primary/10 backdrop-blur">
       {label ? (
-        <div className="font-medium text-foreground">
+        <div className="font-medium text-popover-foreground">
           {labelFormatter ? labelFormatter(String(label)) : label}
         </div>
       ) : null}
@@ -62,10 +62,10 @@ function ChartTooltipContent({
                 className="size-2.5 shrink-0 rounded-[2px]"
                 style={{ backgroundColor: item.color }}
               />
-              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+              <span className="min-w-0 flex-1 truncate text-chart-legend">
                 {item.name}
               </span>
-              <span className="font-mono font-medium text-foreground">
+              <span className="font-mono font-medium text-popover-foreground">
                 {valueFormatter(value)}
               </span>
             </div>

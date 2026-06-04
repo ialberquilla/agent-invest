@@ -51,14 +51,14 @@ const CHART_COLORS = [
 ];
 
 const CHART_AXIS_PROPS = {
-  stroke: "#888888",
+  stroke: "var(--chart-axis)",
   fontSize: 12,
   tickLine: false,
   axisLine: false,
 } as const;
 
-const STRATEGY_SERIES_COLOR = "#2563eb";
-const BITCOIN_SERIES_COLOR = "#f97316";
+const STRATEGY_SERIES_COLOR = "var(--chart-1)";
+const BITCOIN_SERIES_COLOR = "var(--chart-4)";
 
 function hasValue(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -156,7 +156,7 @@ function EquityCurveChart({ data }: { data: StrategyEquityPoint[] | null }) {
             {...CHART_AXIS_PROPS}
           />
           <Tooltip
-            cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }}
+            cursor={{ stroke: "var(--chart-grid)", strokeDasharray: "3 3" }}
             content={
               <ChartTooltipContent
                 labelFormatter={formatDate}
@@ -164,7 +164,10 @@ function EquityCurveChart({ data }: { data: StrategyEquityPoint[] | null }) {
               />
             }
           />
-          <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+          <Legend
+            iconType="circle"
+            wrapperStyle={{ color: "var(--chart-legend)", fontSize: 12 }}
+          />
           <Area
             type="monotone"
             dataKey="strategy"
@@ -222,7 +225,7 @@ function DrawdownChart({ data }: { data: StrategyDrawdownPoint[] | null }) {
             {...CHART_AXIS_PROPS}
           />
           <Tooltip
-            cursor={{ stroke: "var(--border)", strokeDasharray: "3 3" }}
+            cursor={{ stroke: "var(--chart-grid)", strokeDasharray: "3 3" }}
             content={
               <ChartTooltipContent
                 labelFormatter={formatDate}
@@ -230,7 +233,10 @@ function DrawdownChart({ data }: { data: StrategyDrawdownPoint[] | null }) {
               />
             }
           />
-          <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+          <Legend
+            iconType="circle"
+            wrapperStyle={{ color: "var(--chart-legend)", fontSize: 12 }}
+          />
           <Area
             type="monotone"
             dataKey="strategy"
@@ -337,7 +343,7 @@ function ReportSection({
   children: ReactNode;
 }) {
   return (
-    <section className="min-w-0 space-y-3 overflow-hidden rounded-xl border bg-card p-4 shadow-xs sm:p-5">
+    <section className="min-w-0 space-y-3 overflow-hidden rounded-xl border bg-card p-4 shadow-xs dark:bg-background/45 sm:p-5">
       <h2 className="font-heading text-base font-semibold tracking-tight">
         {title}
       </h2>
@@ -352,7 +358,7 @@ function TextList({ items }: { items: string[] }) {
   }
 
   return (
-    <ul className="space-y-2 text-sm leading-6">
+    <ul className="space-y-2 text-sm leading-6 text-subtle-foreground">
       {items.map((item, index) => (
         <li key={`${item}-${index}`} className="rounded-lg bg-muted/50 p-3">
           {item}
@@ -375,7 +381,7 @@ export function StrategyResultReport({
   const normalizedCapital = backtest.capital_mode === "normalized";
 
   return (
-    <Card className="overflow-hidden shadow-xs">
+    <Card className="overflow-hidden border-border/80 shadow-xs">
       <CardHeader className="border-b">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="space-y-2">
@@ -390,7 +396,7 @@ export function StrategyResultReport({
         </div>
       </CardHeader>
       <CardContent className="space-y-5 p-4 sm:p-6">
-        <p className="text-base leading-7 text-muted-foreground">
+        <p className="max-w-5xl text-base leading-7 text-subtle-foreground">
           {formatMissing(result.summary)}
         </p>
 
@@ -398,7 +404,7 @@ export function StrategyResultReport({
           {KPI_ITEMS.map((item) => (
             <div
               key={item.key}
-              className="rounded-lg border bg-card px-3 py-2.5 shadow-xs"
+              className="rounded-lg border bg-card px-3 py-2.5 shadow-xs dark:bg-background/45"
             >
               <div className="truncate text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                 {item.label}
@@ -428,7 +434,7 @@ export function StrategyResultReport({
                 <h3 className="font-heading text-sm font-semibold tracking-tight">
                   Target allocation
                 </h3>
-                <p className="text-sm text-muted-foreground">
+                <p className="text-sm text-subtle-foreground">
                   The proposed target weights used for the selected backtest.
                 </p>
               </div>
@@ -438,7 +444,7 @@ export function StrategyResultReport({
                   <h3 className="font-heading text-sm font-semibold tracking-tight">
                     Final drifted allocation
                   </h3>
-                  <p className="mt-1 text-sm text-muted-foreground">
+                  <p className="mt-1 text-sm text-subtle-foreground">
                     Buy-and-hold weights can drift away from target weights over
                     time.
                   </p>
@@ -456,7 +462,7 @@ export function StrategyResultReport({
                 <h3 className="font-heading text-sm font-semibold tracking-tight">
                   Selected assets
                 </h3>
-                <p className="text-sm text-muted-foreground">
+                <p className="text-sm text-subtle-foreground">
                   Weights and rationale behind the proposed allocation.
                 </p>
               </div>
@@ -465,7 +471,7 @@ export function StrategyResultReport({
                   {allocation.map((item, index) => (
                     <div
                       key={`${item.asset}-${item.symbol ?? index}`}
-                      className="rounded-xl border bg-card p-3 shadow-xs"
+                      className="rounded-xl border bg-card p-3 shadow-xs dark:bg-background/45"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0">
@@ -482,7 +488,7 @@ export function StrategyResultReport({
                           {formatPercent(item.weight)}
                         </Badge>
                       </div>
-                      <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                      <p className="mt-2 text-sm leading-6 text-subtle-foreground">
                         {formatMissing(item.rationale)}
                       </p>
                     </div>
@@ -528,7 +534,7 @@ export function StrategyResultReport({
         </ReportSection>
 
         <ReportSection title="Reasoning">
-          <p className="text-sm leading-6 text-muted-foreground">
+          <p className="text-sm leading-6 text-subtle-foreground">
             {formatMissing(result.reasoning)}
           </p>
         </ReportSection>

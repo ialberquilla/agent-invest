@@ -118,7 +118,7 @@ export function MessageList({
           ) : (
             <div
               className={cn(
-                "max-w-6xl rounded-xl text-[0.95rem] leading-7 text-foreground",
+                "max-w-3xl rounded-xl text-[0.95rem] leading-7 text-foreground",
                 isInspectable &&
                   "-mx-2 cursor-pointer px-2 py-1 transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               )}
