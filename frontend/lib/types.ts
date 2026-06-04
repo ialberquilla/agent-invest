@@ -17,6 +17,54 @@ export type StrategyResult = {
   charts: StrategyCharts;
 };
 
+export type ScreenerResult = {
+  type: "market_screener";
+  version: 1;
+  title: string;
+  summary: string;
+  definition: {
+    factor: "momentum" | "risk_adjusted" | "low_volatility";
+    limit: number;
+    gmx_only: boolean;
+    as_of?: string;
+  };
+  rows: ScreenerRow[];
+  notes: string[];
+};
+
+export type ScreenerRow = {
+  rank: number;
+  source_rank: number;
+  coin_id: string;
+  symbol: string;
+  market_name: string | null;
+  is_gmx_tradeable: boolean;
+  factor_values: Record<string, number | null>;
+  metrics: ScreenerMetric[];
+  actions: {
+    long: { enabled: boolean; label: string };
+    short: { enabled: boolean; label: string };
+  };
+  gmx_market: null | {
+    chain: "arbitrum";
+    market_token: string;
+    index_token: string;
+    long_token: string;
+    short_token: string;
+    collateral_token: string;
+    collateral_decimals: number;
+  };
+};
+
+export type ScreenerMetric = {
+  id: string;
+  label: string;
+  value: number | null;
+  format: "percent" | "number";
+};
+
+export type StructuredChatResult = StrategyResult | ScreenerResult;
+
 export type StrategyAllocationItem = {
   asset: string;
   symbol?: string | null;

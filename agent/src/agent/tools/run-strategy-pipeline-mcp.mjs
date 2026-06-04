@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 const PROTOCOL_VERSION = "2024-11-05";
-const TOOL_NAME = "run_strategy_pipeline";
+const RUN_STRATEGY_PIPELINE_TOOL_NAME = "run_strategy_pipeline";
+const SCREEN_MARKETS_TOOL_NAME = "screen_markets";
 
 let framing = "line";
 let buffer = Buffer.alloc(0);
@@ -80,7 +81,7 @@ async function handleRequest(message) {
     case "ping":
       return {};
     case "tools/list":
-      return { tools: [toolDefinition()] };
+      return { tools: [runStrategyPipelineToolDefinition(), screenMarketsToolDefinition()] };
     case "tools/call":
       return callTool(message.params);
     default:
@@ -90,9 +91,9 @@ async function handleRequest(message) {
   }
 }
 
-function toolDefinition() {
+function runStrategyPipelineToolDefinition() {
   return {
-    name: TOOL_NAME,
+    name: RUN_STRATEGY_PIPELINE_TOOL_NAME,
     description:
       "Start an asynchronous Agent Invest strategy research workflow from an investment brief. Use only when the user asks to build, test, run, launch, or evaluate a strategy.",
     inputSchema: {
@@ -114,14 +115,55 @@ function toolDefinition() {
   };
 }
 
+function screenMarketsToolDefinition() {
+  return {
+    name: SCREEN_MARKETS_TOOL_NAME,
+    description:
+      "Return a read-only structured crypto market screener backed by rank_universe and GMX V2 market resolution. Use for top momentum, Sharpe, or low-volatility ticker screens; do not start a strategy pipeline.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "The user's screener request in plain language.",
+        },
+        factor: {
+          type: "string",
+          enum: ["momentum", "risk_adjusted", "low_volatility"],
+          description: "The ranking family to use.",
+        },
+        limit: {
+          type: "integer",
+          minimum: 1,
+          maximum: 25,
+          description: "Maximum rows to return.",
+        },
+        gmxOnly: {
+          type: "boolean",
+          description:
+            "When true, return only rows resolved to executable Arbitrum GMX V2 markets. Defaults to true.",
+        },
+      },
+      required: ["query"],
+      additionalProperties: false,
+    },
+  };
+}
+
 async function callTool(params) {
-  if (params?.name !== TOOL_NAME) {
-    throw Object.assign(new Error(`Unknown tool: ${params?.name}`), {
-      code: -32602,
-    });
+  if (params?.name === RUN_STRATEGY_PIPELINE_TOOL_NAME) {
+    return callRunStrategyPipeline(params.arguments ?? {});
+  }
+  if (params?.name === SCREEN_MARKETS_TOOL_NAME) {
+    return callScreenMarkets(params.arguments ?? {});
   }
 
-  const args = params.arguments ?? {};
+  throw Object.assign(new Error(`Unknown tool: ${params?.name}`), {
+    code: -32602,
+  });
+}
+
+async function callRunStrategyPipeline(args) {
   const brief = typeof args.brief === "string" ? args.brief.trim() : "";
   const chatSessionId =
     typeof args.chat_session_id === "string" ? args.chat_session_id.trim() : "";
@@ -145,6 +187,43 @@ async function callTool(params) {
     method: "POST",
     headers,
     body: JSON.stringify({ brief, chat_session_id: chatSessionId }),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(text || `Agent API returned ${response.status}`);
+  }
+
+  const payload = text ? JSON.parse(text) : {};
+  return {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(payload),
+      },
+    ],
+  };
+}
+
+async function callScreenMarkets(args) {
+  const query = typeof args.query === "string" ? args.query.trim() : "";
+  if (!query) {
+    throw Object.assign(new Error("query is required"), { code: -32602 });
+  }
+  const body = { query };
+  if (args.factor !== undefined) body.factor = args.factor;
+  if (args.limit !== undefined) body.limit = args.limit;
+  if (args.gmxOnly !== undefined) body.gmxOnly = args.gmxOnly;
+
+  const url = new URL("/internal/tools/screen-markets", agentToolUrl());
+  const headers = { "content-type": "application/json" };
+  if (process.env.AGENT_API_KEY) {
+    headers["x-api-key"] = process.env.AGENT_API_KEY;
+  }
+
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
   });
   const text = await response.text();
   if (!response.ok) {

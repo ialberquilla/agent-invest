@@ -1,4 +1,4 @@
-import type { ArtifactRef, StrategyResult } from "@/lib/types";
+import type { ArtifactRef, ScreenerResult, StructuredChatResult } from "@/lib/types";
 
 export type ChatMessage = {
   role: "user" | "agent";
@@ -7,7 +7,7 @@ export type ChatMessage = {
   status?: string;
   error?: string;
   artifacts?: ArtifactRef[];
-  structured_result?: StrategyResult | null;
+  structured_result?: StructuredChatResult | null;
 };
 
 export type KnownStrategy = {
@@ -20,7 +20,15 @@ const STRATEGY_ID_KEY = "agent-invest:strategy-id";
 const KNOWN_STRATEGIES_KEY = "agent-invest:known-strategies";
 const ANONYMOUS_USER_ID_KEY = "agent-invest:anonymous-user-id";
 const MESSAGE_KEY_PREFIX = "agent-invest:messages:";
+const PINNED_SCREENERS_KEY = "agent-invest:pinned-screeners";
 const STRATEGY_LABEL_MAX_LENGTH = 40;
+
+export type PinnedScreener = {
+  id: string;
+  label: string;
+  definition: ScreenerResult["definition"];
+  updated_at: string;
+};
 
 export const EMPTY_STRATEGY_LABEL = "(empty)";
 
@@ -88,6 +96,35 @@ function isKnownStrategy(value: unknown): value is KnownStrategy {
     isNonEmptyString(strategy.label) &&
     isNonEmptyString(strategy.created_at)
   );
+}
+
+function isPinnedScreener(value: unknown): value is PinnedScreener {
+  if (!isRecord(value) || !isRecord(value.definition)) return false;
+  const definition = value.definition;
+  return (
+    isNonEmptyString(value.id) &&
+    isNonEmptyString(value.label) &&
+    isNonEmptyString(value.updated_at) &&
+    (definition.factor === "momentum" ||
+      definition.factor === "risk_adjusted" ||
+      definition.factor === "low_volatility") &&
+    typeof definition.limit === "number" &&
+    typeof definition.gmx_only === "boolean"
+  );
+}
+
+function screenerId(definition: ScreenerResult["definition"]) {
+  return [
+    definition.factor,
+    definition.limit,
+    definition.gmx_only ? "gmx" : "all",
+    definition.as_of ?? "latest",
+  ].join(":");
+}
+
+function writePinnedScreeners(screeners: PinnedScreener[]) {
+  if (!canUseLocalStorage()) return;
+  window.localStorage.setItem(PINNED_SCREENERS_KEY, JSON.stringify(screeners));
 }
 
 function parseStoredJson<T>(
@@ -249,4 +286,37 @@ export function setMessages(strategyId: string, messages: ChatMessage[]) {
   }
 
   window.localStorage.setItem(messageKey(strategyId), JSON.stringify(messages));
+}
+
+export function getPinnedScreeners() {
+  const screeners = parseStoredJson(
+    PINNED_SCREENERS_KEY,
+    (value): value is PinnedScreener[] =>
+      Array.isArray(value) && value.every((entry) => isPinnedScreener(entry)),
+  );
+  return screeners ?? [];
+}
+
+export function isScreenerPinned(definition: ScreenerResult["definition"]) {
+  const id = screenerId(definition);
+  return getPinnedScreeners().some((screener) => screener.id === id);
+}
+
+export function pinScreener(result: ScreenerResult) {
+  const id = screenerId(result.definition);
+  const pinned: PinnedScreener = {
+    id,
+    label: result.title,
+    definition: result.definition,
+    updated_at: new Date().toISOString(),
+  };
+  const current = getPinnedScreeners().filter((screener) => screener.id !== id);
+  writePinnedScreeners([pinned, ...current]);
+}
+
+export function unpinScreener(definition: ScreenerResult["definition"]) {
+  const id = screenerId(definition);
+  writePinnedScreeners(
+    getPinnedScreeners().filter((screener) => screener.id !== id),
+  );
 }

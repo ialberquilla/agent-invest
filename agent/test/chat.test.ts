@@ -30,12 +30,14 @@ function createRunDbDouble(insertedRuns: unknown[]) {
   };
 }
 
-test("chat agent exposes exactly run_strategy_pipeline", () => {
+test("chat agent exposes strategy pipeline and screener tools", () => {
   assert.deepEqual(Object.keys(CHAT_ALLOWED_TOOLS), [
     "agent_invest_run_strategy_pipeline",
+    "agent_invest_screen_markets",
   ]);
   assert.deepEqual(CHAT_ALLOWED_TOOLS, {
     agent_invest_run_strategy_pipeline: true,
+    agent_invest_screen_markets: true,
   });
 });
 

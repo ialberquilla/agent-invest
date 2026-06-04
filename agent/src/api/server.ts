@@ -25,6 +25,10 @@ import type {
 } from "../agent/workflow/state";
 import { pgPool } from "../db/client";
 import {
+  screenMarkets as defaultScreenMarkets,
+  type ScreenMarketsInput,
+} from "../tools/screen-markets";
+import {
   listStageEventsByRunId as defaultListStageEventsByRunId,
   subscribeAgentEvents as defaultSubscribeAgentEvents,
   type ListStageEventsFilters,
@@ -124,6 +128,7 @@ type ServerDependencies = {
       chatSessionId?: string,
     ): Promise<{ run_id: string }>;
   };
+  screenMarkets?: typeof defaultScreenMarkets;
   apiKey?: string | null;
   ingestionRunners?: Partial<IngestionRunners>;
   repositories?: Partial<Repositories>;
@@ -206,6 +211,55 @@ function requiredStringArray(body: Record<string, unknown>, key: string) {
     return value;
   }
   throw httpError(400, `Request body field '${key}' must be a string array`);
+}
+
+function optionalPositiveInteger(
+  body: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const value = body[key];
+  if (value === undefined || value === null) return undefined;
+  const parsed = typeof value === "string" ? Number(value) : value;
+  if (!Number.isInteger(parsed) || (parsed as number) < 1) {
+    throw httpError(400, `Request body field '${key}' must be a positive integer`);
+  }
+  return parsed as number;
+}
+
+function parseScreenMarketsInput(body: Record<string, unknown>): ScreenMarketsInput {
+  const factor = body.factor;
+  if (
+    factor !== undefined &&
+    factor !== "momentum" &&
+    factor !== "risk_adjusted" &&
+    factor !== "low_volatility"
+  ) {
+    throw httpError(400, "Request body field 'factor' is invalid");
+  }
+
+  const query = body.query;
+  const asOf = body.asOf ?? body.as_of;
+  const gmxOnly = body.gmxOnly ?? body.gmx_only;
+  if (query !== undefined && typeof query !== "string") {
+    throw httpError(400, "Request body field 'query' must be a string");
+  }
+  if (asOf !== undefined && typeof asOf !== "string") {
+    throw httpError(400, "Request body field 'asOf' must be a string");
+  }
+  if (gmxOnly !== undefined && typeof gmxOnly !== "boolean") {
+    throw httpError(400, "Request body field 'gmxOnly' must be a boolean");
+  }
+  const limit = optionalPositiveInteger(body, "limit");
+  const timeoutSeconds = optionalPositiveInteger(body, "timeoutSeconds");
+
+  return {
+    ...(typeof query === "string" ? { query } : {}),
+    ...(factor ? { factor } : {}),
+    ...(gmxOnly !== undefined ? { gmxOnly } : {}),
+    ...(typeof asOf === "string" ? { asOf } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+    ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
+  };
 }
 
 function parseAllocationWizardParams(value: unknown): AllocationWizardParams {
@@ -835,6 +889,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   const subscribeAgentEvents =
     dependencies.subscribeAgentEvents ?? defaultSubscribeAgentEvents;
   const executeChatAgent = dependencies.chatAgent ?? chatAgent;
+  const executeScreenMarkets = dependencies.screenMarkets ?? defaultScreenMarkets;
   const subscribeStageRunChanges =
     dependencies.subscribeToStageRunChanges ?? subscribeToStageRunChanges;
   const repositories: Repositories = {
@@ -1264,6 +1319,24 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     return executeChatAgent.runStrategyPipeline({ brief }, chatSessionId);
   });
 
+  app.post("/internal/tools/screen-markets", async (request) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    if (!isRecord(body)) {
+      throw httpError(400, "Request body must be a JSON object");
+    }
+
+    return executeScreenMarkets(parseScreenMarketsInput(body));
+  });
+
+  app.post("/screeners/markets", async (request) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    if (!isRecord(body)) {
+      throw httpError(400, "Request body must be a JSON object");
+    }
+
+    return executeScreenMarkets(parseScreenMarketsInput(body));
+  });
+
   app.post("/chat/messages", async (request) => {
     const body = (request.body ?? {}) as Record<string, unknown>;
     if (!isRecord(body)) {
@@ -1288,6 +1361,9 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       content: response.content,
       opencode_session_id: response.opencode_session_id,
       ...(response.run_id ? { run_id: response.run_id } : {}),
+      ...(response.structured_result
+        ? { structured_result: response.structured_result }
+        : {}),
     };
   });
 
