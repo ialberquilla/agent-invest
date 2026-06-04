@@ -30,7 +30,7 @@ export function StrategySidebar({
         </span>
         <span className="font-heading text-sm font-semibold tracking-tight">
           <span>Pond</span>
-          <span className="text-muted-foreground">3r</span>
+          <span className="text-sidebar-foreground/75">3r</span>
         </span>
       </div>
 
@@ -47,7 +47,7 @@ export function StrategySidebar({
       </div>
 
       <div className="px-4 pb-1 pt-4">
-        <p className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/75">
           Strategies
         </p>
       </div>
@@ -55,7 +55,7 @@ export function StrategySidebar({
       <ScrollArea className="min-h-0 flex-1">
         <div className="flex flex-col gap-0.5 px-2 pb-3">
           {strategies.length === 0 ? (
-            <p className="px-2.5 py-2 text-xs text-muted-foreground">
+            <p className="px-2.5 py-2 text-xs text-sidebar-foreground/75">
               Known strategies will appear here.
             </p>
           ) : null}
@@ -71,13 +71,20 @@ export function StrategySidebar({
                 disabled={disabled}
                 title={strategy.strategy_id}
                 className={cn(
-                  "flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition-colors disabled:pointer-events-none disabled:opacity-50",
+                  "relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
                   isActive
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                    ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm ring-1 ring-sidebar-border before:absolute before:bottom-2 before:left-0 before:top-2 before:w-1 before:rounded-full before:bg-sidebar-primary"
                     : "text-sidebar-foreground hover:bg-sidebar-accent/60",
                 )}
               >
-                <MessageSquare className="size-4 shrink-0 text-muted-foreground" />
+                <MessageSquare
+                  className={cn(
+                    "size-4 shrink-0",
+                    isActive
+                      ? "text-sidebar-accent-foreground"
+                      : "text-sidebar-foreground/75",
+                  )}
+                />
                 <span className="truncate">{strategy.label}</span>
               </button>
             );
