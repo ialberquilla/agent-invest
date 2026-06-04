@@ -29,7 +29,7 @@ Answer general investing and quantitative-finance questions clearly and directly
 You have exactly one tool available:
 - ${RUN_STRATEGY_PIPELINE_TOOL}({ brief, chat_session_id }): starts an asynchronous strategy pipeline from the user's brief and returns { run_id } immediately.
 
-Use ${RUN_STRATEGY_PIPELINE_TOOL} only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy. Do not use it for ordinary educational or conversational questions. Never claim to know pipeline internals or final results; progress and results are delivered through the run's event streams.`;
+Use ${RUN_STRATEGY_PIPELINE_TOOL} only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy. Do not use it for ordinary educational or conversational questions. When recent strategy pipeline run context is provided, use it to answer follow-up questions about those prior runs. Never invent unavailable details; progress and new run results are delivered through the run's event streams.`;
 
 export const CHAT_ALLOWED_TOOLS = {
   [RUN_STRATEGY_PIPELINE_TOOL]: true,
@@ -209,6 +209,7 @@ async function strategyRunContext(db: Db, chatSessionId: string) {
         typeof structured.summary === "string" ? structured.summary : run.reply;
       const brief = formatBrief(metadata.brief);
       const metrics = formatRunMetrics(structured);
+      const benchmark = formatBenchmarkComparison(structured);
       const details = [
         `run_id=${run.runId}`,
         `status=${run.status}`,
@@ -216,6 +217,7 @@ async function strategyRunContext(db: Db, chatSessionId: string) {
         title ? `title=${title}` : "",
         summary ? `summary=${summary}` : "",
         metrics,
+        benchmark,
         run.error ? `error=${run.error}` : "",
       ].filter(Boolean);
       return `- ${details.join("; ")}`;
@@ -461,4 +463,72 @@ function metric(label: string, value: unknown) {
   return typeof value === "number" && Number.isFinite(value)
     ? `${label}=${value}`
     : "";
+}
+
+function formatBenchmarkComparison(structured: Record<string, unknown>) {
+  const charts = isRecord(structured.charts) ? structured.charts : {};
+  const equityCurve = Array.isArray(charts.equity_curve)
+    ? charts.equity_curve.filter(isRecord)
+    : [];
+  const drawdown = Array.isArray(charts.drawdown)
+    ? charts.drawdown.filter(isRecord)
+    : [];
+  const first = equityCurve.find(
+    (point) =>
+      isFiniteNumber(point.strategy_equity) &&
+      isFiniteNumber(point.benchmark_equity),
+  );
+  const last = equityCurve
+    .slice()
+    .reverse()
+    .find(
+      (point) =>
+        isFiniteNumber(point.strategy_equity) &&
+        isFiniteNumber(point.benchmark_equity),
+    );
+
+  if (!first || !last) return "";
+
+  const firstStrategy = first.strategy_equity as number;
+  const lastStrategy = last.strategy_equity as number;
+  const firstBenchmark = first.benchmark_equity as number;
+  const lastBenchmark = last.benchmark_equity as number;
+  if (firstStrategy === 0 || firstBenchmark === 0) return "";
+
+  const strategyReturn = lastStrategy / firstStrategy - 1;
+  const benchmarkReturn = lastBenchmark / firstBenchmark - 1;
+  const benchmarkDrawdown = minFinite(
+    drawdown.map((point) => point.benchmark_drawdown),
+  );
+  const comparison = [
+    `strategy_return=${formatPercent(strategyReturn)}`,
+    `benchmark_return=${formatPercent(benchmarkReturn)}`,
+    `excess_return=${formatPercent(strategyReturn - benchmarkReturn)}`,
+    `strategy_final_equity=${formatNumber(lastStrategy)}`,
+    `benchmark_final_equity=${formatNumber(lastBenchmark)}`,
+    benchmarkDrawdown === null
+      ? ""
+      : `benchmark_max_drawdown=${formatPercent(benchmarkDrawdown)}`,
+  ].filter(Boolean);
+
+  return comparison.length > 0
+    ? `benchmark_comparison=${comparison.join(", ")}`
+    : "";
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function minFinite(values: unknown[]) {
+  const finite = values.filter(isFiniteNumber);
+  return finite.length > 0 ? Math.min(...finite) : null;
+}
+
+function formatPercent(value: number) {
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+function formatNumber(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }
