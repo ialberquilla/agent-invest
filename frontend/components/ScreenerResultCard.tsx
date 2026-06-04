@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pin, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -22,8 +22,10 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import {
+  getAnonymousUserId,
   isScreenerPinned,
   pinScreener,
+  screenerId,
   unpinScreener,
 } from "@/lib/local-store";
 import type { ScreenerResult, ScreenerRow } from "@/lib/types";
@@ -47,21 +49,64 @@ export function ScreenerResultCard({ result }: ScreenerResultCardProps) {
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [ticket, setTicket] = useState<OrderTicket | null>(null);
 
+  useEffect(() => {
+    let isActive = true;
+    async function loadPinnedState() {
+      const userId = getAnonymousUserId();
+      if (!userId) return;
+      try {
+        const response = await fetch(
+          `/api/screeners/pins?user_id=${encodeURIComponent(userId)}`,
+          { cache: "no-store" },
+        );
+        const payload = (await response.json().catch(() => null)) as unknown;
+        if (!response.ok || !Array.isArray(payload)) return;
+        const id = screenerId(result.definition);
+        if (isActive) {
+          setIsPinned(
+            payload.some(
+              (entry) =>
+                entry &&
+                typeof entry === "object" &&
+                (entry as { id?: unknown }).id === id,
+            ),
+          );
+        }
+      } catch {
+        // Local fallback state remains usable if the API is unavailable.
+      }
+    }
+    void loadPinnedState();
+    return () => {
+      isActive = false;
+    };
+  }, [result.definition]);
+
   async function refresh() {
     setIsRefreshing(true);
     setRefreshError(null);
     try {
-      const response = await fetch("/api/screeners/markets", {
+      const userId = getAnonymousUserId();
+      const response = await fetch(
+        isPinned && userId
+          ? `/api/screeners/pins/${encodeURIComponent(screenerId(current.definition))}/refresh`
+          : "/api/screeners/markets",
+        {
         method: "POST",
         headers: { "content-type": "application/json" },
         cache: "no-store",
-        body: JSON.stringify({
-          factor: current.definition.factor,
-          limit: current.definition.limit,
-          gmxOnly: current.definition.gmx_only,
-          asOf: current.definition.as_of,
-        }),
-      });
+        body: JSON.stringify(
+          isPinned && userId
+            ? { user_id: userId }
+            : {
+                factor: current.definition.factor,
+                limit: current.definition.limit,
+                gmxOnly: current.definition.gmx_only,
+                asOf: current.definition.as_of,
+              },
+        ),
+      },
+      );
       const payload = (await response.json().catch(() => null)) as unknown;
       if (!response.ok || !isScreenerResult(payload)) {
         throw new Error("Unable to refresh screener");
@@ -78,10 +123,28 @@ export function ScreenerResultCard({ result }: ScreenerResultCardProps) {
   }
 
   function togglePin() {
+    const userId = getAnonymousUserId();
     if (isPinned) {
+      if (userId) {
+        void fetch(
+          `/api/screeners/pins/${encodeURIComponent(screenerId(current.definition))}?user_id=${encodeURIComponent(userId)}`,
+          { method: "DELETE" },
+        ).catch(() => null);
+      }
       unpinScreener(current.definition);
       setIsPinned(false);
       return;
+    }
+    if (userId) {
+      void fetch("/api/screeners/pins", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          user_id: userId,
+          title: current.title,
+          definition: current.definition,
+        }),
+      }).catch(() => null);
     }
     pinScreener(current);
     setIsPinned(true);

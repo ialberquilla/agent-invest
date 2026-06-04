@@ -63,6 +63,14 @@ import {
   readVaultForMandate as defaultReadVaultForMandate,
 } from "../db/repositories/vaults";
 import {
+  deletePinnedScreener as defaultDeletePinnedScreener,
+  listPinnedScreeners as defaultListPinnedScreeners,
+  markPinnedScreenerRefreshed as defaultMarkPinnedScreenerRefreshed,
+  readPinnedScreener as defaultReadPinnedScreener,
+  upsertPinnedScreener as defaultUpsertPinnedScreener,
+  type PinnedScreenerDefinition,
+} from "../db/repositories/pinned-screeners";
+import {
   runCoinGeckoMarketCapIngestion,
   toUtcDayTimestamp,
   type CoinGeckoMarketCapOptions,
@@ -92,6 +100,11 @@ type Repositories = {
   insertMandate: typeof defaultInsertMandate;
   bindVaultToMandate: typeof defaultBindVaultToMandate;
   readVaultForMandate: typeof defaultReadVaultForMandate;
+  listPinnedScreeners: typeof defaultListPinnedScreeners;
+  upsertPinnedScreener: typeof defaultUpsertPinnedScreener;
+  readPinnedScreener: typeof defaultReadPinnedScreener;
+  deletePinnedScreener: typeof defaultDeletePinnedScreener;
+  markPinnedScreenerRefreshed: typeof defaultMarkPinnedScreenerRefreshed;
 };
 type IngestionRunners = {
   gmx: (options: GmxHistoryOptions) => Promise<GmxHistorySummary>;
@@ -259,6 +272,31 @@ function parseScreenMarketsInput(body: Record<string, unknown>): ScreenMarketsIn
     ...(typeof asOf === "string" ? { asOf } : {}),
     ...(limit !== undefined ? { limit } : {}),
     ...(timeoutSeconds !== undefined ? { timeoutSeconds } : {}),
+  };
+}
+
+function parsePinnedScreenerDefinition(
+  value: unknown,
+): PinnedScreenerDefinition {
+  if (!isRecord(value)) {
+    throw httpError(400, "Request body field 'definition' must be an object");
+  }
+  const input = parseScreenMarketsInput(value);
+  if (!input.factor) {
+    throw httpError(400, "Screener definition must include 'factor'");
+  }
+  if (input.limit === undefined) {
+    throw httpError(400, "Screener definition must include 'limit'");
+  }
+  if (input.gmxOnly === undefined) {
+    throw httpError(400, "Screener definition must include 'gmx_only'");
+  }
+
+  return {
+    factor: input.factor,
+    limit: input.limit,
+    gmx_only: input.gmxOnly,
+    ...(input.asOf ? { as_of: input.asOf } : {}),
   };
 }
 
@@ -909,6 +947,11 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     insertMandate: defaultInsertMandate,
     bindVaultToMandate: defaultBindVaultToMandate,
     readVaultForMandate: defaultReadVaultForMandate,
+    listPinnedScreeners: defaultListPinnedScreeners,
+    upsertPinnedScreener: defaultUpsertPinnedScreener,
+    readPinnedScreener: defaultReadPinnedScreener,
+    deletePinnedScreener: defaultDeletePinnedScreener,
+    markPinnedScreenerRefreshed: defaultMarkPinnedScreenerRefreshed,
     ...dependencies.repositories,
   };
   const ingestionRunners: IngestionRunners = {
@@ -1336,6 +1379,63 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
     return executeScreenMarkets(parseScreenMarketsInput(body));
   });
+
+  app.get<{ Querystring: { user_id?: string } }>("/screeners/pins", async (request) => {
+    const userId = request.query.user_id?.trim();
+    if (!userId) throw httpError(400, "Query must include user_id");
+    return repositories.listPinnedScreeners(userId);
+  });
+
+  app.post("/screeners/pins", async (request) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    if (!isRecord(body)) {
+      throw httpError(400, "Request body must be a JSON object");
+    }
+    const userId = requiredText(body, "user_id");
+    const title = requiredText(body, "title");
+    const definition = parsePinnedScreenerDefinition(body.definition);
+
+    return repositories.upsertPinnedScreener({ userId, title, definition });
+  });
+
+  app.delete<{ Params: { id: string }; Querystring: { user_id?: string } }>(
+    "/screeners/pins/:id",
+    async (request) => {
+      const userId = request.query.user_id?.trim();
+      if (!userId) throw httpError(400, "Query must include user_id");
+      const count = await repositories.deletePinnedScreener(
+        userId,
+        request.params.id,
+      );
+      if (count === 0) throw httpError(404, "Pinned screener not found");
+      return { ok: true };
+    },
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/screeners/pins/:id/refresh",
+    async (request) => {
+      const body = (request.body ?? {}) as Record<string, unknown>;
+      if (!isRecord(body)) {
+        throw httpError(400, "Request body must be a JSON object");
+      }
+      const userId = requiredText(body, "user_id");
+      const pinned = await repositories.readPinnedScreener(
+        userId,
+        request.params.id,
+      );
+      if (!pinned) throw httpError(404, "Pinned screener not found");
+
+      const result = await executeScreenMarkets({
+        factor: pinned.definition.factor,
+        limit: pinned.definition.limit,
+        gmxOnly: pinned.definition.gmx_only,
+        ...(pinned.definition.as_of ? { asOf: pinned.definition.as_of } : {}),
+      });
+      await repositories.markPinnedScreenerRefreshed(userId, pinned.id);
+      return result;
+    },
+  );
 
   app.post("/chat/messages", async (request) => {
     const body = (request.body ?? {}) as Record<string, unknown>;
