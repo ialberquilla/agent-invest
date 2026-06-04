@@ -6,11 +6,12 @@ import { ArtifactGallery } from "@/components/ArtifactGallery";
 import { ChatEmptyState } from "@/components/ChatEmptyState";
 import { LiveActivity } from "@/components/LiveActivity";
 import { MarkdownMessage } from "@/components/MarkdownMessage";
+import { ScreenerResultCard } from "@/components/ScreenerResultCard";
 import { StrategyResultReport } from "@/components/StrategyResultReport";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { TimelinePart } from "@/lib/agent-events";
 import { ChatMessage } from "@/lib/local-store";
-import type { StrategyResult } from "@/lib/types";
+import type { ScreenerResult, StrategyResult, StructuredChatResult } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // A structured result is worth rendering as the full report card only
@@ -18,15 +19,22 @@ import { cn } from "@/lib/utils";
 // one finite KPI. A no_viable result (empty kpis/charts) falls back to
 // the plain text bubble.
 function reportWithData(
-  result: StrategyResult | null | undefined,
+  result: StructuredChatResult | null | undefined,
 ): StrategyResult | null {
-  if (!result) return null;
+  if (!result || isScreenerResult(result)) return null;
   const curve = result.charts?.equity_curve;
   const hasCurve = Array.isArray(curve) && curve.length > 0;
   const hasKpi = Object.values(result.kpis ?? {}).some(
     (value) => typeof value === "number" && Number.isFinite(value),
   );
   return hasCurve || hasKpi ? result : null;
+}
+
+function isScreenerResult(
+  result: StructuredChatResult | null | undefined,
+): result is ScreenerResult {
+  if (!result) return false;
+  return "type" in result && result.type === "market_screener";
 }
 
 type MessageListProps = {
@@ -100,11 +108,19 @@ export function MessageList({
             message.role === "agent" && !message.error
               ? reportWithData(message.structured_result)
               : null;
+          const screener =
+            message.role === "agent" && !message.error
+              ? isScreenerResult(message.structured_result)
+                ? message.structured_result
+                : null
+              : null;
 
           // User turns read as a compact right-aligned bubble; assistant turns
           // render as plain flowing text (Open WebUI style). Rich report cards
           // and errors are the exceptions and get their own treatment.
-          const body = report ? (
+          const body = screener ? (
+            <ScreenerResultCard result={screener} />
+          ) : report ? (
             <StrategyResultReport result={report} runId={runId ?? undefined} />
           ) : message.error ? (
             <div className="rounded-xl bg-destructive/10 px-4 py-3 text-sm leading-6 text-destructive ring-1 ring-destructive/20">

@@ -15,9 +15,15 @@ import {
   getOrCreateManagedOpencode,
   parseOpencodeModel,
   RUN_STRATEGY_PIPELINE_TOOL,
+  SCREEN_MARKETS_TOOL,
   resolveOpencodeModel,
   type ManagedOpencode,
 } from "./session";
+import {
+  screenMarkets as defaultScreenMarkets,
+  screenerRequestFromMessage,
+  type ScreenerResult,
+} from "../tools/screen-markets";
 import { createOpencodeLLMClient } from "./workflow/llm";
 import { runWorkflowAndPersist } from "./workflow/persist";
 import type { WizardBrief } from "./workflow/state";
@@ -26,13 +32,15 @@ export const CHAT_PROMPT = `You are the Agent Invest chat agent.
 
 Answer general investing and quantitative-finance questions clearly and directly. You can explain concepts, ask brief clarifying questions, and help the user shape an investment-strategy brief.
 
-You have exactly one tool available:
+You have exactly two tools available:
 - ${RUN_STRATEGY_PIPELINE_TOOL}({ brief, chat_session_id }): starts an asynchronous strategy pipeline from the user's brief and returns { run_id } immediately.
+- ${SCREEN_MARKETS_TOOL}({ query, factor, limit, gmxOnly }): returns a read-only structured market screener backed by ingested data and GMX market resolution.
 
-Use ${RUN_STRATEGY_PIPELINE_TOOL} only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy. Do not use it for ordinary educational or conversational questions. When recent strategy pipeline run context is provided, use it to answer follow-up questions about those prior runs. Never invent unavailable details; progress and new run results are delivered through the run's event streams.`;
+Use ${SCREEN_MARKETS_TOOL} for screener-style requests such as ranking top momentum, Sharpe, or low-volatility tickers. Use ${RUN_STRATEGY_PIPELINE_TOOL} only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy. Do not launch a strategy pipeline for a market screen, watchlist, or discretionary single-position trade idea. When recent strategy pipeline run context is provided, use it to answer follow-up questions about those prior runs. Never invent unavailable details; progress and new run results are delivered through the run's event streams.`;
 
 export const CHAT_ALLOWED_TOOLS = {
   [RUN_STRATEGY_PIPELINE_TOOL]: true,
+  [SCREEN_MARKETS_TOOL]: true,
 } as const;
 
 export type ChatAgentInput = {
@@ -45,6 +53,7 @@ export type ChatAgentResponse = {
   content: string;
   opencode_session_id: string;
   run_id?: string;
+  structured_result?: ScreenerResult;
 };
 
 export type ChatStreamEvent =
@@ -72,6 +81,7 @@ export type ChatAgentDependencies = {
   db?: Db;
   getManagedOpencode?: () => Promise<ManagedOpencode>;
   runWorkflow?: typeof runWorkflowAndPersist;
+  screenMarkets?: typeof defaultScreenMarkets;
   onBackgroundError?: (error: unknown, runId: string) => void;
   env?: NodeJS.ProcessEnv;
   appendEvent?: typeof defaultAppendEvent;
@@ -82,6 +92,7 @@ export type ChatAgentDependencies = {
 export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
   const db = dependencies.db ?? defaultDb;
   const executeWorkflow = dependencies.runWorkflow ?? runWorkflowAndPersist;
+  const executeScreenMarkets = dependencies.screenMarkets ?? defaultScreenMarkets;
   const getManagedOpencode =
     dependencies.getManagedOpencode ?? (() => getOrCreateManagedOpencode());
   const env = dependencies.env ?? process.env;
@@ -164,6 +175,19 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
         chat_session_id: input.chatSessionId,
         opencode_session_id: sessionId,
       });
+
+      const screenerRequest = screenerRequestFromMessage(message);
+      if (screenerRequest) {
+        const structuredResult = await executeScreenMarkets(screenerRequest);
+        const content = screenerReply(structuredResult);
+        await onEvent?.({ type: "chat.delta", content });
+        return {
+          content,
+          opencode_session_id: sessionId,
+          structured_result: structuredResult,
+        };
+      }
+
       const events = collectChatSessionEvents({
         managed,
         appendEvent,
@@ -208,6 +232,7 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
       }
 
       const runId = extractRunId(response.data);
+      const structuredResult = extractScreenerResult(response.data);
       const content = extractChatResponseText(response.data);
       if (content) await onEvent?.({ type: "chat.delta", content });
       if (runId) await onEvent?.({ type: "tool.updated", run_id: runId });
@@ -215,6 +240,7 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
         content,
         opencode_session_id: sessionId,
         ...(runId ? { run_id: runId } : {}),
+        ...(structuredResult ? { structured_result: structuredResult } : {}),
       };
     }
 }
@@ -474,6 +500,65 @@ function extractRunId(result: { parts?: unknown[] }) {
     }
   }
   return null;
+}
+
+function extractScreenerResult(result: { parts?: unknown[] }): ScreenerResult | null {
+  for (const part of result.parts ?? []) {
+    if (!part || typeof part !== "object") continue;
+    const toolPart = part as {
+      type?: unknown;
+      tool?: unknown;
+      state?: { output?: unknown };
+    };
+    if (toolPart.type !== "tool" || toolPart.tool !== SCREEN_MARKETS_TOOL) {
+      continue;
+    }
+
+    const parsed = parseToolOutput(toolPart.state?.output);
+    if (isScreenerResult(parsed)) return parsed;
+  }
+  return null;
+}
+
+function parseToolOutput(output: unknown): unknown {
+  const parsed = typeof output === "string" ? parseJson(output) : output;
+  if (!isRecord(parsed)) return parsed;
+
+  const content = parsed.content;
+  if (Array.isArray(content)) {
+    for (const entry of content) {
+      if (!isRecord(entry) || entry.type !== "text") continue;
+      const text = entry.text;
+      if (typeof text !== "string") continue;
+      const nested = parseJson(text);
+      if (nested) return nested;
+    }
+  }
+
+  return parsed;
+}
+
+function isScreenerResult(value: unknown): value is ScreenerResult {
+  return (
+    isRecord(value) &&
+    value.type === "market_screener" &&
+    value.version === 1 &&
+    typeof value.title === "string" &&
+    Array.isArray(value.rows)
+  );
+}
+
+function screenerReply(result: ScreenerResult) {
+  const rows = result.rows
+    .slice(0, 5)
+    .map((row) => `#${row.rank} ${row.symbol}`)
+    .join(", ");
+  return [
+    result.title,
+    result.summary,
+    rows ? `Top rows: ${rows}.` : "No GMX-tradeable rows matched the screen.",
+    "Use the Long/Short buttons on the card to open an order ticket preview; no transaction is submitted from chat.",
+  ].join("\n\n");
 }
 
 function parseJson(value: string) {

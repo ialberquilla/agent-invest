@@ -1613,3 +1613,43 @@ test("POST /chat/messages includes run_id when chat agent starts pipeline", asyn
     await app.close();
   }
 });
+
+test("POST /screeners/markets invokes screener and returns structured payload", async () => {
+  let receivedInput: unknown;
+  const app = buildServer({
+    async screenMarkets(input) {
+      receivedInput = input;
+      return {
+        type: "market_screener",
+        version: 1,
+        title: "GMX momentum screener",
+        summary: "Only GMX rows.",
+        definition: { factor: "momentum", limit: 3, gmx_only: true },
+        rows: [],
+        notes: [],
+      };
+    },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        factor: "momentum",
+        limit: 3,
+        gmxOnly: true,
+      },
+      url: "/screeners/markets",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(receivedInput, {
+      factor: "momentum",
+      limit: 3,
+      gmxOnly: true,
+    });
+    assert.equal(response.json().type, "market_screener");
+  } finally {
+    await app.close();
+  }
+});

@@ -25,7 +25,7 @@ import {
   upsertKnownStrategy,
 } from "@/lib/local-store";
 import { readSse } from "@/lib/sse";
-import type { Run } from "@/lib/types";
+import type { Run, StructuredChatResult } from "@/lib/types";
 import type { AllocationWizardState } from "@/lib/wizard-prompt";
 
 type ChatViewProps = {
@@ -84,6 +84,12 @@ function getChatContent(payload: unknown) {
   return isRecord(payload) && typeof payload.content === "string"
     ? payload.content
     : "";
+}
+
+function getChatStructuredResult(payload: unknown): StructuredChatResult | null {
+  return isRecord(payload) && isRecord(payload.structured_result)
+    ? (payload.structured_result as StructuredChatResult)
+    : null;
 }
 
 function getChatStreamPayload(data: string) {
@@ -229,6 +235,7 @@ export function ChatView({
         let finalRunId: string | null = null;
         let finalText = "";
         let finalStatus = "completed";
+        let finalStructuredResult: StructuredChatResult | null = null;
         for await (const sseMessage of readSse(response.body)) {
           const payload = getChatStreamPayload(sseMessage.data);
           if (!payload) continue;
@@ -252,6 +259,8 @@ export function ChatView({
           } else if (sseMessage.event === "chat.completed") {
             finalText = getChatContent(payload) || finalText;
             finalRunId = getChatRunId(payload) ?? finalRunId;
+            finalStructuredResult =
+              getChatStructuredResult(payload) ?? finalStructuredResult;
             finalStatus = finalRunId ? "running" : "completed";
           } else if (sseMessage.event === "chat.error") {
             const message =
@@ -274,6 +283,7 @@ export function ChatView({
             text: completedText,
             run_id: finalRunId ?? undefined,
             status: finalStatus,
+            structured_result: finalStructuredResult,
           },
         ]);
 
