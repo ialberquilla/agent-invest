@@ -30,8 +30,12 @@ function createRunDbDouble(insertedRuns: unknown[]) {
 }
 
 test("chat agent exposes exactly run_strategy_pipeline", () => {
-  assert.deepEqual(Object.keys(CHAT_ALLOWED_TOOLS), ["run_strategy_pipeline"]);
-  assert.deepEqual(CHAT_ALLOWED_TOOLS, { run_strategy_pipeline: true });
+  assert.deepEqual(Object.keys(CHAT_ALLOWED_TOOLS), [
+    "agent_invest_run_strategy_pipeline",
+  ]);
+  assert.deepEqual(CHAT_ALLOWED_TOOLS, {
+    agent_invest_run_strategy_pipeline: true,
+  });
 });
 
 test("runStrategyPipeline creates a run and does not await workflow completion", async () => {

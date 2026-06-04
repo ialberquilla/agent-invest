@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { eq, sql } from "drizzle-orm";
+import { desc, eq, sql } from "drizzle-orm";
 
 import { db as defaultDb } from "../db/client";
 import { appendEvent as defaultAppendEvent } from "../db/repositories/agent-events";
@@ -14,6 +14,7 @@ import {
   disabledOpencodeBuiltinsTools,
   getOrCreateManagedOpencode,
   parseOpencodeModel,
+  RUN_STRATEGY_PIPELINE_TOOL,
   resolveOpencodeModel,
   type ManagedOpencode,
 } from "./session";
@@ -26,12 +27,12 @@ export const CHAT_PROMPT = `You are the Agent Invest chat agent.
 Answer general investing and quantitative-finance questions clearly and directly. You can explain concepts, ask brief clarifying questions, and help the user shape an investment-strategy brief.
 
 You have exactly one tool available:
-- run_strategy_pipeline({ brief }): starts an asynchronous strategy pipeline from the user's brief and returns { run_id } immediately.
+- ${RUN_STRATEGY_PIPELINE_TOOL}({ brief, chat_session_id }): starts an asynchronous strategy pipeline from the user's brief and returns { run_id } immediately.
 
-Use run_strategy_pipeline only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy. Do not use it for ordinary educational or conversational questions. Never claim to know pipeline internals or final results; progress and results are delivered through the run's event streams.`;
+Use ${RUN_STRATEGY_PIPELINE_TOOL} only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy. Do not use it for ordinary educational or conversational questions. Never claim to know pipeline internals or final results; progress and results are delivered through the run's event streams.`;
 
 export const CHAT_ALLOWED_TOOLS = {
-  run_strategy_pipeline: true,
+  [RUN_STRATEGY_PIPELINE_TOOL]: true,
 } as const;
 
 export type ChatAgentInput = {
@@ -121,6 +122,7 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
         input.userId,
       );
 
+      const runContext = await strategyRunContext(db, input.chatSessionId);
       const abortEvents = new AbortController();
       const events = collectChatSessionEvents({
         managed,
@@ -138,7 +140,13 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
           path: { id: sessionId },
           body: {
             model: parseOpencodeModel(resolveOpencodeModel(env)),
-            system: CHAT_PROMPT,
+            system: [
+              CHAT_PROMPT,
+              `Current chat_session_id: ${input.chatSessionId}`,
+              runContext,
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
             tools: { ...disabledOpencodeBuiltinsTools(), ...CHAT_ALLOWED_TOOLS },
             parts: [{ type: "text", text: message }],
           },
@@ -158,15 +166,58 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
         });
       }
 
+      const runId = extractRunId(response.data);
       return {
         content: extractText(response.data),
         opencode_session_id: sessionId,
+        ...(runId ? { run_id: runId } : {}),
       };
     },
   };
 }
 
 export const chatAgent = createChatAgent();
+
+async function strategyRunContext(db: Db, chatSessionId: string) {
+  const recentRuns = await db
+    .select({
+      runId: runs.runId,
+      status: runs.status,
+      reply: runs.reply,
+      error: runs.error,
+      metadata: runs.metadata,
+      startedAt: runs.startedAt,
+    })
+    .from(runs)
+    .where(eq(runs.threadId, chatSessionId))
+    .orderBy(desc(runs.startedAt))
+    .limit(3);
+
+  if (recentRuns.length === 0) return "";
+
+  return [
+    "Recent strategy pipeline runs in this chat. Use this to understand follow-ups about previous strategies; do not invent unavailable results.",
+    ...recentRuns.map((run) => {
+      const metadata = isRecord(run.metadata) ? run.metadata : {};
+      const structured = isRecord(metadata.structured_result)
+        ? metadata.structured_result
+        : {};
+      const title = typeof structured.title === "string" ? structured.title : "";
+      const summary =
+        typeof structured.summary === "string" ? structured.summary : run.reply;
+      const brief = formatBrief(metadata.brief);
+      const details = [
+        `run_id=${run.runId}`,
+        `status=${run.status}`,
+        brief ? `brief=${brief}` : "",
+        title ? `title=${title}` : "",
+        summary ? `summary=${summary}` : "",
+        run.error ? `error=${run.error}` : "",
+      ].filter(Boolean);
+      return `- ${details.join("; ")}`;
+    }),
+  ].join("\n");
+}
 
 async function getOrCreateChatOpencodeSession(
   db: Db,
@@ -335,4 +386,46 @@ function extractText(result: { parts?: unknown[] }) {
     })
     .filter(Boolean)
     .join("\n");
+}
+
+function extractRunId(result: { parts?: unknown[] }) {
+  for (const part of result.parts ?? []) {
+    if (!part || typeof part !== "object") continue;
+    const toolPart = part as {
+      type?: unknown;
+      tool?: unknown;
+      state?: { output?: unknown };
+    };
+    if (
+      toolPart.type !== "tool" ||
+      toolPart.tool !== RUN_STRATEGY_PIPELINE_TOOL
+    ) {
+      continue;
+    }
+
+    const output = toolPart.state?.output;
+    const parsed = typeof output === "string" ? parseJson(output) : output;
+    if (isRecord(parsed) && typeof parsed.run_id === "string") {
+      return parsed.run_id;
+    }
+  }
+  return null;
+}
+
+function parseJson(value: string) {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function formatBrief(value: unknown) {
+  if (typeof value === "string") return value;
+  if (isRecord(value)) return JSON.stringify(value);
+  return "";
 }

@@ -25,6 +25,7 @@ import {
   upsertKnownStrategy,
 } from "@/lib/local-store";
 import { readSse } from "@/lib/sse";
+import type { Run } from "@/lib/types";
 import type { AllocationWizardState } from "@/lib/wizard-prompt";
 
 type ChatViewProps = {
@@ -71,6 +72,30 @@ function getRunStartedId(data: string) {
   } catch {
     return null;
   }
+}
+
+function getChatRunId(payload: unknown) {
+  return isRecord(payload) && typeof payload.run_id === "string"
+    ? payload.run_id
+    : null;
+}
+
+function getChatContent(payload: unknown) {
+  return isRecord(payload) && typeof payload.content === "string"
+    ? payload.content
+    : "";
+}
+
+function isRun(payload: unknown): payload is Run {
+  return (
+    isRecord(payload) &&
+    typeof payload.run_id === "string" &&
+    typeof payload.status === "string"
+  );
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 type RunSubmission =
@@ -149,7 +174,73 @@ export function ChatView({
 
     try {
       const accessToken = authenticated ? await getAccessToken() : null;
-      const response = await fetch("/api/messages/stream", {
+      if ("text" in submission) {
+        const response = await fetch("/api/chat/messages", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
+          },
+          cache: "no-store",
+          body: JSON.stringify({
+            chat_session_id: strategyId,
+            message: submission.text,
+            user_id: getAnonymousUserId(),
+          }),
+        });
+
+        const payload = await readJson(response);
+        if (!response.ok) {
+          setMessages((current) => [
+            ...current,
+            {
+              role: "agent",
+              text: "",
+              status: String(response.status),
+              error: getErrorMessage(payload),
+            },
+          ]);
+          return;
+        }
+
+        const runId = getChatRunId(payload);
+        const content = getChatContent(payload);
+        if (!runId) {
+          setMessages((current) => [
+            ...current,
+            { role: "agent", text: content || "I do not have a response." },
+          ]);
+          return;
+        }
+
+        const startedText =
+          content.trim() || `Started strategy research run ${runId}.`;
+        setLiveRunId(runId);
+        setMessages((current) => [
+          ...current,
+          { role: "agent", text: startedText, run_id: runId, status: "running" },
+        ]);
+
+        const run = await waitForRunCompletion(runId, accessToken);
+        setMessages((current) =>
+          current.map((message) =>
+            message.run_id === run.run_id
+              ? {
+                  role: "agent",
+                  text: run.reply ?? startedText,
+                  run_id: run.run_id,
+                  status: run.status,
+                  error: run.error ?? undefined,
+                  artifacts: run.artifacts,
+                  structured_result: run.structured_result,
+                }
+              : message,
+          ),
+        );
+        return;
+      }
+
+      const response = await fetch("/api/strategy-pipeline/runs/stream", {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -158,19 +249,11 @@ export function ChatView({
             : {}),
         },
         cache: "no-store",
-        body: JSON.stringify(
-          "text" in submission
-            ? {
-                strategy_id: strategyId,
-                text: submission.text,
-                user_id: getAnonymousUserId(),
-              }
-            : {
-                strategy_id: strategyId,
-                wizard_params: submission.wizard_params,
-                user_id: getAnonymousUserId(),
-              },
-        ),
+        body: JSON.stringify({
+          strategy_id: strategyId,
+          wizard_params: submission.wizard_params,
+          user_id: getAnonymousUserId(),
+        }),
       });
 
       if (!response.ok) {
@@ -264,6 +347,20 @@ export function ChatView({
       wizard_params: wizardParams,
       displayText: wizardSubmissionText(),
     });
+  }
+
+  async function waitForRunCompletion(runId: string, accessToken: string | null) {
+    while (true) {
+      const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`, {
+        headers: accessToken ? { authorization: `Bearer ${accessToken}` } : {},
+        cache: "no-store",
+      });
+      const payload = await readJson(response);
+      if (!response.ok) throw new Error(getErrorMessage(payload));
+      if (!isRun(payload)) throw new Error("Run status returned invalid data");
+      if (payload.status !== "running") return payload;
+      await sleep(1000);
+    }
   }
 
   function handleInspectRun(runId: string, trigger: HTMLButtonElement) {

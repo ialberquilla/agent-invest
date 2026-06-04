@@ -7,6 +7,9 @@ import {
   type Event as OpencodeEvent,
   type Part,
 } from "@opencode-ai/sdk";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { db as defaultDb } from "../db/client";
 import {
@@ -33,6 +36,9 @@ export const OPENCODE_BUILTIN_TOOLS = [
   "websearch",
   "write",
 ] as const;
+
+export const AGENT_INVEST_MCP_NAME = "agent_invest";
+export const RUN_STRATEGY_PIPELINE_TOOL = `${AGENT_INVEST_MCP_NAME}_run_strategy_pipeline`;
 
 export function disabledOpencodeBuiltinsTools(
   options: { except?: readonly string[] } = {},
@@ -120,6 +126,36 @@ function resolveOpencodeDirectory(env: NodeJS.ProcessEnv = process.env) {
   return directory ? directory : process.cwd();
 }
 
+function resolveAgentToolUrl(env: NodeJS.ProcessEnv = process.env) {
+  const explicit = env.AGENT_TOOL_URL?.trim();
+  if (explicit) return explicit;
+
+  const port = env.PORT?.trim() || "3000";
+  return `http://127.0.0.1:${port}`;
+}
+
+function resolveRunStrategyPipelineMcpScript() {
+  const candidates: string[] = [];
+  let current = path.dirname(fileURLToPath(import.meta.url));
+  while (true) {
+    candidates.push(
+      path.join(current, "src/agent/tools/run-strategy-pipeline-mcp.mjs"),
+      path.join(current, "agent/src/agent/tools/run-strategy-pipeline-mcp.mjs"),
+    );
+
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  const script = candidates.find((candidate) => existsSync(candidate));
+  if (!script) {
+    throw new Error("Unable to locate run-strategy-pipeline MCP script");
+  }
+
+  return script;
+}
+
 function resolveOpencodeAuth(env: NodeJS.ProcessEnv = process.env) {
   const providerID = env.OPENCODE_AUTH_PROVIDER?.trim();
   const key =
@@ -195,6 +231,17 @@ async function createManagedOpencode(
     port: 0,
     config: {
       model: resolveOpencodeModel(env),
+      mcp: {
+        [AGENT_INVEST_MCP_NAME]: {
+          type: "local",
+          command: ["node", resolveRunStrategyPipelineMcpScript()],
+          enabled: true,
+          environment: {
+            AGENT_TOOL_URL: resolveAgentToolUrl(env),
+            ...(env.AGENT_API_KEY ? { AGENT_API_KEY: env.AGENT_API_KEY } : {}),
+          },
+        },
+      },
       permission: {
         bash: {
           "./agent-invest *": "allow",
