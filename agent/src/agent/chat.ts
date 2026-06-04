@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { desc, eq, sql } from "drizzle-orm";
+import { desc, eq, or, sql } from "drizzle-orm";
 
 import { db as defaultDb } from "../db/client";
 import { appendEvent as defaultAppendEvent } from "../db/repositories/agent-events";
@@ -189,7 +189,9 @@ async function strategyRunContext(db: Db, chatSessionId: string) {
       startedAt: runs.startedAt,
     })
     .from(runs)
-    .where(eq(runs.threadId, chatSessionId))
+    .where(
+      or(eq(runs.threadId, chatSessionId), eq(runs.strategyId, chatSessionId)),
+    )
     .orderBy(desc(runs.startedAt))
     .limit(3);
 
@@ -206,12 +208,14 @@ async function strategyRunContext(db: Db, chatSessionId: string) {
       const summary =
         typeof structured.summary === "string" ? structured.summary : run.reply;
       const brief = formatBrief(metadata.brief);
+      const metrics = formatRunMetrics(structured);
       const details = [
         `run_id=${run.runId}`,
         `status=${run.status}`,
         brief ? `brief=${brief}` : "",
         title ? `title=${title}` : "",
         summary ? `summary=${summary}` : "",
+        metrics,
         run.error ? `error=${run.error}` : "",
       ].filter(Boolean);
       return `- ${details.join("; ")}`;
@@ -428,4 +432,33 @@ function formatBrief(value: unknown) {
   if (typeof value === "string") return value;
   if (isRecord(value)) return JSON.stringify(value);
   return "";
+}
+
+function formatRunMetrics(structured: Record<string, unknown>) {
+  const backtest = isRecord(structured.backtest) ? structured.backtest : {};
+  const kpis = isRecord(structured.kpis) ? structured.kpis : {};
+  const parts = [
+    typeof structured.template_id === "string"
+      ? `template=${structured.template_id}`
+      : "",
+    typeof backtest.benchmark === "string"
+      ? `benchmark=${backtest.benchmark}`
+      : "",
+    typeof backtest.start_date === "string" &&
+    typeof backtest.end_date === "string"
+      ? `window=${backtest.start_date}..${backtest.end_date}`
+      : "",
+    metric("cagr", kpis.cagr),
+    metric("sharpe", kpis.sharpe_ratio),
+    metric("max_drawdown", kpis.max_drawdown),
+    metric("final_equity_multiple", kpis.final_equity_multiple),
+  ].filter(Boolean);
+
+  return parts.length > 0 ? `metrics=${parts.join(", ")}` : "";
+}
+
+function metric(label: string, value: unknown) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${label}=${value}`
+    : "";
 }
