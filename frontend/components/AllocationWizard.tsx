@@ -138,7 +138,7 @@ async function requestWizardRun(
   strategyId: string,
   wizardParams: AllocationWizardState,
 ) {
-  const response = await fetch("/api/messages/stream", {
+  const response = await fetch("/api/strategy-pipeline/runs/stream", {
     method: "POST",
     headers: { "content-type": "application/json" },
     cache: "no-store",

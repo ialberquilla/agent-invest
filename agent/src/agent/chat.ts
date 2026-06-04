@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { eq, sql } from "drizzle-orm";
+import { desc, eq, or, sql } from "drizzle-orm";
 
 import { db as defaultDb } from "../db/client";
 import { appendEvent as defaultAppendEvent } from "../db/repositories/agent-events";
@@ -14,6 +14,7 @@ import {
   disabledOpencodeBuiltinsTools,
   getOrCreateManagedOpencode,
   parseOpencodeModel,
+  RUN_STRATEGY_PIPELINE_TOOL,
   resolveOpencodeModel,
   type ManagedOpencode,
 } from "./session";
@@ -26,12 +27,12 @@ export const CHAT_PROMPT = `You are the Agent Invest chat agent.
 Answer general investing and quantitative-finance questions clearly and directly. You can explain concepts, ask brief clarifying questions, and help the user shape an investment-strategy brief.
 
 You have exactly one tool available:
-- run_strategy_pipeline({ brief }): starts an asynchronous strategy pipeline from the user's brief and returns { run_id } immediately.
+- ${RUN_STRATEGY_PIPELINE_TOOL}({ brief, chat_session_id }): starts an asynchronous strategy pipeline from the user's brief and returns { run_id } immediately.
 
-Use run_strategy_pipeline only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy. Do not use it for ordinary educational or conversational questions. Never claim to know pipeline internals or final results; progress and results are delivered through the run's event streams.`;
+Use ${RUN_STRATEGY_PIPELINE_TOOL} only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy. Do not use it for ordinary educational or conversational questions. When recent strategy pipeline run context is provided, use it to answer follow-up questions about those prior runs. Never invent unavailable details; progress and new run results are delivered through the run's event streams.`;
 
 export const CHAT_ALLOWED_TOOLS = {
-  run_strategy_pipeline: true,
+  [RUN_STRATEGY_PIPELINE_TOOL]: true,
 } as const;
 
 export type ChatAgentInput = {
@@ -121,6 +122,7 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
         input.userId,
       );
 
+      const runContext = await strategyRunContext(db, input.chatSessionId);
       const abortEvents = new AbortController();
       const events = collectChatSessionEvents({
         managed,
@@ -138,7 +140,13 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
           path: { id: sessionId },
           body: {
             model: parseOpencodeModel(resolveOpencodeModel(env)),
-            system: CHAT_PROMPT,
+            system: [
+              CHAT_PROMPT,
+              `Current chat_session_id: ${input.chatSessionId}`,
+              runContext,
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
             tools: { ...disabledOpencodeBuiltinsTools(), ...CHAT_ALLOWED_TOOLS },
             parts: [{ type: "text", text: message }],
           },
@@ -158,15 +166,64 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
         });
       }
 
+      const runId = extractRunId(response.data);
       return {
-        content: extractText(response.data),
+        content: extractChatResponseText(response.data),
         opencode_session_id: sessionId,
+        ...(runId ? { run_id: runId } : {}),
       };
     },
   };
 }
 
 export const chatAgent = createChatAgent();
+
+async function strategyRunContext(db: Db, chatSessionId: string) {
+  const recentRuns = await db
+    .select({
+      runId: runs.runId,
+      status: runs.status,
+      reply: runs.reply,
+      error: runs.error,
+      metadata: runs.metadata,
+      startedAt: runs.startedAt,
+    })
+    .from(runs)
+    .where(
+      or(eq(runs.threadId, chatSessionId), eq(runs.strategyId, chatSessionId)),
+    )
+    .orderBy(desc(runs.startedAt))
+    .limit(3);
+
+  if (recentRuns.length === 0) return "";
+
+  return [
+    "Recent strategy pipeline runs in this chat. Use this to understand follow-ups about previous strategies; do not invent unavailable results.",
+    ...recentRuns.map((run) => {
+      const metadata = isRecord(run.metadata) ? run.metadata : {};
+      const structured = isRecord(metadata.structured_result)
+        ? metadata.structured_result
+        : {};
+      const title = typeof structured.title === "string" ? structured.title : "";
+      const summary =
+        typeof structured.summary === "string" ? structured.summary : run.reply;
+      const brief = formatBrief(metadata.brief);
+      const metrics = formatRunMetrics(structured);
+      const benchmark = formatBenchmarkComparison(structured);
+      const details = [
+        `run_id=${run.runId}`,
+        `status=${run.status}`,
+        brief ? `brief=${brief}` : "",
+        title ? `title=${title}` : "",
+        summary ? `summary=${summary}` : "",
+        metrics,
+        benchmark,
+        run.error ? `error=${run.error}` : "",
+      ].filter(Boolean);
+      return `- ${details.join("; ")}`;
+    }),
+  ].join("\n");
+}
 
 async function getOrCreateChatOpencodeSession(
   db: Db,
@@ -326,13 +383,153 @@ function extractEventType(event: unknown): string {
   return typeof type === "string" && type.trim() ? type : "opencode.event";
 }
 
-function extractText(result: { parts?: unknown[] }) {
+export function extractChatResponseText(result: { parts?: unknown[] }) {
   return (result.parts ?? [])
     .map((part) => {
       if (!part || typeof part !== "object") return "";
+      if ((part as { type?: unknown }).type !== "text") return "";
       const text = (part as { text?: unknown }).text;
       return typeof text === "string" ? text : "";
     })
     .filter(Boolean)
     .join("\n");
+}
+
+function extractRunId(result: { parts?: unknown[] }) {
+  for (const part of result.parts ?? []) {
+    if (!part || typeof part !== "object") continue;
+    const toolPart = part as {
+      type?: unknown;
+      tool?: unknown;
+      state?: { output?: unknown };
+    };
+    if (
+      toolPart.type !== "tool" ||
+      toolPart.tool !== RUN_STRATEGY_PIPELINE_TOOL
+    ) {
+      continue;
+    }
+
+    const output = toolPart.state?.output;
+    const parsed = typeof output === "string" ? parseJson(output) : output;
+    if (isRecord(parsed) && typeof parsed.run_id === "string") {
+      return parsed.run_id;
+    }
+  }
+  return null;
+}
+
+function parseJson(value: string) {
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function formatBrief(value: unknown) {
+  if (typeof value === "string") return value;
+  if (isRecord(value)) return JSON.stringify(value);
+  return "";
+}
+
+function formatRunMetrics(structured: Record<string, unknown>) {
+  const backtest = isRecord(structured.backtest) ? structured.backtest : {};
+  const kpis = isRecord(structured.kpis) ? structured.kpis : {};
+  const parts = [
+    typeof structured.template_id === "string"
+      ? `template=${structured.template_id}`
+      : "",
+    typeof backtest.benchmark === "string"
+      ? `benchmark=${backtest.benchmark}`
+      : "",
+    typeof backtest.start_date === "string" &&
+    typeof backtest.end_date === "string"
+      ? `window=${backtest.start_date}..${backtest.end_date}`
+      : "",
+    metric("cagr", kpis.cagr),
+    metric("sharpe", kpis.sharpe_ratio),
+    metric("max_drawdown", kpis.max_drawdown),
+    metric("final_equity_multiple", kpis.final_equity_multiple),
+  ].filter(Boolean);
+
+  return parts.length > 0 ? `metrics=${parts.join(", ")}` : "";
+}
+
+function metric(label: string, value: unknown) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? `${label}=${value}`
+    : "";
+}
+
+function formatBenchmarkComparison(structured: Record<string, unknown>) {
+  const charts = isRecord(structured.charts) ? structured.charts : {};
+  const equityCurve = Array.isArray(charts.equity_curve)
+    ? charts.equity_curve.filter(isRecord)
+    : [];
+  const drawdown = Array.isArray(charts.drawdown)
+    ? charts.drawdown.filter(isRecord)
+    : [];
+  const first = equityCurve.find(
+    (point) =>
+      isFiniteNumber(point.strategy_equity) &&
+      isFiniteNumber(point.benchmark_equity),
+  );
+  const last = equityCurve
+    .slice()
+    .reverse()
+    .find(
+      (point) =>
+        isFiniteNumber(point.strategy_equity) &&
+        isFiniteNumber(point.benchmark_equity),
+    );
+
+  if (!first || !last) return "";
+
+  const firstStrategy = first.strategy_equity as number;
+  const lastStrategy = last.strategy_equity as number;
+  const firstBenchmark = first.benchmark_equity as number;
+  const lastBenchmark = last.benchmark_equity as number;
+  if (firstStrategy === 0 || firstBenchmark === 0) return "";
+
+  const strategyReturn = lastStrategy / firstStrategy - 1;
+  const benchmarkReturn = lastBenchmark / firstBenchmark - 1;
+  const benchmarkDrawdown = minFinite(
+    drawdown.map((point) => point.benchmark_drawdown),
+  );
+  const comparison = [
+    `strategy_return=${formatPercent(strategyReturn)}`,
+    `benchmark_return=${formatPercent(benchmarkReturn)}`,
+    `excess_return=${formatPercent(strategyReturn - benchmarkReturn)}`,
+    `strategy_final_equity=${formatNumber(lastStrategy)}`,
+    `benchmark_final_equity=${formatNumber(lastBenchmark)}`,
+    benchmarkDrawdown === null
+      ? ""
+      : `benchmark_max_drawdown=${formatPercent(benchmarkDrawdown)}`,
+  ].filter(Boolean);
+
+  return comparison.length > 0
+    ? `benchmark_comparison=${comparison.join(", ")}`
+    : "";
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+function minFinite(values: unknown[]) {
+  const finite = values.filter(isFiniteNumber);
+  return finite.length > 0 ? Math.min(...finite) : null;
+}
+
+function formatPercent(value: number) {
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+function formatNumber(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2);
 }

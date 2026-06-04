@@ -138,6 +138,8 @@ async function persistMandate(
 
 function buildMetadata(state: WorkflowState, duration_ms: number) {
   return {
+    brief: state.brief,
+    structured_result: workflowStateToStructuredResult(state),
     final: state.final,
     counters: state.counters,
     attempt_count: state.attempts.length,

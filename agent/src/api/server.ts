@@ -4,7 +4,7 @@ import { createReadStream, existsSync } from "node:fs";
 import { readFile, readdir, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import type { Notification } from "pg";
 import pino from "pino";
 
@@ -115,6 +115,10 @@ type ServerDependencies = {
       userId: string;
       message: string;
     }): Promise<ChatAgentResponse>;
+    runStrategyPipeline?(
+      input: { brief: string },
+      chatSessionId?: string,
+    ): Promise<{ run_id: string }>;
   };
   apiKey?: string | null;
   ingestionRunners?: Partial<IngestionRunners>;
@@ -632,6 +636,11 @@ function runResponse(
     : { ...responseWithStages, structured_result: structuredResult };
 }
 
+function runStructuredResult(run: RunRow) {
+  const metadata = isRecord(run.metadata) ? run.metadata : null;
+  return metadata?.structured_result ?? null;
+}
+
 // Content types for artifacts served from disk via GET /artifacts/*.
 // The workflow no longer writes new artifacts, but pre-existing
 // artifacts (e.g. from older runs) can still be served as long as the
@@ -752,6 +761,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function workflowMetadata(workflowState: WorkflowState | undefined) {
   if (!workflowState) return {};
   return {
+    brief: workflowState.brief,
     final: workflowState.final,
     thesis: workflowState.thesis,
     universe: workflowState.universe,
@@ -867,6 +877,118 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       throw httpError(401, "Unauthorized");
     }
   });
+
+  async function streamStrategyPipelineRun(
+    request: FastifyRequest,
+    reply: FastifyReply,
+  ) {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const userId = requiredText(body, "user_id");
+    const strategyId = requiredText(body, "strategy_id");
+    const text = resolveMessageText(body);
+    const runId = randomUUID();
+
+    const strategy = await repositories.ensureStrategy(userId, strategyId);
+    if (!strategy || strategy.userId !== userId)
+      throw httpError(404, "Strategy not found");
+    await repositories.touchStrategy(strategyId);
+    await repositories.createRun(runId, strategyId);
+
+    reply.hijack();
+    const raw = reply.raw;
+    raw.setHeader("Content-Type", "text/event-stream");
+    raw.setHeader("Cache-Control", "no-cache, no-transform");
+    raw.setHeader("Connection", "keep-alive");
+    raw.setHeader("X-Accel-Buffering", "no");
+    raw.flushHeaders?.();
+
+    let clientGone = false;
+    let runCompletedSent = false;
+    raw.on("close", () => {
+      clientGone = true;
+    });
+
+    const send = (eventName: string, payload: unknown) => {
+      if (clientGone || raw.writableEnded) return;
+      raw.write(`event: ${eventName}\n`);
+      raw.write(`data: ${JSON.stringify(payload)}\n\n`);
+    };
+
+    const finalize = (runPayload: Record<string, unknown>) => {
+      if (runCompletedSent) return;
+      runCompletedSent = true;
+      send("run.completed", { ...runPayload, artifacts: [] });
+      if (!clientGone && !raw.writableEnded) raw.end();
+    };
+
+    send("run.started", { run_id: runId });
+
+    const sentStageEventIds = new Set<string>();
+    const flushStageEvents = async () => {
+      const events = await repositories.listStageEventsByRunId(runId);
+      for (const event of events) {
+        if (sentStageEventIds.has(event.eventId)) continue;
+        sentStageEventIds.add(event.eventId);
+        send(event.eventType, stageEventResponse(event));
+      }
+    };
+    const stageEventPoller = setInterval(() => {
+      void flushStageEvents().catch((error: unknown) => {
+        request.log.warn(
+          { error: errorMessage(error), runId },
+          "stream: failed to flush stage events",
+        );
+      });
+    }, 500);
+
+    let workflowError: unknown;
+    let workflowState: WorkflowState | undefined;
+    try {
+      request.log.info({ runId, strategyId }, "stream: calling workflow");
+      workflowState = await executeWorkflow(runId, text as string | WizardBrief, {
+        llm: workflowLLM,
+      });
+      request.log.info(
+        { runId, final_kind: workflowState.final?.kind ?? null },
+        "stream: workflow returned",
+      );
+    } catch (error) {
+      workflowError = error;
+    } finally {
+      clearInterval(stageEventPoller);
+      await flushStageEvents().catch((error: unknown) => {
+        request.log.warn(
+          { error: errorMessage(error), runId },
+          "stream: failed to flush final stage events",
+        );
+      });
+    }
+
+    send("run.finalizing", {
+      message: "Assembling structured result",
+      run_id: runId,
+    });
+
+    const structuredResult = workflowState
+      ? workflowStateToStructuredResult(workflowState)
+      : null;
+
+    if (workflowError) {
+      await repositories.markRunFailed(runId, errorMessage(workflowError));
+    } else {
+      await repositories.markRunCompleted(
+        runId,
+        replyFromStructuredResult(structuredResult),
+        runSummaryFields(structuredResult, workflowState),
+      );
+    }
+
+    const run = await repositories.readRun(runId);
+    if (!run) throw new Error(`Run missing after execution: ${runId}`);
+    const payload = runResponse(run, structuredResult) as Record<string, unknown>;
+    finalize(payload);
+    if (workflowError) request.log.error({ workflowError, runId });
+  }
 
   app.get("/health", async () => ({ ok: true }));
 
@@ -1123,6 +1245,21 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     return runResponse(run, structuredResult);
   });
 
+  app.post("/internal/tools/run-strategy-pipeline", async (request) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    if (!isRecord(body)) {
+      throw httpError(400, "Request body must be a JSON object");
+    }
+
+    const brief = requiredText(body, "brief");
+    const chatSessionId = requiredText(body, "chat_session_id");
+    if (!executeChatAgent.runStrategyPipeline) {
+      throw httpError(500, "Chat agent cannot start strategy pipeline runs");
+    }
+
+    return executeChatAgent.runStrategyPipeline({ brief }, chatSessionId);
+  });
+
   app.post("/chat/messages", async (request) => {
     const body = (request.body ?? {}) as Record<string, unknown>;
     if (!isRecord(body)) {
@@ -1154,7 +1291,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const run = await repositories.readRun(request.params.id);
     if (!run) throw httpError(404, "Run not found");
     const stages = await repositories.listStageRunsByRunId(request.params.id);
-    return runResponse(run, null, stages);
+    return runResponse(run, runStructuredResult(run), stages);
   });
 
   app.get<{ Params: { id: string } }>(
@@ -1348,119 +1485,9 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     };
   });
 
-  app.post("/messages/stream", async (request, reply) => {
-    const body = (request.body ?? {}) as Record<string, unknown>;
-    const userId = requiredText(body, "user_id");
-    const strategyId = requiredText(body, "strategy_id");
-    const text = resolveMessageText(body);
-    const runId = randomUUID();
+  app.post("/strategy-pipeline/runs/stream", streamStrategyPipelineRun);
 
-    const strategy = await repositories.ensureStrategy(userId, strategyId);
-    if (!strategy || strategy.userId !== userId)
-      throw httpError(404, "Strategy not found");
-    await repositories.touchStrategy(strategyId);
-    await repositories.createRun(runId, strategyId);
-
-    reply.hijack();
-    const raw = reply.raw;
-    raw.setHeader("Content-Type", "text/event-stream");
-    raw.setHeader("Cache-Control", "no-cache, no-transform");
-    raw.setHeader("Connection", "keep-alive");
-    raw.setHeader("X-Accel-Buffering", "no");
-    raw.flushHeaders?.();
-
-    let clientGone = false;
-    let runCompletedSent = false;
-    raw.on("close", () => {
-      clientGone = true;
-    });
-
-    const send = (eventName: string, payload: unknown) => {
-      if (clientGone || raw.writableEnded) return;
-      raw.write(`event: ${eventName}\n`);
-      raw.write(`data: ${JSON.stringify(payload)}\n\n`);
-    };
-
-    const finalize = (runPayload: Record<string, unknown>) => {
-      if (runCompletedSent) return;
-      runCompletedSent = true;
-      send("run.completed", { ...runPayload, artifacts: [] });
-      if (!clientGone && !raw.writableEnded) raw.end();
-    };
-
-    send("run.started", { run_id: runId });
-
-    const sentStageEventIds = new Set<string>();
-    const flushStageEvents = async () => {
-      const events = await repositories.listStageEventsByRunId(runId);
-      for (const event of events) {
-        if (sentStageEventIds.has(event.eventId)) continue;
-        sentStageEventIds.add(event.eventId);
-        send(event.eventType, stageEventResponse(event));
-      }
-    };
-    const stageEventPoller = setInterval(() => {
-      void flushStageEvents().catch((error: unknown) => {
-        request.log.warn(
-          { error: errorMessage(error), runId },
-          "stream: failed to flush stage events",
-        );
-      });
-    }, 500);
-
-    let workflowError: unknown;
-    let workflowState: WorkflowState | undefined;
-    try {
-      request.log.info({ runId, strategyId }, "stream: calling workflow");
-      workflowState = await executeWorkflow(runId, text as string | WizardBrief, {
-        llm: workflowLLM,
-      });
-      request.log.info(
-        { runId, final_kind: workflowState.final?.kind ?? null },
-        "stream: workflow returned",
-      );
-    } catch (error) {
-      workflowError = error;
-    } finally {
-      clearInterval(stageEventPoller);
-      await flushStageEvents().catch((error: unknown) => {
-        request.log.warn(
-          { error: errorMessage(error), runId },
-          "stream: failed to flush final stage events",
-        );
-      });
-    }
-
-    send("run.finalizing", {
-      message: "Assembling structured result",
-      run_id: runId,
-    });
-
-    const structuredResult = workflowState
-      ? workflowStateToStructuredResult(workflowState)
-      : null;
-
-    if (workflowError) {
-      await repositories.markRunFailed(runId, errorMessage(workflowError));
-    } else {
-      await repositories.markRunCompleted(
-        runId,
-        replyFromStructuredResult(structuredResult),
-        runSummaryFields(structuredResult, workflowState),
-      );
-    }
-
-    const run = await repositories.readRun(runId);
-    if (run) {
-      finalize(runResponse(run, structuredResult));
-    } else {
-      finalize({
-        run_id: runId,
-        status: "failed",
-        error: "Run missing after execution",
-      });
-    }
-  });
+  app.post("/messages/stream", streamStrategyPipelineRun);
 
   return app;
 }

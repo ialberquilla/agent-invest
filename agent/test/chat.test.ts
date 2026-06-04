@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   CHAT_ALLOWED_TOOLS,
   createChatAgent,
+  extractChatResponseText,
 } from "../src/agent/chat";
 
 function createRunDbDouble(insertedRuns: unknown[]) {
@@ -30,8 +31,12 @@ function createRunDbDouble(insertedRuns: unknown[]) {
 }
 
 test("chat agent exposes exactly run_strategy_pipeline", () => {
-  assert.deepEqual(Object.keys(CHAT_ALLOWED_TOOLS), ["run_strategy_pipeline"]);
-  assert.deepEqual(CHAT_ALLOWED_TOOLS, { run_strategy_pipeline: true });
+  assert.deepEqual(Object.keys(CHAT_ALLOWED_TOOLS), [
+    "agent_invest_run_strategy_pipeline",
+  ]);
+  assert.deepEqual(CHAT_ALLOWED_TOOLS, {
+    agent_invest_run_strategy_pipeline: true,
+  });
 });
 
 test("runStrategyPipeline creates a run and does not await workflow completion", async () => {
@@ -75,4 +80,16 @@ test("runStrategyPipeline creates a run and does not await workflow completion",
   ]);
 
   finishWorkflow();
+});
+
+test("extractChatResponseText omits reasoning parts", () => {
+  const text = extractChatResponseText({
+    parts: [
+      { type: "reasoning", text: "I should think this through." },
+      { type: "text", text: "Final answer." },
+      { type: "tool", state: { output: "{}" } },
+    ],
+  });
+
+  assert.equal(text, "Final answer.");
 });
