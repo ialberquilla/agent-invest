@@ -118,15 +118,26 @@ contract StrategyVaultV2 is StrategyVault {
 }
 
 contract StrategyVaultTest is Test {
+    uint256 internal constant OWNER_PRIVATE_KEY = 0xA11CE;
+    bytes32 internal constant EIP712_DOMAIN_TYPEHASH =
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    bytes32 internal constant KEEPER_INCREASE_ORDER_INTENT_TYPEHASH = keccak256(
+        "KeeperIncreaseOrderIntent(address keeper,bytes32 orderHash,uint256 referencePrice,uint256 maxSlippageBps,uint256 nonce,uint256 deadline)"
+    );
+    bytes32 internal constant KEEPER_DECREASE_ORDER_INTENT_TYPEHASH = keccak256(
+        "KeeperDecreaseOrderIntent(address keeper,bytes32 orderHash,uint256 referencePrice,uint256 maxSlippageBps,uint256 nonce,uint256 deadline)"
+    );
+
     MockAsset internal asset;
     VaultFactory internal factory;
     StrategyVault internal vault;
-    address internal owner = address(0xA11CE);
+    address internal owner;
     address internal beaconOwner = address(0xBEAC0);
     address internal keeper = address(0xC0FFEE);
     address internal market = address(0xBEEF);
 
     function setUp() external {
+        owner = vm.addr(OWNER_PRIVATE_KEY);
         asset = new MockAsset();
         StrategyVault implementation = new StrategyVault();
         factory = new VaultFactory(address(implementation), beaconOwner);
@@ -137,7 +148,12 @@ contract StrategyVaultTest is Test {
     function _configure(uint256 minInterval, address keeper_) internal {
         vm.startPrank(owner);
         vault.setMandate(
-            StrategyVault.Mandate({maxLeverage: 5, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: minInterval})
+            StrategyVault.Mandate({
+                maxLeverage: 5,
+                maxPositionSizeUsd: 1_000_000e30,
+                minRebalanceInterval: minInterval,
+                maxKeeperSlippageBps: 200
+            })
         );
         vault.addMarket(market);
         if (keeper_ != address(0)) vault.setKeeper(keeper_);
@@ -173,8 +189,13 @@ contract StrategyVaultTest is Test {
             collateralAmount: collateralAmount,
             acceptablePrice: 51_000e30,
             executionFee: 0.01 ether,
+            referencePrice: 50_000e30,
+            maxSlippageBps: 200,
+            intentNonce: 0,
+            intentDeadline: block.timestamp + 1 hours,
             callbackGasLimit: 0,
-            referralCode: bytes32("agent-invest")
+            referralCode: bytes32("agent-invest"),
+            ownerSignature: ""
         });
     }
 
@@ -322,19 +343,41 @@ contract StrategyVaultTest is Test {
 
     function test_OnlyOwnerCanSetMandate() external {
         vm.expectRevert(); // OwnableUnauthorizedAccount
-        vault.setMandate(StrategyVault.Mandate({maxLeverage: 5, maxPositionSizeUsd: 1e30, minRebalanceInterval: 0}));
+        vault.setMandate(
+            StrategyVault.Mandate({
+                maxLeverage: 5, maxPositionSizeUsd: 1e30, minRebalanceInterval: 0, maxKeeperSlippageBps: 200
+            })
+        );
     }
 
     function test_SetMandateRevertsOnZeroLeverage() external {
         vm.prank(owner);
         vm.expectRevert(StrategyVault.StrategyVault__InvalidMandate.selector);
-        vault.setMandate(StrategyVault.Mandate({maxLeverage: 0, maxPositionSizeUsd: 1e30, minRebalanceInterval: 0}));
+        vault.setMandate(
+            StrategyVault.Mandate({
+                maxLeverage: 0, maxPositionSizeUsd: 1e30, minRebalanceInterval: 0, maxKeeperSlippageBps: 200
+            })
+        );
     }
 
     function test_SetMandateRevertsOnZeroPositionSize() external {
         vm.prank(owner);
         vm.expectRevert(StrategyVault.StrategyVault__InvalidMandate.selector);
-        vault.setMandate(StrategyVault.Mandate({maxLeverage: 3, maxPositionSizeUsd: 0, minRebalanceInterval: 0}));
+        vault.setMandate(
+            StrategyVault.Mandate({
+                maxLeverage: 3, maxPositionSizeUsd: 0, minRebalanceInterval: 0, maxKeeperSlippageBps: 200
+            })
+        );
+    }
+
+    function test_SetMandateRevertsOnExcessKeeperSlippage() external {
+        vm.prank(owner);
+        vm.expectRevert(StrategyVault.StrategyVault__InvalidMandate.selector);
+        vault.setMandate(
+            StrategyVault.Mandate({
+                maxLeverage: 3, maxPositionSizeUsd: 1e30, minRebalanceInterval: 0, maxKeeperSlippageBps: 1_001
+            })
+        );
     }
 
     function test_AddAndRemoveMarket() external {
@@ -374,6 +417,7 @@ contract StrategyVaultTest is Test {
         vm.deal(keeper, 0.01 ether);
 
         StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 2_000e30, 1_000e18);
+        order = _signKeeperIncreaseOrder(order);
 
         vm.prank(keeper);
         bytes32 orderKey = vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
@@ -384,7 +428,9 @@ contract StrategyVaultTest is Test {
         // mandate set but market NOT added
         vm.startPrank(owner);
         vault.setMandate(
-            StrategyVault.Mandate({maxLeverage: 5, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0})
+            StrategyVault.Mandate({
+                maxLeverage: 5, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0, maxKeeperSlippageBps: 200
+            })
         );
         vault.setKeeper(keeper);
         vm.stopPrank();
@@ -402,7 +448,9 @@ contract StrategyVaultTest is Test {
     function test_RevertsOnPositionSizeExceeded() external {
         vm.startPrank(owner);
         vault.setMandate(
-            StrategyVault.Mandate({maxLeverage: 100, maxPositionSizeUsd: 1_000e30, minRebalanceInterval: 0})
+            StrategyVault.Mandate({
+                maxLeverage: 100, maxPositionSizeUsd: 1_000e30, minRebalanceInterval: 0, maxKeeperSlippageBps: 200
+            })
         );
         vault.addMarket(market);
         vault.setKeeper(keeper);
@@ -422,7 +470,9 @@ contract StrategyVaultTest is Test {
     function test_RevertsOnLeverageExceeded() external {
         vm.startPrank(owner);
         vault.setMandate(
-            StrategyVault.Mandate({maxLeverage: 2, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0})
+            StrategyVault.Mandate({
+                maxLeverage: 2, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0, maxKeeperSlippageBps: 200
+            })
         );
         vault.addMarket(market);
         vault.setKeeper(keeper);
@@ -445,6 +495,7 @@ contract StrategyVaultTest is Test {
         asset.mint(address(vault), 2_000e18);
         vm.deal(keeper, 1 ether);
         StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+        order = _signKeeperIncreaseOrder(order);
 
         vm.prank(keeper);
         vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
@@ -456,6 +507,9 @@ contract StrategyVaultTest is Test {
 
         // after the interval, it succeeds
         vm.warp(block.timestamp + 1 hours);
+        ++order.intentNonce;
+        order.intentDeadline = block.timestamp + 1 hours;
+        order = _signKeeperIncreaseOrder(order);
         vm.prank(keeper);
         vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
     }
@@ -521,6 +575,7 @@ contract StrategyVaultTest is Test {
         StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
         order.receiver = keeper;
         order.cancellationReceiver = keeper;
+        order = _signKeeperIncreaseOrder(order);
 
         vm.prank(keeper);
         vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
@@ -545,6 +600,94 @@ contract StrategyVaultTest is Test {
         vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
     }
 
+    function test_KeeperIncreaseLongRevertsWhenAcceptablePriceAboveBound() external {
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+        order.isLong = true;
+        order.acceptablePrice = 51_000e30 + 1;
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__KeeperSlippageExceeded.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_KeeperIncreaseShortRevertsWhenAcceptablePriceBelowBound() external {
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+        order.isLong = false;
+        order.acceptablePrice = 49_000e30 - 1;
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__KeeperSlippageExceeded.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_KeeperOrderRevertsWhenIntentNonceIsReused() external {
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 2_000e18);
+        vm.deal(keeper, 0.02 ether);
+
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+        order = _signKeeperIncreaseOrder(order);
+
+        vm.prank(keeper);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+
+        vm.prank(keeper);
+        vm.expectRevert(abi.encodeWithSelector(StrategyVault.StrategyVault__OrderIntentNonceUsed.selector, 0));
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_KeeperOrderRevertsWhenIntentExpired() external {
+        vm.warp(10);
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+        order.intentDeadline = block.timestamp - 1;
+        order = _signKeeperIncreaseOrder(order);
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__OrderIntentExpired.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_KeeperOrderRevertsWhenSlippageExceedsMandate() external {
+        vm.startPrank(owner);
+        vault.setMandate(
+            StrategyVault.Mandate({
+                maxLeverage: 5, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0, maxKeeperSlippageBps: 50
+            })
+        );
+        vault.addMarket(market);
+        vault.setKeeper(keeper);
+        vm.stopPrank();
+
+        (MockGmxExchangeRouter er, address router) = _gmx();
+        asset.mint(address(vault), 1_000e18);
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketIncreaseOrder memory order = _increaseOrder(address(er), router, 1_000e30, 1_000e18);
+        order.maxSlippageBps = 51;
+        order.acceptablePrice = 50_255e30;
+        order = _signKeeperIncreaseOrder(order);
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__KeeperSlippageExceeded.selector);
+        vault.createGmxMarketIncreaseOrder{value: 0.01 ether}(order);
+    }
+
     function test_OnlyOwnerCanSetGmxRouting() external {
         vm.expectRevert(); // OwnableUnauthorizedAccount
         vault.setGmxRouting(address(1), address(2), address(3));
@@ -560,7 +703,9 @@ contract StrategyVaultTest is Test {
         // keeper set, mandate set, but market not allowed
         vm.startPrank(owner);
         vault.setMandate(
-            StrategyVault.Mandate({maxLeverage: 5, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0})
+            StrategyVault.Mandate({
+                maxLeverage: 5, maxPositionSizeUsd: 1_000_000e30, minRebalanceInterval: 0, maxKeeperSlippageBps: 200
+            })
         );
         vault.setKeeper(keeper);
         vm.stopPrank();
@@ -571,6 +716,49 @@ contract StrategyVaultTest is Test {
 
         vm.prank(keeper);
         vm.expectRevert(abi.encodeWithSelector(StrategyVault.StrategyVault__MarketNotAllowed.selector, market));
+        vault.createGmxMarketDecreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_KeeperCanSubmitConformingDecrease() external {
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er,) = _gmx();
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketDecreaseOrder memory order = _decreaseOrder(address(er));
+        order.intentNonce = 9;
+        order = _signKeeperDecreaseOrder(order);
+
+        vm.prank(keeper);
+        bytes32 orderKey = vault.createGmxMarketDecreaseOrder{value: 0.01 ether}(order);
+
+        assertEq(orderKey, keccak256("order-key"));
+    }
+
+    function test_KeeperDecreaseLongRevertsWhenAcceptablePriceBelowBound() external {
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er,) = _gmx();
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketDecreaseOrder memory order = _decreaseOrder(address(er));
+        order.isLong = true;
+        order.acceptablePrice = 49_000e30 - 1;
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__KeeperSlippageExceeded.selector);
+        vault.createGmxMarketDecreaseOrder{value: 0.01 ether}(order);
+    }
+
+    function test_KeeperDecreaseShortRevertsWhenAcceptablePriceAboveBound() external {
+        _configure(0, keeper);
+        (MockGmxExchangeRouter er,) = _gmx();
+        vm.deal(keeper, 0.01 ether);
+
+        StrategyVault.GmxMarketDecreaseOrder memory order = _decreaseOrder(address(er));
+        order.isLong = false;
+        order.acceptablePrice = 51_000e30 + 1;
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVault.StrategyVault__KeeperSlippageExceeded.selector);
         vault.createGmxMarketDecreaseOrder{value: 0.01 ether}(order);
     }
 
@@ -594,11 +782,121 @@ contract StrategyVaultTest is Test {
             collateralWithdrawalAmount: 100e18,
             acceptablePrice: 49_000e30,
             executionFee: 0.01 ether,
+            referencePrice: 50_000e30,
+            maxSlippageBps: 200,
+            intentNonce: 0,
+            intentDeadline: block.timestamp + 1 hours,
             callbackGasLimit: 0,
             minOutputAmount: 95e18,
             decreasePositionSwapType: IGmxV2ExchangeRouter.DecreasePositionSwapType.NoSwap,
-            referralCode: bytes32("agent-invest")
+            referralCode: bytes32("agent-invest"),
+            ownerSignature: ""
         });
+    }
+
+    function _signKeeperIncreaseOrder(StrategyVault.GmxMarketIncreaseOrder memory order)
+        internal
+        view
+        returns (StrategyVault.GmxMarketIncreaseOrder memory)
+    {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                KEEPER_INCREASE_ORDER_INTENT_TYPEHASH,
+                keeper,
+                _hashKeeperIncreaseOrderFields(order),
+                order.referencePrice,
+                order.maxSlippageBps,
+                order.intentNonce,
+                order.intentDeadline
+            )
+        );
+        order.ownerSignature = _signTypedData(structHash);
+        return order;
+    }
+
+    function _signKeeperDecreaseOrder(StrategyVault.GmxMarketDecreaseOrder memory order)
+        internal
+        view
+        returns (StrategyVault.GmxMarketDecreaseOrder memory)
+    {
+        bytes32 structHash = keccak256(
+            abi.encode(
+                KEEPER_DECREASE_ORDER_INTENT_TYPEHASH,
+                keeper,
+                _hashKeeperDecreaseOrderFields(order),
+                order.referencePrice,
+                order.maxSlippageBps,
+                order.intentNonce,
+                order.intentDeadline
+            )
+        );
+        order.ownerSignature = _signTypedData(structHash);
+        return order;
+    }
+
+    function _hashKeeperIncreaseOrderFields(StrategyVault.GmxMarketIncreaseOrder memory order)
+        internal
+        pure
+        returns (bytes32)
+    {
+        bytes32 routingHash = keccak256(
+            abi.encode(
+                order.exchangeRouter,
+                order.router,
+                order.orderVault,
+                order.market,
+                order.collateralToken,
+                order.isLong,
+                order.shouldUnwrapNativeToken
+            )
+        );
+        bytes32 numbersHash = keccak256(
+            abi.encode(order.sizeDeltaUsd, order.collateralAmount, order.acceptablePrice, order.executionFee)
+        );
+        return keccak256(abi.encode(routingHash, numbersHash, order.referralCode));
+    }
+
+    function _hashKeeperDecreaseOrderFields(StrategyVault.GmxMarketDecreaseOrder memory order)
+        internal
+        pure
+        returns (bytes32)
+    {
+        bytes32 routingHash = keccak256(
+            abi.encode(
+                order.exchangeRouter,
+                order.orderVault,
+                order.market,
+                order.collateralToken,
+                order.isLong,
+                order.shouldUnwrapNativeToken
+            )
+        );
+        bytes32 numbersHash = keccak256(
+            abi.encode(
+                order.sizeDeltaUsd,
+                order.collateralWithdrawalAmount,
+                order.acceptablePrice,
+                order.executionFee,
+                order.minOutputAmount,
+                uint8(order.decreasePositionSwapType)
+            )
+        );
+        return keccak256(abi.encode(routingHash, numbersHash, order.referralCode));
+    }
+
+    function _signTypedData(bytes32 structHash) internal view returns (bytes memory) {
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("AgentInvestStrategyVault")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(vault)
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(OWNER_PRIVATE_KEY, digest);
+        return abi.encodePacked(r, s, v);
     }
 
     /*//////////////////////////////////////////////////////////////
