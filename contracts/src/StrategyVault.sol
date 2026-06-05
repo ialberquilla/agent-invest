@@ -13,6 +13,8 @@ import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/Pau
 import {EIP712Upgradeable} from "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol";
 
 import {IGmxV2ExchangeRouter} from "./interfaces/IGmxV2ExchangeRouter.sol";
+import {StrategyVaultBase} from "./StrategyVaultBase.sol";
+import {GmxOrderBuilder} from "./lib/GmxOrderBuilder.sol";
 
 /**
  * @title StrategyVault
@@ -45,6 +47,7 @@ import {IGmxV2ExchangeRouter} from "./interfaces/IGmxV2ExchangeRouter.sol";
  *        price bounds rely on an owner-signed offchain reference price with a short expiry.
  */
 contract StrategyVault is
+    StrategyVaultBase,
     Initializable,
     Ownable2StepUpgradeable,
     PausableUpgradeable,
@@ -53,164 +56,6 @@ contract StrategyVault is
 {
     using SafeERC20 for IERC20;
     using EnumerableSet for EnumerableSet.AddressSet;
-
-    /// @notice Upper bound on the allowlist size (bounds gas + keeps the mandate legible).
-    uint256 public constant MAX_ALLOWED_MARKETS = 32;
-
-    /// @notice Keeper intents cannot allow more than 10% price slippage from the signed reference price.
-    uint256 public constant MAX_KEEPER_SLIPPAGE_BPS = 1_000;
-
-    uint256 private constant BPS_DIVISOR = 10_000;
-
-    bytes32 private constant KEEPER_INCREASE_ORDER_INTENT_TYPEHASH = keccak256(
-        "KeeperIncreaseOrderIntent(address keeper,bytes32 orderHash,uint256 referencePrice,uint256 maxSlippageBps,uint256 nonce,uint256 deadline)"
-    );
-
-    bytes32 private constant KEEPER_DECREASE_ORDER_INTENT_TYPEHASH = keccak256(
-        "KeeperDecreaseOrderIntent(address keeper,bytes32 orderHash,uint256 referencePrice,uint256 maxSlippageBps,uint256 nonce,uint256 deadline)"
-    );
-
-    /// @notice Owner-committed limits the keeper is bound by. `allowedMarkets` is managed separately
-    ///         (it is an EnumerableSet and cannot live in a memory struct).
-    struct Mandate {
-        uint256 maxLeverage; // integer multiple, e.g. 3 == 3x (per-order, see limitations)
-        uint256 maxPositionSizeUsd; // GMX 1e30 USD, cap on a single increase's sizeDeltaUsd
-        uint256 minRebalanceInterval; // seconds between keeper increase orders
-        uint256 maxKeeperSlippageBps; // max owner-signed keeper slippage from the signed reference price
-    }
-
-    /// @custom:storage-location erc7201:agentinvest.storage.StrategyVault
-    struct StrategyVaultStorage {
-        IERC20 asset;
-        address keeper;
-        uint256 collateralUsdScale; // multiply token amount by this to get 1e30 USD (assumes $1)
-        uint256 lastKeeperIncreaseAt;
-        Mandate mandate;
-        EnumerableSet.AddressSet allowedMarkets;
-        // Canonical GMX v2 routing the keeper is pinned to. Every keeper order is validated against
-        // these so a compromised keeper cannot point routing/collateral at attacker contracts.
-        address gmxExchangeRouter;
-        address gmxRouter;
-        address gmxOrderVault;
-        mapping(uint256 nonce => bool used) usedKeeperOrderIntentNonces;
-    }
-
-    // keccak256(abi.encode(uint256(keccak256("agentinvest.storage.StrategyVault")) - 1)) & ~bytes32(uint256(0xff))
-    bytes32 private constant STRATEGY_VAULT_STORAGE_LOCATION =
-        0xb9b2998beb57c4954282a856f7caa8a2becd30d6222cd15bddaf30bd0b902600;
-
-    function _strategyVaultStorage() private pure returns (StrategyVaultStorage storage $) {
-        assembly {
-            $.slot := STRATEGY_VAULT_STORAGE_LOCATION
-        }
-    }
-
-    event Deposited(address indexed from, uint256 amount);
-    event Withdrawn(address indexed to, uint256 amount);
-    event KeeperUpdated(address indexed keeper);
-    event GmxRoutingUpdated(address indexed exchangeRouter, address indexed router, address indexed orderVault);
-    event MandateUpdated(
-        uint256 maxLeverage, uint256 maxPositionSizeUsd, uint256 minRebalanceInterval, uint256 maxKeeperSlippageBps
-    );
-    event MarketAllowed(address indexed market);
-    event MarketDisallowed(address indexed market);
-    event Executed(address indexed target, uint256 value, bytes result);
-    event GmxMarketIncreaseOrderCreated(
-        bytes32 indexed orderKey,
-        address indexed exchangeRouter,
-        address indexed market,
-        address collateralToken,
-        bool isLong,
-        uint256 sizeDeltaUsd,
-        uint256 collateralAmount,
-        uint256 executionFee
-    );
-    event GmxMarketDecreaseOrderCreated(
-        bytes32 indexed orderKey,
-        address indexed exchangeRouter,
-        address indexed market,
-        address collateralToken,
-        bool isLong,
-        uint256 sizeDeltaUsd,
-        uint256 collateralWithdrawalAmount,
-        uint256 executionFee
-    );
-    event GmxOrderCancelled(bytes32 indexed orderKey, address indexed exchangeRouter, uint256 executionFee);
-    event KeeperOrderIntentConsumed(bytes32 indexed digest, uint256 indexed nonce, address indexed keeper);
-
-    struct GmxMarketIncreaseOrder {
-        address exchangeRouter;
-        address router;
-        address orderVault;
-        address market;
-        address collateralToken;
-        address receiver;
-        address cancellationReceiver;
-        address callbackContract;
-        address uiFeeReceiver;
-        bool isLong;
-        bool shouldUnwrapNativeToken;
-        uint256 sizeDeltaUsd;
-        uint256 collateralAmount;
-        uint256 acceptablePrice;
-        uint256 executionFee;
-        uint256 referencePrice;
-        uint256 maxSlippageBps;
-        uint256 intentNonce;
-        uint256 intentDeadline;
-        uint256 callbackGasLimit;
-        bytes32 referralCode;
-        bytes ownerSignature;
-    }
-
-    struct GmxMarketDecreaseOrder {
-        address exchangeRouter;
-        address orderVault;
-        address market;
-        address collateralToken;
-        address receiver;
-        address cancellationReceiver;
-        address callbackContract;
-        address uiFeeReceiver;
-        bool isLong;
-        bool shouldUnwrapNativeToken;
-        uint256 sizeDeltaUsd;
-        uint256 collateralWithdrawalAmount;
-        uint256 acceptablePrice;
-        uint256 executionFee;
-        uint256 referencePrice;
-        uint256 maxSlippageBps;
-        uint256 intentNonce;
-        uint256 intentDeadline;
-        uint256 callbackGasLimit;
-        uint256 minOutputAmount;
-        IGmxV2ExchangeRouter.DecreasePositionSwapType decreasePositionSwapType;
-        bytes32 referralCode;
-        bytes ownerSignature;
-    }
-
-    error StrategyVault__ZeroOwner();
-    error StrategyVault__ZeroAsset();
-    error StrategyVault__ZeroAmount();
-    error StrategyVault__ZeroTarget();
-    error StrategyVault__ZeroAddress();
-    error StrategyVault__NotAuthorized();
-    error StrategyVault__UntrustedRouting();
-    error StrategyVault__InvalidMandate();
-    error StrategyVault__MaxMarketsExceeded();
-    error StrategyVault__MarketNotAllowed(address market);
-    error StrategyVault__PositionSizeExceeded();
-    error StrategyVault__LeverageExceeded();
-    error StrategyVault__RebalanceTooSoon();
-    error StrategyVault__UnsupportedCollateralDecimals();
-    error StrategyVault__InsufficientIdleBalance();
-    error StrategyVault__InvalidExecutionFee();
-    error StrategyVault__InvalidOrderIntent();
-    error StrategyVault__OrderIntentExpired();
-    error StrategyVault__OrderIntentNonceUsed(uint256 nonce);
-    error StrategyVault__KeeperSlippageExceeded();
-    error StrategyVault__InvalidReferencePrice();
-    error StrategyVault__CallFailed(bytes returndata);
 
     /// @dev GMX orders may be submitted by the owner or the bounded keeper; both are mandate-checked.
     modifier onlyOwnerOrKeeper() {
@@ -397,10 +242,10 @@ contract StrategyVault is
         whenNotPaused
         returns (bytes32 orderKey)
     {
-        _validateGmxOrder(order);
-        if (msg.value != order.executionFee) revert StrategyVault__InvalidExecutionFee();
-        _enforceIncreaseMandate(order);
-        _enforceKeeperIncreaseIntent(order);
+        _requireValidIncreaseOrderShape(order);
+        _requireExactExecutionFee(order.executionFee);
+        _requireIncreaseWithinMandate(order);
+        _requireKeeperIncreaseIntent(order);
 
         IERC20(order.collateralToken).forceApprove(order.router, order.collateralAmount);
 
@@ -409,7 +254,8 @@ contract StrategyVault is
         calls[1] = abi.encodeCall(
             IGmxV2ExchangeRouter.sendTokens, (order.collateralToken, order.orderVault, order.collateralAmount)
         );
-        calls[2] = abi.encodeCall(IGmxV2ExchangeRouter.createOrder, (_buildGmxCreateOrderParams(order)));
+        calls[2] =
+            abi.encodeCall(IGmxV2ExchangeRouter.createOrder, (GmxOrderBuilder.buildIncrease(order, address(this))));
 
         bytes[] memory results = IGmxV2ExchangeRouter(order.exchangeRouter).multicall{value: msg.value}(calls);
         orderKey = abi.decode(results[2], (bytes32));
@@ -434,8 +280,8 @@ contract StrategyVault is
         whenNotPaused
         returns (bytes32 orderKey)
     {
-        _validateGmxDecreaseOrder(order);
-        if (msg.value != order.executionFee) revert StrategyVault__InvalidExecutionFee();
+        _requireValidDecreaseOrderShape(order);
+        _requireExactExecutionFee(order.executionFee);
         StrategyVaultStorage storage $ = _strategyVaultStorage();
         if (
             order.exchangeRouter != $.gmxExchangeRouter || order.orderVault != $.gmxOrderVault
@@ -443,11 +289,12 @@ contract StrategyVault is
         ) revert StrategyVault__UntrustedRouting();
         // De-risking: only require the market be on the allowlist; no size/leverage/interval gate.
         if (!$.allowedMarkets.contains(order.market)) revert StrategyVault__MarketNotAllowed(order.market);
-        _enforceKeeperDecreaseIntent(order, $.mandate.maxKeeperSlippageBps);
+        _requireKeeperDecreaseIntent(order, $.mandate.maxKeeperSlippageBps);
 
         bytes[] memory calls = new bytes[](2);
         calls[0] = abi.encodeCall(IGmxV2ExchangeRouter.sendWnt, (order.orderVault, order.executionFee));
-        calls[1] = abi.encodeCall(IGmxV2ExchangeRouter.createOrder, (_buildGmxDecreaseOrderParams(order)));
+        calls[1] =
+            abi.encodeCall(IGmxV2ExchangeRouter.createOrder, (GmxOrderBuilder.buildDecrease(order, address(this))));
 
         bytes[] memory results = IGmxV2ExchangeRouter(order.exchangeRouter).multicall{value: msg.value}(calls);
         orderKey = abi.decode(results[1], (bytes32));
@@ -472,7 +319,7 @@ contract StrategyVault is
         whenNotPaused
     {
         if (exchangeRouter == address(0)) revert StrategyVault__ZeroAddress();
-        if (msg.value != executionFee) revert StrategyVault__InvalidExecutionFee();
+        _requireExactExecutionFee(executionFee);
 
         IGmxV2ExchangeRouter(exchangeRouter).cancelOrder{value: msg.value}(orderKey);
 
@@ -486,7 +333,7 @@ contract StrategyVault is
     /// @dev Enforce the mandate on an increase order. Routing/collateral are pinned to the canonical
     ///      GMX config + vault asset; market allowlist + per-order notional + per-order leverage apply
     ///      to every caller; the rebalance interval throttles the keeper only.
-    function _enforceIncreaseMandate(GmxMarketIncreaseOrder calldata order) internal {
+    function _requireIncreaseWithinMandate(GmxMarketIncreaseOrder calldata order) internal {
         StrategyVaultStorage storage $ = _strategyVaultStorage();
 
         if (
@@ -512,7 +359,7 @@ contract StrategyVault is
         }
     }
 
-    function _enforceKeeperIncreaseIntent(GmxMarketIncreaseOrder calldata order) internal {
+    function _requireKeeperIncreaseIntent(GmxMarketIncreaseOrder calldata order) internal {
         StrategyVaultStorage storage $ = _strategyVaultStorage();
         if (msg.sender != $.keeper) return;
 
@@ -536,7 +383,7 @@ contract StrategyVault is
         _consumeKeeperOrderIntent($, order.intentNonce, order.intentDeadline, digest, order.ownerSignature);
     }
 
-    function _enforceKeeperDecreaseIntent(GmxMarketDecreaseOrder calldata order, uint256 mandateMaxSlippageBps)
+    function _requireKeeperDecreaseIntent(GmxMarketDecreaseOrder calldata order, uint256 mandateMaxSlippageBps)
         internal
     {
         StrategyVaultStorage storage $ = _strategyVaultStorage();
@@ -649,96 +496,21 @@ contract StrategyVault is
         return isIncrease == isLong;
     }
 
-    function _validateGmxOrder(GmxMarketIncreaseOrder calldata order) internal pure {
+    function _requireExactExecutionFee(uint256 executionFee) internal view {
+        if (msg.value != executionFee) revert StrategyVault__InvalidExecutionFee();
+    }
+
+    function _requireValidIncreaseOrderShape(GmxMarketIncreaseOrder calldata order) internal pure {
         if (
             order.exchangeRouter == address(0) || order.router == address(0) || order.orderVault == address(0)
                 || order.market == address(0) || order.collateralToken == address(0)
         ) revert StrategyVault__ZeroAddress();
     }
 
-    function _validateGmxDecreaseOrder(GmxMarketDecreaseOrder calldata order) internal pure {
+    function _requireValidDecreaseOrderShape(GmxMarketDecreaseOrder calldata order) internal pure {
         if (
             order.exchangeRouter == address(0) || order.orderVault == address(0) || order.market == address(0)
                 || order.collateralToken == address(0)
         ) revert StrategyVault__ZeroAddress();
-    }
-
-    function _buildGmxCreateOrderParams(GmxMarketIncreaseOrder calldata order)
-        internal
-        view
-        returns (IGmxV2ExchangeRouter.CreateOrderParams memory params)
-    {
-        // Fund-relevant addresses are pinned to the vault — the keeper cannot redirect collateral,
-        // PnL, cancellation refunds, UI fees, or a callback target to itself.
-        address[] memory swapPath = new address[](0);
-        bytes32[] memory dataList = new bytes32[](0);
-
-        params = IGmxV2ExchangeRouter.CreateOrderParams({
-            addresses: IGmxV2ExchangeRouter.CreateOrderParamsAddresses({
-                receiver: address(this),
-                cancellationReceiver: address(this),
-                callbackContract: address(0),
-                uiFeeReceiver: address(0),
-                market: order.market,
-                initialCollateralToken: order.collateralToken,
-                swapPath: swapPath
-            }),
-            numbers: IGmxV2ExchangeRouter.CreateOrderParamsNumbers({
-                sizeDeltaUsd: order.sizeDeltaUsd,
-                initialCollateralDeltaAmount: order.collateralAmount,
-                triggerPrice: 0,
-                acceptablePrice: order.acceptablePrice,
-                executionFee: order.executionFee,
-                callbackGasLimit: 0,
-                minOutputAmount: 0,
-                validFromTime: 0
-            }),
-            orderType: IGmxV2ExchangeRouter.OrderType.MarketIncrease,
-            decreasePositionSwapType: IGmxV2ExchangeRouter.DecreasePositionSwapType.NoSwap,
-            isLong: order.isLong,
-            shouldUnwrapNativeToken: order.shouldUnwrapNativeToken,
-            autoCancel: false,
-            referralCode: order.referralCode,
-            dataList: dataList
-        });
-    }
-
-    function _buildGmxDecreaseOrderParams(GmxMarketDecreaseOrder calldata order)
-        internal
-        view
-        returns (IGmxV2ExchangeRouter.CreateOrderParams memory params)
-    {
-        // Returned collateral + realized PnL go only to the vault; the keeper cannot redirect them.
-        address[] memory swapPath = new address[](0);
-        bytes32[] memory dataList = new bytes32[](0);
-
-        params = IGmxV2ExchangeRouter.CreateOrderParams({
-            addresses: IGmxV2ExchangeRouter.CreateOrderParamsAddresses({
-                receiver: address(this),
-                cancellationReceiver: address(this),
-                callbackContract: address(0),
-                uiFeeReceiver: address(0),
-                market: order.market,
-                initialCollateralToken: order.collateralToken,
-                swapPath: swapPath
-            }),
-            numbers: IGmxV2ExchangeRouter.CreateOrderParamsNumbers({
-                sizeDeltaUsd: order.sizeDeltaUsd,
-                initialCollateralDeltaAmount: order.collateralWithdrawalAmount,
-                triggerPrice: 0,
-                acceptablePrice: order.acceptablePrice,
-                executionFee: order.executionFee,
-                callbackGasLimit: 0,
-                minOutputAmount: order.minOutputAmount,
-                validFromTime: 0
-            }),
-            orderType: IGmxV2ExchangeRouter.OrderType.MarketDecrease,
-            decreasePositionSwapType: order.decreasePositionSwapType,
-            isLong: order.isLong,
-            shouldUnwrapNativeToken: order.shouldUnwrapNativeToken,
-            autoCancel: false,
-            referralCode: order.referralCode,
-            dataList: dataList
-        });
     }
 }
