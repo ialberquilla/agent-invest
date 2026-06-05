@@ -358,7 +358,7 @@ function evaluate(expect: Expect, p: Proposal, input: ProposeCandidatesInput): A
   const templates = cs.map((c) => c.template_id);
 
   // --- universal structural invariants ---
-  push("candidate_count", "3..12", cs.length, cs.length >= 3 && cs.length <= 12);
+  push("candidate_count", "3..8", cs.length, cs.length >= 3 && cs.length <= 8);
 
   const lo = input.thesis.constraints.asset_count_min;
   const hi = Math.min(input.thesis.constraints.asset_count_max, input.universe.coin_ids.length);

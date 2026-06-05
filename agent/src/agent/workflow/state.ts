@@ -959,12 +959,12 @@ export function validateProposal(
     throw new ProposalValidationError("candidates must be an array");
   }
   // run_candidate_batch (the downstream Python CLI) requires >= 3
-  // candidates per batch. The workflow allows up to 12 because
+  // candidates per batch and defaults to a max of 8. The workflow allows up to 8 because
   // propose_candidates expands the LLM's small seed shortlist into a
   // bounded deterministic parameter sweep before backtesting.
-  if (value.candidates.length < 3 || value.candidates.length > 12) {
+  if (value.candidates.length < 3 || value.candidates.length > 8) {
     throw new ProposalValidationError(
-      `candidates must contain between 3 and 12 entries (got ${value.candidates.length})`,
+      `candidates must contain between 3 and 8 entries (got ${value.candidates.length})`,
     );
   }
 
