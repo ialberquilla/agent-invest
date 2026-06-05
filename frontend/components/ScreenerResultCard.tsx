@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { usePrivy, useWallets } from "@privy-io/react-auth";
 import { ArrowUpDown, Pin, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +23,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
+import { createDirectGmxMarketIncreaseOrder } from "@/lib/gmx-direct-trade";
 import {
   getAnonymousUserId,
   isScreenerPinned,
@@ -377,7 +379,46 @@ export function ScreenerResultCard({
 }
 
 function OrderTicketPreview({ ticket }: { ticket: OrderTicket }) {
+  const { authenticated, login } = usePrivy();
+  const { wallets } = useWallets();
   const isShort = ticket.side === "Short";
+  const [collateralUsd, setCollateralUsd] = useState("100");
+  const [leverage, setLeverage] = useState("1");
+  const [slippagePercent, setSlippagePercent] = useState("1");
+  const [status, setStatus] = useState<"idle" | "approving" | "submitted">("idle");
+  const [error, setError] = useState<string | null>(null);
+  const [orderHash, setOrderHash] = useState<string | null>(null);
+
+  async function submitOrder() {
+    if (!authenticated) {
+      login();
+      return;
+    }
+    const wallet = wallets[0];
+    if (!wallet) {
+      setError("Connect a wallet before trading");
+      return;
+    }
+    setStatus("approving");
+    setError(null);
+    setOrderHash(null);
+    try {
+      const provider = await wallet.getEthereumProvider();
+      const result = await createDirectGmxMarketIncreaseOrder(provider, {
+        row: ticket.row,
+        side: ticket.side,
+        collateralUsd,
+        leverage,
+        slippageBps: Math.round(Number(slippagePercent) * 100),
+      });
+      setOrderHash(result.orderHash);
+      setStatus("submitted");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "GMX order failed");
+      setStatus("idle");
+    }
+  }
+
   return (
     <>
       <SheetHeader>
@@ -385,8 +426,8 @@ function OrderTicketPreview({ ticket }: { ticket: OrderTicket }) {
           {ticket.side} {ticket.row.symbol} on GMX
         </SheetTitle>
         <SheetDescription>
-          Confirmation preview only. The next slice will connect this ticket to
-          the user&apos;s Privy wallet and GMX order router.
+          Creates a GMX V2 market increase order directly from your connected
+          wallet. You will sign a USDC approval, then the GMX order transaction.
         </SheetDescription>
       </SheetHeader>
       <div className="space-y-4 px-4">
@@ -394,10 +435,36 @@ function OrderTicketPreview({ ticket }: { ticket: OrderTicket }) {
           <TicketLine label="Side" value={ticket.side} />
           <TicketLine label="Market" value={ticket.row.market_name ?? ticket.row.symbol} />
           <TicketLine label="Collateral" value="USDC on Arbitrum" />
-          <TicketLine label="Notional" value="User enters before signing" />
-          <TicketLine label="Leverage" value="1.0x default" />
-          <TicketLine label="Slippage" value="User confirms acceptable price" />
-          <TicketLine label="Execution fee" value="Estimated before signing" />
+          <TicketLine label="Execution" value="GMX market increase" />
+        </div>
+        <div className="grid gap-3 rounded-xl border p-3 text-sm">
+          <label className="space-y-1.5 font-medium">
+            <span>Collateral amount (USDC)</span>
+            <Input
+              inputMode="decimal"
+              value={collateralUsd}
+              onChange={(event) => setCollateralUsd(event.target.value)}
+              placeholder="100"
+            />
+          </label>
+          <label className="space-y-1.5 font-medium">
+            <span>Leverage</span>
+            <Input
+              inputMode="decimal"
+              value={leverage}
+              onChange={(event) => setLeverage(event.target.value)}
+              placeholder="1"
+            />
+          </label>
+          <label className="space-y-1.5 font-medium">
+            <span>Slippage tolerance (%)</span>
+            <Input
+              inputMode="decimal"
+              value={slippagePercent}
+              onChange={(event) => setSlippagePercent(event.target.value)}
+              placeholder="1"
+            />
+          </label>
         </div>
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm leading-6 text-amber-900 dark:text-amber-100">
           {isShort
@@ -405,12 +472,35 @@ function OrderTicketPreview({ ticket }: { ticket: OrderTicket }) {
             : "Leveraged longs above 1.0x require explicit confirmation before signing."}
         </div>
         <p className="text-xs leading-5 text-muted-foreground">
-          uiFeeReceiver will be read from configuration when transaction signing
-          is wired. No StrategyVault is used for these discretionary orders.
+          This does not use a StrategyVault. It approves the GMX Router to pull
+          your USDC and submits `ExchangeRouter.multicall` from your wallet.
+          Execution fee is estimated from live Arbitrum RPC. Acceptable price is
+          computed from live GMX ticker prices and your slippage tolerance.
         </p>
+        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+        {orderHash ? (
+          <p className="break-all text-xs text-muted-foreground">
+            Submitted: {orderHash}
+          </p>
+        ) : null}
       </div>
       <SheetFooter>
-        <Button disabled>Connect GMX signing in next slice</Button>
+        {ticket.row.gmx_market ? (
+          <Button
+            onClick={submitOrder}
+            disabled={status === "approving" || status === "submitted"}
+          >
+            {status === "approving"
+              ? "Signing GMX order..."
+              : status === "submitted"
+                ? "GMX order submitted"
+                : authenticated
+                  ? `Trade ${ticket.side} on GMX`
+                  : "Log in to trade"}
+          </Button>
+        ) : (
+          <Button disabled>GMX market unavailable</Button>
+        )}
       </SheetFooter>
     </>
   );

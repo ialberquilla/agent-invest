@@ -1,8 +1,13 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { ScreenerResultCard } from "@/components/ScreenerResultCard";
 import type { ScreenerResult } from "@/lib/types";
+
+vi.mock("@privy-io/react-auth", () => ({
+  usePrivy: () => ({ authenticated: true, login: vi.fn() }),
+  useWallets: () => ({ wallets: [] }),
+}));
 
 const result: ScreenerResult = {
   type: "market_screener",
@@ -78,13 +83,15 @@ describe("ScreenerResultCard", () => {
     ).toBeDisabled();
   });
 
-  it("opens an order ticket preview instead of submitting", () => {
+  it("opens an in-app GMX order ticket", () => {
     render(<ScreenerResultCard result={result} />);
 
     fireEvent.click(screen.getAllByRole("button", { name: /Short/i })[0]);
 
     expect(screen.getByText("Short BTC on GMX")).toBeInTheDocument();
-    expect(screen.getByText("Confirmation preview only.", { exact: false })).toBeInTheDocument();
-    expect(screen.getByText("Connect GMX signing in next slice")).toBeDisabled();
+    expect(screen.getByText("Creates a GMX V2 market increase order", { exact: false })).toBeInTheDocument();
+    expect(screen.getByLabelText(/Collateral amount/i)).toHaveValue("100");
+    expect(screen.getByLabelText(/Slippage tolerance/i)).toHaveValue("1");
+    expect(screen.getByRole("button", { name: /Trade Short on GMX/i })).toBeEnabled();
   });
 });
