@@ -34,7 +34,13 @@ contract VaultFactory {
 
     /// @param implementation_ The {StrategyVault} logic contract (must have disabled initializers).
     /// @param beaconOwner The upgrade authority over every vault (use a Timelock + multisig).
-    constructor(address implementation_, address beaconOwner, address gmxExchangeRouter_, address gmxRouter_, address gmxOrderVault_) {
+    constructor(
+        address implementation_,
+        address beaconOwner,
+        address gmxExchangeRouter_,
+        address gmxRouter_,
+        address gmxOrderVault_
+    ) {
         if (
             implementation_ == address(0) || beaconOwner == address(0) || gmxExchangeRouter_ == address(0)
                 || gmxRouter_ == address(0) || gmxOrderVault_ == address(0)

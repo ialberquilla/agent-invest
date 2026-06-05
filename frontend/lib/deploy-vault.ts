@@ -9,22 +9,17 @@ import {
   parseUnits,
 } from "viem";
 import { arbitrum, arbitrumSepolia } from "viem/chains";
+import {
+  STRATEGY_VAULT_ADDRESSES,
+  STRATEGY_VAULT_CHAIN_ID,
+} from "@/lib/contract-addresses";
 
 const SUPPORTED_CHAINS = [arbitrum, arbitrumSepolia] as const;
 
-// Defaults to Arbitrum Sepolia + Circle testnet USDC so the frontend can exercise
-// an end-to-end deployment without risking mainnet funds.
-export const STRATEGY_VAULT_CHAIN_ID = Number(
-  process.env.NEXT_PUBLIC_STRATEGY_VAULT_CHAIN_ID ?? arbitrumSepolia.id,
-);
-export const STRATEGY_VAULT_ASSET =
-  process.env.NEXT_PUBLIC_STRATEGY_VAULT_ASSET ??
-  "0x75faf114eafb1BDbe2F0316DF893fd58CE46AA4d";
-export const STRATEGY_VAULT_FACTORY_ADDRESS =
-  process.env.NEXT_PUBLIC_STRATEGY_VAULT_FACTORY_ADDRESS ??
-  (STRATEGY_VAULT_CHAIN_ID === arbitrumSepolia.id
-    ? "0xDc5c257107C1C3533C7a097a94DfeF19dcC9e599"
-    : undefined);
+export { STRATEGY_VAULT_CHAIN_ID };
+
+export const STRATEGY_VAULT_ASSET = STRATEGY_VAULT_ADDRESSES.asset;
+export const STRATEGY_VAULT_FACTORY_ADDRESS = STRATEGY_VAULT_ADDRESSES.factory;
 
 export type VaultDeployment = {
   chainId: number;
@@ -216,10 +211,6 @@ export async function deployVaultOnChain(
   const currentChainId = await walletClient.getChainId();
   if (currentChainId !== STRATEGY_VAULT_CHAIN_ID) {
     await walletClient.switchChain({ id: STRATEGY_VAULT_CHAIN_ID });
-  }
-
-  if (!STRATEGY_VAULT_FACTORY_ADDRESS) {
-    throw new Error("Set NEXT_PUBLIC_STRATEGY_VAULT_FACTORY_ADDRESS before deploying a vault");
   }
 
   const createVaultHash = await walletClient.writeContract({
