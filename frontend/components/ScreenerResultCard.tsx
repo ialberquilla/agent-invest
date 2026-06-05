@@ -330,7 +330,7 @@ export function ScreenerResultCard({
       <Sheet open={isPinDialogOpen} onOpenChange={setIsPinDialogOpen}>
         <SheetContent
           side="bottom"
-          className="left-1/2 top-1/2 bottom-auto w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border p-0 shadow-2xl data-[side=bottom]:inset-x-auto data-[side=bottom]:bottom-auto data-[side=bottom]:border data-[side=bottom]:data-ending-style:translate-y-[-45%] data-[side=bottom]:data-starting-style:translate-y-[-45%]"
+          className="!bottom-auto !left-1/2 !right-auto top-1/2 w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border p-0 shadow-2xl data-[side=bottom]:!bottom-auto data-[side=bottom]:!left-1/2 data-[side=bottom]:!right-auto data-[side=bottom]:border data-[side=bottom]:data-ending-style:translate-y-[-45%] data-[side=bottom]:data-starting-style:translate-y-[-45%]"
         >
           <form
             onSubmit={(event) => {
