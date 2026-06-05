@@ -62,6 +62,7 @@ import {
   bindVaultToMandate as defaultBindVaultToMandate,
   readVaultForMandate as defaultReadVaultForMandate,
 } from "../db/repositories/vaults";
+import { resolveMarketsBatch as defaultResolveMarketsBatch } from "../db/repositories/gmx-markets";
 import {
   deletePinnedScreener as defaultDeletePinnedScreener,
   listPinnedScreeners as defaultListPinnedScreeners,
@@ -100,6 +101,7 @@ type Repositories = {
   insertMandate: typeof defaultInsertMandate;
   bindVaultToMandate: typeof defaultBindVaultToMandate;
   readVaultForMandate: typeof defaultReadVaultForMandate;
+  resolveMarketsBatch: typeof defaultResolveMarketsBatch;
   listPinnedScreeners: typeof defaultListPinnedScreeners;
   upsertPinnedScreener: typeof defaultUpsertPinnedScreener;
   readPinnedScreener: typeof defaultReadPinnedScreener;
@@ -947,6 +949,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     insertMandate: defaultInsertMandate,
     bindVaultToMandate: defaultBindVaultToMandate,
     readVaultForMandate: defaultReadVaultForMandate,
+    resolveMarketsBatch: defaultResolveMarketsBatch,
     listPinnedScreeners: defaultListPinnedScreeners,
     upsertPinnedScreener: defaultUpsertPinnedScreener,
     readPinnedScreener: defaultReadPinnedScreener,
@@ -1274,6 +1277,20 @@ export function buildServer(dependencies: ServerDependencies = {}) {
         template_id?: unknown;
       };
 
+      const targetAllocation = Array.isArray(spec.initial_target_allocation)
+        ? spec.initial_target_allocation
+        : [];
+      const coinIds = targetAllocation
+        .map((item) =>
+          isRecord(item) && typeof item.coin_id === "string"
+            ? item.coin_id
+            : null,
+        )
+        .filter((coinId): coinId is string => Boolean(coinId));
+      const { resolved, failures } = await repositories.resolveMarketsBatch(
+        coinIds,
+      );
+
       return {
         executable: false,
         reason:
@@ -1286,12 +1303,33 @@ export function buildServer(dependencies: ServerDependencies = {}) {
         asset_address: vault.assetAddress,
         template_id: spec.template_id ?? null,
         allowed_sides: spec.allowed_sides ?? null,
-        target_allocation: Array.isArray(spec.initial_target_allocation)
-          ? spec.initial_target_allocation
-          : [],
+        target_allocation: targetAllocation.map((item) => {
+          if (!isRecord(item) || typeof item.coin_id !== "string") return item;
+          const market = resolved.get(item.coin_id);
+          return {
+            ...item,
+            gmx_market: market
+              ? {
+                  chain: "arbitrum",
+                  market_token: market.gmxMarket,
+                  index_token: market.indexToken,
+                  long_token: market.longToken,
+                  short_token: market.shortToken,
+                  collateral_token: market.collateralToken,
+                  collateral_decimals: market.collateralDecimals,
+                }
+              : null,
+          };
+        }),
         missing: [
           "GMX exchangeRouter/router/orderVault for the active chain",
-          "GMX market address for each target allocation leg",
+          ...(failures.size > 0
+            ? [
+                `GMX market resolution for ${Array.from(failures.keys()).join(
+                  ", ",
+                )}`,
+              ]
+            : []),
           "acceptable price and execution fee calculation",
           "owner-signed vault mandate setup transactions",
         ],

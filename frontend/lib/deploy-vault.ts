@@ -64,7 +64,15 @@ export type VaultAllocationReadiness = {
   asset_address: string;
   template_id: string | null;
   allowed_sides: string | null;
-  target_allocation: Array<{ coin_id?: string; weight?: number }>;
+  target_allocation: Array<{
+    coin_id?: string;
+    weight?: number;
+    gmx_market?: null | {
+      market_token: string;
+      collateral_token: string;
+      collateral_decimals: number;
+    };
+  }>;
   missing?: string[];
 };
 
@@ -117,6 +125,80 @@ const STRATEGY_VAULT_USER_ABI = [
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
     stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "setGmxRouting",
+    inputs: [
+      { name: "exchangeRouter", type: "address" },
+      { name: "router", type: "address" },
+      { name: "orderVault", type: "address" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "withdraw",
+    inputs: [
+      { name: "amount", type: "uint256" },
+      { name: "to", type: "address" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "createGmxMarketIncreaseOrders",
+    inputs: [
+      {
+        name: "orders",
+        type: "tuple[]",
+        components: [
+          { name: "exchangeRouter", type: "address" },
+          { name: "router", type: "address" },
+          { name: "orderVault", type: "address" },
+          { name: "market", type: "address" },
+          { name: "collateralToken", type: "address" },
+          { name: "isLong", type: "bool" },
+          { name: "shouldUnwrapNativeToken", type: "bool" },
+          { name: "sizeDeltaUsd", type: "uint256" },
+          { name: "collateralAmount", type: "uint256" },
+          { name: "acceptablePrice", type: "uint256" },
+          { name: "executionFee", type: "uint256" },
+          { name: "referralCode", type: "bytes32" },
+        ],
+      },
+    ],
+    outputs: [{ name: "orderKeys", type: "bytes32[]" }],
+    stateMutability: "payable",
+  },
+  {
+    type: "function",
+    name: "createGmxMarketDecreaseOrders",
+    inputs: [
+      {
+        name: "orders",
+        type: "tuple[]",
+        components: [
+          { name: "exchangeRouter", type: "address" },
+          { name: "orderVault", type: "address" },
+          { name: "market", type: "address" },
+          { name: "collateralToken", type: "address" },
+          { name: "isLong", type: "bool" },
+          { name: "shouldUnwrapNativeToken", type: "bool" },
+          { name: "sizeDeltaUsd", type: "uint256" },
+          { name: "collateralWithdrawalAmount", type: "uint256" },
+          { name: "acceptablePrice", type: "uint256" },
+          { name: "executionFee", type: "uint256" },
+          { name: "minOutputAmount", type: "uint256" },
+          { name: "decreasePositionSwapType", type: "uint8" },
+          { name: "referralCode", type: "bytes32" },
+        ],
+      },
+    ],
+    outputs: [{ name: "orderKeys", type: "bytes32[]" }],
+    stateMutability: "payable",
   },
 ] as const;
 const VAULT_FACTORY_BYTECODE = vaultFactoryArtifact.bytecode.object as Hex;
@@ -366,4 +448,158 @@ export async function readAllocationReadiness(
   }
 
   return payload as VaultAllocationReadiness;
+}
+
+const ZERO_REFERRAL = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
+const USD_DECIMALS = 30;
+
+function requiredEnv(name: string, value: string | undefined) {
+  if (!value) throw new Error(`Set ${name} before submitting GMX orders`);
+  return value;
+}
+
+function executionFee() {
+  return BigInt(process.env.NEXT_PUBLIC_GMX_EXECUTION_FEE_WEI ?? "0");
+}
+
+function acceptablePrice() {
+  return BigInt(process.env.NEXT_PUBLIC_GMX_ACCEPTABLE_PRICE ?? "0");
+}
+
+function orderInputs(allocation: VaultAllocationReadiness, collateralUnits: bigint) {
+  const fee = executionFee();
+  const price = acceptablePrice();
+  if (fee <= BigInt(0)) throw new Error("Set NEXT_PUBLIC_GMX_EXECUTION_FEE_WEI greater than zero");
+  if (price <= BigInt(0)) throw new Error("Set NEXT_PUBLIC_GMX_ACCEPTABLE_PRICE greater than zero");
+
+  return allocation.target_allocation
+    .filter((item) => (item.weight ?? 0) > 0 && item.coin_id)
+    .map((item) => {
+      const weightBps = BigInt(Math.round((item.weight ?? 0) * 10_000));
+      const collateralAmount = (collateralUnits * weightBps) / BigInt(10_000);
+      const sizeDeltaUsd = parseUnits(
+        ((Number(collateralAmount) / 10 ** ASSET_DECIMALS).toFixed(6)),
+        USD_DECIMALS,
+      );
+      const market = item.gmx_market?.market_token;
+      if (!market) throw new Error(`Backend did not resolve a GMX market for ${item.coin_id}`);
+      return { market, collateralAmount, sizeDeltaUsd, fee, price };
+    });
+}
+
+export async function executeVaultAllocationOnChain(
+  provider: EthereumProvider,
+  allocation: VaultAllocationReadiness,
+  idleBalance: string,
+) {
+  const chain = strategyVaultChain();
+  const walletClient = createWalletClient({ chain, transport: custom(provider) });
+  const publicClient = createPublicClient({ chain, transport: http() });
+  const [account] = await walletClient.getAddresses();
+  if (!account) throw new Error("Connect a wallet before execution");
+
+  const exchangeRouter = requiredEnv("NEXT_PUBLIC_GMX_EXCHANGE_ROUTER", process.env.NEXT_PUBLIC_GMX_EXCHANGE_ROUTER);
+  const router = requiredEnv("NEXT_PUBLIC_GMX_ROUTER", process.env.NEXT_PUBLIC_GMX_ROUTER);
+  const orderVault = requiredEnv("NEXT_PUBLIC_GMX_ORDER_VAULT", process.env.NEXT_PUBLIC_GMX_ORDER_VAULT);
+  const collateralUnits = parseUnits(idleBalance, ASSET_DECIMALS);
+  const inputs = orderInputs(allocation, collateralUnits);
+  if (inputs.length === 0) throw new Error("No positive allocation legs to execute");
+
+  const routingHash = await walletClient.writeContract({
+    address: allocation.vault_address as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "setGmxRouting",
+    args: [exchangeRouter as `0x${string}`, router as `0x${string}`, orderVault as `0x${string}`],
+    account,
+    chain,
+  });
+  await publicClient.waitForTransactionReceipt({ hash: routingHash });
+
+  const orders = inputs.map((input) => ({
+    exchangeRouter: exchangeRouter as `0x${string}`,
+    router: router as `0x${string}`,
+    orderVault: orderVault as `0x${string}`,
+    market: input.market as `0x${string}`,
+    collateralToken: allocation.asset_address as `0x${string}`,
+    isLong: true,
+    shouldUnwrapNativeToken: false,
+    sizeDeltaUsd: input.sizeDeltaUsd,
+    collateralAmount: input.collateralAmount,
+    acceptablePrice: input.price,
+    executionFee: input.fee,
+    referralCode: ZERO_REFERRAL,
+  }));
+  const value = inputs.reduce((sum, input) => sum + input.fee, BigInt(0));
+  const hash = await walletClient.writeContract({
+    address: allocation.vault_address as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "createGmxMarketIncreaseOrders",
+    args: [orders],
+    value,
+    account,
+    chain,
+  });
+  await publicClient.waitForTransactionReceipt({ hash });
+  return hash;
+}
+
+export async function closeVaultPositionsAndWithdrawIdleOnChain(
+  provider: EthereumProvider,
+  allocation: VaultAllocationReadiness,
+  notionalUsd: string,
+) {
+  const chain = strategyVaultChain();
+  const walletClient = createWalletClient({ chain, transport: custom(provider) });
+  const publicClient = createPublicClient({ chain, transport: http() });
+  const [account] = await walletClient.getAddresses();
+  if (!account) throw new Error("Connect a wallet before closing");
+
+  const exchangeRouter = requiredEnv("NEXT_PUBLIC_GMX_EXCHANGE_ROUTER", process.env.NEXT_PUBLIC_GMX_EXCHANGE_ROUTER);
+  const orderVault = requiredEnv("NEXT_PUBLIC_GMX_ORDER_VAULT", process.env.NEXT_PUBLIC_GMX_ORDER_VAULT);
+  const inputs = orderInputs(allocation, parseUnits(notionalUsd, ASSET_DECIMALS));
+  if (inputs.length > 0) {
+    const orders = inputs.map((input) => ({
+      exchangeRouter: exchangeRouter as `0x${string}`,
+      orderVault: orderVault as `0x${string}`,
+      market: input.market as `0x${string}`,
+      collateralToken: allocation.asset_address as `0x${string}`,
+      isLong: true,
+      shouldUnwrapNativeToken: false,
+      sizeDeltaUsd: input.sizeDeltaUsd,
+      collateralWithdrawalAmount: BigInt(0),
+      acceptablePrice: input.price,
+      executionFee: input.fee,
+      minOutputAmount: BigInt(0),
+      decreasePositionSwapType: 0,
+      referralCode: ZERO_REFERRAL,
+    }));
+    const value = inputs.reduce((sum, input) => sum + input.fee, BigInt(0));
+    const closeHash = await walletClient.writeContract({
+      address: allocation.vault_address as `0x${string}`,
+      abi: STRATEGY_VAULT_USER_ABI,
+      functionName: "createGmxMarketDecreaseOrders",
+      args: [orders],
+      value,
+      account,
+      chain,
+    });
+    await publicClient.waitForTransactionReceipt({ hash: closeHash });
+  }
+
+  const idle = await publicClient.readContract({
+    address: allocation.vault_address as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "idleBalance",
+  });
+  if (idle > BigInt(0)) {
+    const withdrawHash = await walletClient.writeContract({
+      address: allocation.vault_address as `0x${string}`,
+      abi: STRATEGY_VAULT_USER_ABI,
+      functionName: "withdraw",
+      args: [idle, account],
+      account,
+      chain,
+    });
+    await publicClient.waitForTransactionReceipt({ hash: withdrawHash });
+  }
 }

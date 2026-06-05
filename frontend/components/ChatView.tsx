@@ -34,6 +34,7 @@ type ChatViewProps = {
   strategyError?: string | null;
   onBusyChange?: (isBusy: boolean) => void;
   onKnownStrategiesChange?: () => void;
+  onPinnedScreenersChange?: () => void;
   onNewStrategy: () => void | Promise<void>;
   authenticated: boolean;
   getAccessToken: () => Promise<string | null>;
@@ -136,6 +137,7 @@ export function ChatView({
   strategyError = null,
   onBusyChange,
   onKnownStrategiesChange,
+  onPinnedScreenersChange,
   onNewStrategy,
   authenticated,
   getAccessToken,
@@ -487,6 +489,7 @@ export function ChatView({
             emptyStateDisabled={isDisabled}
             onSelectPrompt={handleSend}
             onOpenWizard={() => setIsWizardOpen(true)}
+            onPinnedScreenersChange={onPinnedScreenersChange}
           />
         </div>
 

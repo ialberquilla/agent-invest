@@ -46,6 +46,7 @@ type MessageListProps = {
   emptyStateDisabled?: boolean;
   onSelectPrompt?: (prompt: string) => void;
   onOpenWizard?: () => void;
+  onPinnedScreenersChange?: () => void;
 };
 
 export function MessageList({
@@ -57,6 +58,7 @@ export function MessageList({
   emptyStateDisabled = false,
   onSelectPrompt,
   onOpenWizard,
+  onPinnedScreenersChange,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
   const latestReportRef = useRef<HTMLDivElement | null>(null);
@@ -125,7 +127,10 @@ export function MessageList({
           // render as plain flowing text (Open WebUI style). Rich report cards
           // and errors are the exceptions and get their own treatment.
           const body = screener ? (
-            <ScreenerResultCard result={screener} />
+            <ScreenerResultCard
+              result={screener}
+              onPinnedScreenersChange={onPinnedScreenersChange}
+            />
           ) : report ? (
             <StrategyResultReport result={report} runId={runId ?? undefined} />
           ) : message.error ? (

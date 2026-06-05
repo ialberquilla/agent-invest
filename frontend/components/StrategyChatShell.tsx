@@ -4,6 +4,7 @@ import { startTransition, useEffect, useState } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 
 import { ChatView } from "@/components/ChatView";
+import { ScreenerResultCard } from "@/components/ScreenerResultCard";
 import { StrategySidebar } from "@/components/StrategySidebar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,11 +12,14 @@ import {
   clearStrategyId,
   ensureKnownStrategy,
   getKnownStrategies,
+  getDeployedStrategies,
   getAnonymousUserId,
+  getPinnedScreeners,
   getStrategyId,
+  type PinnedScreener,
   setStrategyId as persistStrategyId,
 } from "@/lib/local-store";
-import { StrategyCreateResponse } from "@/lib/types";
+import type { ScreenerResult, StrategyCreateResponse } from "@/lib/types";
 
 type AuthState = {
   ready: boolean;
@@ -134,6 +138,18 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   const [knownStrategies, setKnownStrategies] = useState(() =>
     getKnownStrategies(),
   );
+  const [pinnedScreeners, setPinnedScreeners] = useState(() =>
+    getPinnedScreeners(),
+  );
+  const [deployedStrategies, setDeployedStrategies] = useState(() =>
+    getDeployedStrategies(),
+  );
+  const [activeScreenerId, setActiveScreenerId] = useState<string | null>(null);
+  const [activeScreener, setActiveScreener] = useState<ScreenerResult | null>(
+    null,
+  );
+  const [screenerError, setScreenerError] = useState<string | null>(null);
+  const [isLoadingScreener, setIsLoadingScreener] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
   const [strategyError, setStrategyError] = useState<string | null>(null);
   const [bootstrapKey, setBootstrapKey] = useState(0);
@@ -143,6 +159,21 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   function refreshKnownStrategies() {
     setKnownStrategies(getKnownStrategies());
   }
+
+  function refreshPinnedScreeners() {
+    setPinnedScreeners(getPinnedScreeners());
+  }
+
+  function refreshDeployedStrategies() {
+    setDeployedStrategies(getDeployedStrategies());
+  }
+
+  useEffect(() => {
+    window.addEventListener("agent-invest:deployed-strategies", refreshDeployedStrategies);
+    return () => {
+      window.removeEventListener("agent-invest:deployed-strategies", refreshDeployedStrategies);
+    };
+  }, []);
 
   useEffect(() => {
     if (!ready || !authenticated) return;
@@ -254,10 +285,49 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     }
 
     setStrategyError(null);
+    setActiveScreenerId(null);
+    setActiveScreener(null);
     persistStrategyId(nextStrategyId);
     startTransition(() => {
       setStrategyId(nextStrategyId);
     });
+  }
+
+  async function handleSelectScreener(screener: PinnedScreener) {
+    if (isCreatingStrategy || isChatBusy || screener.id === activeScreenerId) {
+      return;
+    }
+
+    setStrategyError(null);
+    setScreenerError(null);
+    setActiveScreenerId(screener.id);
+    setActiveScreener(null);
+    setIsLoadingScreener(true);
+
+    try {
+      const response = await fetch("/api/screeners/markets", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        cache: "no-store",
+        body: JSON.stringify({
+          factor: screener.definition.factor,
+          limit: screener.definition.limit,
+          gmxOnly: screener.definition.gmx_only,
+          asOf: screener.definition.as_of,
+        }),
+      });
+      const payload = (await response.json().catch(() => null)) as unknown;
+      if (!response.ok || !isScreenerResult(payload)) {
+        throw new Error("Unable to load pinned screener");
+      }
+      setActiveScreener(payload);
+    } catch (error) {
+      setScreenerError(
+        error instanceof Error ? error.message : "Unable to load pinned screener",
+      );
+    } finally {
+      setIsLoadingScreener(false);
+    }
   }
 
   if (bootstrapError) {
@@ -301,9 +371,13 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     <main className="flex h-dvh overflow-hidden bg-background text-foreground">
       <StrategySidebar
         strategies={knownStrategies}
+        screeners={pinnedScreeners}
+        deployedStrategies={deployedStrategies}
         activeStrategyId={strategyId}
+        activeScreenerId={activeScreenerId}
         disabled={isCreatingStrategy || isChatBusy}
         onSelectStrategy={handleSelectStrategy}
+        onSelectScreener={handleSelectScreener}
         onNewStrategy={handleNewStrategy}
       />
 
@@ -332,18 +406,93 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
             </Button>
           )}
         </div>
-        <ChatView
-          key={strategyId}
-          strategyId={strategyId}
-          disabled={isCreatingStrategy}
-          strategyError={strategyError}
-          onBusyChange={setIsChatBusy}
-          onKnownStrategiesChange={refreshKnownStrategies}
-          onNewStrategy={handleNewStrategy}
-          authenticated={authenticated}
-          getAccessToken={getAccessToken}
-        />
+        {activeScreenerId ? (
+          <PinnedScreenerPane
+            screener={activeScreener}
+            error={screenerError}
+            isLoading={isLoadingScreener}
+            onBack={() => {
+              setActiveScreenerId(null);
+              setActiveScreener(null);
+              setScreenerError(null);
+            }}
+            onPinnedScreenersChange={refreshPinnedScreeners}
+          />
+        ) : (
+          <ChatView
+            key={strategyId}
+            strategyId={strategyId}
+            disabled={isCreatingStrategy}
+            strategyError={strategyError}
+            onBusyChange={setIsChatBusy}
+            onKnownStrategiesChange={refreshKnownStrategies}
+            onPinnedScreenersChange={refreshPinnedScreeners}
+            onNewStrategy={handleNewStrategy}
+            authenticated={authenticated}
+            getAccessToken={getAccessToken}
+          />
+        )}
       </div>
     </main>
+  );
+}
+
+function PinnedScreenerPane({
+  screener,
+  error,
+  isLoading,
+  onBack,
+  onPinnedScreenersChange,
+}: {
+  screener: ScreenerResult | null;
+  error: string | null;
+  isLoading: boolean;
+  onBack: () => void;
+  onPinnedScreenersChange: () => void;
+}) {
+  return (
+    <div className="min-h-0 flex-1 overflow-y-auto bg-background">
+      <div className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-border/60 bg-background/95 px-4 py-3 backdrop-blur">
+        <div>
+          <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
+            Pinned screener
+          </p>
+          <h1 className="font-heading text-lg font-semibold">Market watchlist</h1>
+        </div>
+        <Button variant="outline" size="sm" onClick={onBack}>
+          Back to chat
+        </Button>
+      </div>
+      <div className="mx-auto w-full max-w-[100rem] px-4 py-6 sm:px-8">
+        {isLoading ? (
+          <Card>
+            <CardContent className="py-6 text-sm text-muted-foreground">
+              Refreshing pinned screener...
+            </CardContent>
+          </Card>
+        ) : error ? (
+          <Card className="border-destructive/30 bg-destructive/10">
+            <CardContent className="py-6 text-sm text-destructive">
+              {error}
+            </CardContent>
+          </Card>
+        ) : screener ? (
+          <ScreenerResultCard
+            result={screener}
+            onPinnedScreenersChange={onPinnedScreenersChange}
+          />
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function isScreenerResult(value: unknown): value is ScreenerResult {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    (value as { type?: unknown }).type === "market_screener" &&
+    Array.isArray((value as { rows?: unknown }).rows)
   );
 }
