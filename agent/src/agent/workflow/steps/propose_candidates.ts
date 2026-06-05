@@ -8,15 +8,19 @@ import { createStepLogger, type StepLogger } from "../logging.ts";
 import {
   ALLOCATION_TEMPLATES,
   ProposalValidationError,
+  REBALANCE_TRIGGER_FAMILIES,
   REBALANCE_TRIGGERS,
   WEIGHTING_SCHEMES,
   validateProposal,
+  type AllocationTemplate,
   type Attempt,
   type Proposal,
+  type ProposedCandidate,
   type ProposeCandidatesInput,
   type StepName,
   type Thesis,
   type Universe,
+  type WeightingScheme,
   type Window,
 } from "../state.ts";
 
@@ -31,6 +35,8 @@ export type ProposeCandidatesResult = {
 };
 
 export const NEXT_STEP: StepName = "run_and_validate";
+
+const MAX_EXPANDED_CANDIDATES = 12;
 
 const PARSE_RETRY_NOTE =
   "Your previous response could not be parsed as JSON. Reply with only valid JSON matching the Proposal schema. No Markdown fences. No prose.";
@@ -47,7 +53,7 @@ Inputs you receive in the user message:
 - window: { start, end, horizon_days } -- the backtest window already chosen by the previous step.
 - prior_attempts: an array of prior attempts (may be empty). When present, each entry contains the previous proposal, the validation_summary (which constraints failed and by how much), and a refinement_hint with structured suggested_changes. Treat the hint as a directive: use it to inform this round's candidates.
 
-Your job: emit 3 to 5 candidates spanning the most promising strategy-family configurations for this thesis. The downstream backtest engine requires at least 3 candidates per batch -- always emit at least 3. Emit JSON only -- no prose, no Markdown fences.
+Your job: emit 3 to 5 high-conviction seed candidates spanning the most promising strategy-family configurations for this thesis. The system will deterministically expand your seed shortlist into a bounded parameter sweep before backtesting, so focus on picking the right families and representative knobs rather than exhaustively enumerating every variant. The downstream backtest engine requires at least 3 candidates per batch -- always emit at least 3. Emit JSON only -- no prose, no Markdown fences.
 
 Allowed template_id values. The long-only families:
 - "synthetic_long_allocation"        -- one-shot long basket, no rebalance_trigger.
@@ -136,11 +142,17 @@ export async function proposeCandidates(
         thesis: input.thesis,
         universe: input.universe,
       });
-      logger.exit(NEXT_STEP, {
-        candidate_count: parsed.candidates.length,
-        template_mix: summariseTemplates(parsed.candidates),
+      const expanded = expandProposalWithSweep(parsed, input);
+      validateProposal(expanded, {
+        thesis: input.thesis,
+        universe: input.universe,
       });
-      return { delta: { proposal: parsed }, next: NEXT_STEP };
+      logger.exit(NEXT_STEP, {
+        candidate_count: expanded.candidates.length,
+        llm_candidate_count: parsed.candidates.length,
+        template_mix: summariseTemplates(expanded.candidates),
+      });
+      return { delta: { proposal: expanded }, next: NEXT_STEP };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       if (attempt === 1) {
@@ -153,6 +165,278 @@ export async function proposeCandidates(
   }
 
   throw lastError ?? new Error("propose_candidates failed without an error");
+}
+
+export function expandProposalWithSweep(
+  proposal: Proposal,
+  input: ProposeCandidatesInput,
+): Proposal {
+  const minTop = input.thesis.constraints.asset_count_min;
+  const maxTop = Math.min(
+    input.thesis.constraints.asset_count_max,
+    input.universe.coin_ids.length,
+  );
+  if (maxTop < minTop) return proposal;
+
+  const out: ProposedCandidate[] = proposal.candidates.map((c) => ({ ...c }));
+  const seen = new Set(out.map(candidateSignature));
+  const prior = new Set(
+    (input.attempts ?? []).flatMap((attempt) =>
+      attempt.proposal.candidates.map(candidateSignature),
+    ),
+  );
+  const usedIds = new Set(out.map((c) => c.candidate_id));
+  const families = orderedSweepFamilies(proposal, input);
+
+  let sweepN = 1;
+  for (const family of families) {
+    for (const variant of sweepVariants(family, input.thesis, minTop, maxTop)) {
+      if (out.length >= MAX_EXPANDED_CANDIDATES) {
+        return withExpandedHypothesis(proposal, out);
+      }
+      const signature = candidateSignature(variant);
+      if (seen.has(signature) || prior.has(signature)) continue;
+
+      seen.add(signature);
+      const candidateId = nextSweepId(usedIds, sweepN);
+      sweepN += 1;
+      usedIds.add(candidateId);
+      out.push({
+        ...variant,
+        candidate_id: candidateId,
+        rationale: `Deterministic sweep variant for ${variant.template_id}.`,
+      });
+    }
+  }
+
+  return withExpandedHypothesis(proposal, out);
+}
+
+function withExpandedHypothesis(
+  proposal: Proposal,
+  candidates: ProposedCandidate[],
+): Proposal {
+  if (candidates.length === proposal.candidates.length) return proposal;
+  return {
+    iteration_hypothesis: `${proposal.iteration_hypothesis} Deterministic sweep expands the LLM shortlist to ${candidates.length} parameter variants.`,
+    candidates,
+  };
+}
+
+function orderedSweepFamilies(
+  proposal: Proposal,
+  input: ProposeCandidatesInput,
+): AllocationTemplate[] {
+  const out: AllocationTemplate[] = [];
+  const add = (family: string | undefined) => {
+    if (!family) return;
+    if (!(ALLOCATION_TEMPLATES as readonly string[]).includes(family)) return;
+    const typed = family as AllocationTemplate;
+    if (!out.includes(typed)) out.push(typed);
+  };
+
+  for (const c of proposal.candidates) add(c.template_id);
+  for (const selected of [...(input.template_selection?.selected ?? [])].sort(
+    (a, b) => a.rank - b.rank,
+  )) {
+    add(selected.family);
+  }
+  return out;
+}
+
+function sweepVariants(
+  family: AllocationTemplate,
+  thesis: Thesis,
+  minTop: number,
+  maxTop: number,
+): ProposedCandidate[] {
+  const tops = selectTopSweep(minTop, maxTop);
+  const weightings = weightingSweep(thesis.objective);
+  const variants: ProposedCandidate[] = [];
+  const add = (candidate: Omit<ProposedCandidate, "candidate_id" | "rationale">) => {
+    variants.push({ ...candidate, candidate_id: "", rationale: "" });
+  };
+
+  switch (family) {
+    case "synthetic_long_allocation":
+      for (const select_top of tops) {
+        for (const weighting of weightings.slice(0, 3)) {
+          add({ template_id: family, select_top, weighting });
+        }
+      }
+      break;
+    case "periodic_rebalanced_allocation":
+      for (const rebalance_trigger of REBALANCE_TRIGGERS) {
+        for (const weighting of weightings.slice(0, 2)) {
+          add({
+            template_id: family,
+            select_top: tops[1] ?? tops[0]!,
+            weighting,
+            rebalance_trigger,
+          });
+        }
+      }
+      break;
+    case "threshold_rebalanced_allocation":
+      for (const weighting of weightings.slice(0, 3)) {
+        add({
+          template_id: family,
+          select_top: tops[1] ?? tops[0]!,
+          weighting,
+          rebalance_trigger: "threshold_drift_10pct",
+        });
+      }
+      break;
+    case "relative_momentum_rotation":
+      for (const select_top of tops) {
+        add({
+          template_id: family,
+          select_top,
+          weighting: "ranking_proportional",
+          rebalance_trigger: "periodic_30d",
+        });
+        add({
+          template_id: family,
+          select_top,
+          weighting: "equal",
+          rebalance_trigger: "periodic_90d",
+        });
+      }
+      break;
+    case "trend_following_long_neutral":
+    case "trend_following_long_short":
+      for (const select_top of tops) {
+        for (const weighting of weightings.slice(0, 2)) {
+          add({ template_id: family, select_top, weighting });
+        }
+      }
+      break;
+    case "volatility_targeted_exposure":
+      for (const rebalance_trigger of [
+        "periodic_30d",
+        "periodic_90d",
+        "threshold_drift_10pct",
+      ] as const) {
+        add({
+          template_id: family,
+          select_top: tops[1] ?? tops[0]!,
+          weighting: "vol_inverse",
+          rebalance_trigger,
+        });
+      }
+      break;
+    case "core_satellite_allocation":
+      for (const core_weight of [0.6, 0.75]) {
+        add({
+          template_id: family,
+          select_top: tops[1] ?? tops[0]!,
+          weighting: weightings[0]!,
+          rebalance_trigger: "periodic_90d",
+          core_weight,
+        });
+      }
+      break;
+    case "barbell_allocation":
+      for (const [core_weight, sleeve_cap] of [
+        [0.8, 0.05],
+        [0.9, 0.03],
+      ] as const) {
+        add({
+          template_id: family,
+          select_top: tops[1] ?? tops[0]!,
+          weighting: "equal",
+          rebalance_trigger: "periodic_90d",
+          core_weight,
+          sleeve_cap,
+        });
+      }
+      break;
+    case "partial_hedge_overlay":
+    case "beta_hedged_alt_exposure":
+      for (const rebalance_trigger of ["periodic_30d", "periodic_90d"] as const) {
+        add({
+          template_id: family,
+          select_top: tops[1] ?? tops[0]!,
+          weighting: "equal",
+          rebalance_trigger,
+        });
+      }
+      break;
+    case "relative_value_pair_trade":
+      if (maxTop >= 2) {
+        add({
+          template_id: family,
+          select_top: Math.max(2, tops[0]!),
+          weighting: "equal",
+        });
+      }
+      break;
+    case "drawdown_based_hedge":
+      add({
+        template_id: family,
+        select_top: tops[1] ?? tops[0]!,
+        weighting: "equal",
+      });
+      break;
+  }
+
+  return variants.filter(isValidSweepCandidate);
+}
+
+function selectTopSweep(minTop: number, maxTop: number): number[] {
+  const mid = Math.round((minTop + maxTop) / 2);
+  return Array.from(new Set([minTop, mid, maxTop])).filter(
+    (n) => n >= minTop && n <= maxTop,
+  );
+}
+
+function weightingSweep(objective: Thesis["objective"]): WeightingScheme[] {
+  switch (objective) {
+    case "growth":
+      return ["ranking_proportional", "cap", "equal", "vol_inverse"];
+    case "preserve_capital":
+    case "income":
+      return ["vol_inverse", "equal", "cap", "ranking_proportional"];
+    case "balanced_growth":
+      return ["equal", "cap", "vol_inverse", "ranking_proportional"];
+  }
+}
+
+function isValidSweepCandidate(candidate: ProposedCandidate): boolean {
+  const family = candidate.template_id;
+  const allowsTrigger = (REBALANCE_TRIGGER_FAMILIES as readonly string[]).includes(
+    family,
+  );
+  if (family === "periodic_rebalanced_allocation") {
+    return candidate.rebalance_trigger !== undefined;
+  }
+  if (candidate.rebalance_trigger !== undefined && !allowsTrigger) return false;
+  if (candidate.core_weight !== undefined) {
+    if (family !== "core_satellite_allocation" && family !== "barbell_allocation") {
+      return false;
+    }
+  }
+  if (candidate.sleeve_cap !== undefined && family !== "barbell_allocation") {
+    return false;
+  }
+  return true;
+}
+
+function candidateSignature(candidate: ProposedCandidate): string {
+  return JSON.stringify({
+    template_id: candidate.template_id,
+    select_top: candidate.select_top,
+    weighting: candidate.weighting,
+    rebalance_trigger: candidate.rebalance_trigger ?? null,
+    core_weight: candidate.core_weight ?? null,
+    sleeve_cap: candidate.sleeve_cap ?? null,
+  });
+}
+
+function nextSweepId(usedIds: Set<string>, start: number): string {
+  let n = start;
+  while (usedIds.has(`sw${n}`)) n += 1;
+  return `sw${n}`;
 }
 
 function nextAttemptNumber(attempts?: Attempt[]): number {

@@ -317,6 +317,11 @@ function transitionDigest(
             intersection_start:
               state.window.effective.intersection_start ?? null,
             intersection_end: state.window.effective.intersection_end ?? null,
+            strategy_window_mode:
+              state.window.effective.strategy_window_mode ?? "fixed_universe",
+            window_coin_ids: state.window.effective.window_coin_ids ?? null,
+            excluded_window_coin_ids:
+              state.window.effective.excluded_window_coin_ids ?? null,
             drawdowns_covered:
               state.window.effective.covered_drawdowns_count,
             below_horizon:
@@ -492,6 +497,7 @@ async function dispatch(
           run_id: state.run_id,
           thesis: state.thesis,
           universe: state.universe,
+          template_selection: state.template_selection,
         },
         {},
       );

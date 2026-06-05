@@ -142,7 +142,8 @@ test("proposeCandidates returns a valid Proposal and routes to run_and_validate"
   const result = await proposeCandidates(baseInput(), deps(llm));
 
   assert.equal(result.next, "run_and_validate");
-  assert.equal(result.delta.proposal.candidates.length, 3);
+  assert.ok(result.delta.proposal.candidates.length > 3);
+  assert.ok(result.delta.proposal.candidates.length <= 12);
   assert.equal(result.delta.proposal.candidates[0]?.template_id, "synthetic_long_allocation");
 });
 
@@ -182,7 +183,7 @@ test("proposeCandidates throws after two failed attempts", async () => {
 
   await assert.rejects(
     () => proposeCandidates(baseInput(), deps(llm)),
-    /between 3 and 5/,
+    /between 3 and 12/,
   );
 });
 
@@ -325,5 +326,24 @@ test("proposeCandidates accepts five candidates", async () => {
 
   const result = await proposeCandidates(baseInput(), deps(llm));
 
-  assert.equal(result.delta.proposal.candidates.length, 5);
+  assert.ok(result.delta.proposal.candidates.length >= 5);
+  assert.ok(result.delta.proposal.candidates.length <= 12);
+});
+
+test("proposeCandidates expands the LLM shortlist with deterministic sweep variants", async () => {
+  const llm = fakeLLM([JSON.stringify(SAMPLE_PROPOSAL)]);
+
+  const result = await proposeCandidates(baseInput(), deps(llm));
+
+  const candidates = result.delta.proposal.candidates;
+  assert.equal(candidates.length, 12);
+  assert.ok(candidates.some((c) => c.candidate_id.startsWith("sw")));
+  assert.ok(
+    candidates.some(
+      (c) =>
+        c.template_id === "synthetic_long_allocation" &&
+        c.select_top === THESIS.constraints.asset_count_max,
+    ),
+  );
+  assert.match(result.delta.proposal.iteration_hypothesis, /Deterministic sweep/);
 });
