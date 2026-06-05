@@ -28,11 +28,11 @@ contract VaultFactory {
 
     error VaultFactory__ZeroAddress();
 
-    /// @param implementation The {StrategyVault} logic contract (must have disabled initializers).
+    /// @param implementation_ The {StrategyVault} logic contract (must have disabled initializers).
     /// @param beaconOwner The upgrade authority over every vault (use a Timelock + multisig).
-    constructor(address implementation, address beaconOwner) {
-        if (implementation == address(0) || beaconOwner == address(0)) revert VaultFactory__ZeroAddress();
-        beacon = new UpgradeableBeacon(implementation, beaconOwner);
+    constructor(address implementation_, address beaconOwner) {
+        if (implementation_ == address(0) || beaconOwner == address(0)) revert VaultFactory__ZeroAddress();
+        beacon = new UpgradeableBeacon(implementation_, beaconOwner);
     }
 
     /// @notice Deploy a new vault for `owner` over collateral `asset`.
