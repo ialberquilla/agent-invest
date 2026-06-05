@@ -20,6 +20,9 @@ contract DeployStrategyVault is Script {
         if (owner == address(0) && deployerPrivateKey != 0) owner = vm.addr(deployerPrivateKey);
         if (owner == address(0)) owner = msg.sender;
         address beaconOwner = vm.envOr("BEACON_OWNER", owner);
+        address gmxExchangeRouter = vm.envAddress("GMX_EXCHANGE_ROUTER");
+        address gmxRouter = vm.envAddress("GMX_ROUTER");
+        address gmxOrderVault = vm.envAddress("GMX_ORDER_VAULT");
 
         if (deployerPrivateKey == 0) {
             vm.startBroadcast();
@@ -27,7 +30,7 @@ contract DeployStrategyVault is Script {
             vm.startBroadcast(deployerPrivateKey);
         }
         implementation = new StrategyVault();
-        factory = new VaultFactory(address(implementation), beaconOwner);
+        factory = new VaultFactory(address(implementation), beaconOwner, gmxExchangeRouter, gmxRouter, gmxOrderVault);
         vault = factory.createVault(asset, owner);
         vm.stopBroadcast();
     }

@@ -21,6 +21,7 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { Input } from "@/components/ui/input";
 import {
   getAnonymousUserId,
   isScreenerPinned,
@@ -38,9 +39,13 @@ type OrderTicket = {
 
 type ScreenerResultCardProps = {
   result: ScreenerResult;
+  onPinnedScreenersChange?: () => void;
 };
 
-export function ScreenerResultCard({ result }: ScreenerResultCardProps) {
+export function ScreenerResultCard({
+  result,
+  onPinnedScreenersChange,
+}: ScreenerResultCardProps) {
   const [current, setCurrent] = useState(result);
   const [isPinned, setIsPinned] = useState(() =>
     isScreenerPinned(result.definition),
@@ -48,6 +53,8 @@ export function ScreenerResultCard({ result }: ScreenerResultCardProps) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [ticket, setTicket] = useState<OrderTicket | null>(null);
+  const [isPinDialogOpen, setIsPinDialogOpen] = useState(false);
+  const [pinLabel, setPinLabel] = useState(result.title);
 
   useEffect(() => {
     let isActive = true;
@@ -86,33 +93,26 @@ export function ScreenerResultCard({ result }: ScreenerResultCardProps) {
     setIsRefreshing(true);
     setRefreshError(null);
     try {
-      const userId = getAnonymousUserId();
-      const response = await fetch(
-        isPinned && userId
-          ? `/api/screeners/pins/${encodeURIComponent(screenerId(current.definition))}/refresh`
-          : "/api/screeners/markets",
-        {
+      const response = await fetch("/api/screeners/markets", {
         method: "POST",
         headers: { "content-type": "application/json" },
         cache: "no-store",
-        body: JSON.stringify(
-          isPinned && userId
-            ? { user_id: userId }
-            : {
-                factor: current.definition.factor,
-                limit: current.definition.limit,
-                gmxOnly: current.definition.gmx_only,
-                asOf: current.definition.as_of,
-              },
-        ),
-      },
-      );
+        body: JSON.stringify({
+          factor: current.definition.factor,
+          limit: current.definition.limit,
+          gmxOnly: current.definition.gmx_only,
+          asOf: current.definition.as_of,
+        }),
+      });
       const payload = (await response.json().catch(() => null)) as unknown;
       if (!response.ok || !isScreenerResult(payload)) {
         throw new Error("Unable to refresh screener");
       }
       setCurrent(payload);
-      if (isPinned) pinScreener(payload);
+      if (isPinned) {
+        pinScreener(payload);
+        onPinnedScreenersChange?.();
+      }
     } catch (error) {
       setRefreshError(
         error instanceof Error ? error.message : "Unable to refresh screener",
@@ -133,21 +133,31 @@ export function ScreenerResultCard({ result }: ScreenerResultCardProps) {
       }
       unpinScreener(current.definition);
       setIsPinned(false);
+      onPinnedScreenersChange?.();
       return;
     }
+    setPinLabel(current.title);
+    setIsPinDialogOpen(true);
+  }
+
+  function confirmPin() {
+    const userId = getAnonymousUserId();
+    const pinnedLabel = pinLabel.trim() || current.title;
     if (userId) {
       void fetch("/api/screeners/pins", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           user_id: userId,
-          title: current.title,
+          title: pinnedLabel,
           definition: current.definition,
         }),
       }).catch(() => null);
     }
-    pinScreener(current);
+    pinScreener(current, pinnedLabel);
     setIsPinned(true);
+    setIsPinDialogOpen(false);
+    onPinnedScreenersChange?.();
   }
 
   return (
@@ -274,6 +284,52 @@ export function ScreenerResultCard({ result }: ScreenerResultCardProps) {
       <Sheet open={Boolean(ticket)} onOpenChange={(open) => !open && setTicket(null)}>
         <SheetContent className="w-full sm:max-w-md">
           {ticket ? <OrderTicketPreview ticket={ticket} /> : null}
+        </SheetContent>
+      </Sheet>
+
+      <Sheet open={isPinDialogOpen} onOpenChange={setIsPinDialogOpen}>
+        <SheetContent
+          side="bottom"
+          className="left-1/2 top-1/2 bottom-auto w-[calc(100%-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-2xl border p-0 shadow-2xl data-[side=bottom]:inset-x-auto data-[side=bottom]:bottom-auto data-[side=bottom]:border data-[side=bottom]:data-ending-style:translate-y-[-45%] data-[side=bottom]:data-starting-style:translate-y-[-45%]"
+        >
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              confirmPin();
+            }}
+          >
+            <SheetHeader className="border-b pr-14">
+              <SheetTitle>Name this screener</SheetTitle>
+              <SheetDescription>
+                This name appears in the pinned screeners section of the sidebar.
+              </SheetDescription>
+            </SheetHeader>
+            <div className="space-y-3 px-4 py-4">
+              <label className="space-y-1.5 text-sm font-medium">
+                <span>Screener name</span>
+                <Input
+                  autoFocus
+                  value={pinLabel}
+                  onChange={(event) => setPinLabel(event.target.value)}
+                  placeholder="Momentum leaders"
+                />
+              </label>
+              <p className="text-xs leading-5 text-muted-foreground">
+                You can still refresh the screener and use the Long/Short actions
+                after pinning it.
+              </p>
+            </div>
+            <SheetFooter className="border-t sm:flex-row sm:justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsPinDialogOpen(false)}
+              >
+                Cancel
+              </Button>
+              <Button type="submit">Pin screener</Button>
+            </SheetFooter>
+          </form>
         </SheetContent>
       </Sheet>
     </>

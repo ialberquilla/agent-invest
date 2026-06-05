@@ -31,15 +31,27 @@ contract StrategyVault is
         _disableInitializers();
     }
 
-    function initialize(IERC20 asset_, address owner_) external initializer {
+    function initialize(IERC20 asset_, address owner_, address exchangeRouter, address router, address orderVault)
+        external
+        initializer
+    {
         if (address(asset_) == address(0)) revert StrategyVault__ZeroAsset();
         if (owner_ == address(0)) revert StrategyVault__ZeroOwner();
+        if (exchangeRouter == address(0) || router == address(0) || orderVault == address(0)) {
+            revert StrategyVault__ZeroAddress();
+        }
 
         __Ownable_init(owner_);
         __Ownable2Step_init();
         __Pausable_init();
 
-        _strategyVaultStorage().asset = asset_;
+        StrategyVaultStorage storage $ = _strategyVaultStorage();
+        $.asset = asset_;
+        $.gmxExchangeRouter = exchangeRouter;
+        $.gmxRouter = router;
+        $.gmxOrderVault = orderVault;
+
+        emit GmxRoutingUpdated(exchangeRouter, router, orderVault);
     }
 
     receive() external payable {}

@@ -1,25 +1,33 @@
 "use client";
 
-import { MessageSquare, Plus } from "lucide-react";
+import { BarChart3, MessageSquare, Plus, Wallet } from "lucide-react";
 
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { KnownStrategy } from "@/lib/local-store";
+import type { DeployedStrategy, KnownStrategy, PinnedScreener } from "@/lib/local-store";
 import { cn } from "@/lib/utils";
 
 type StrategySidebarProps = {
   strategies: KnownStrategy[];
+  screeners: PinnedScreener[];
+  deployedStrategies: DeployedStrategy[];
   activeStrategyId: string;
+  activeScreenerId?: string | null;
   disabled?: boolean;
   onSelectStrategy: (strategyId: string) => void;
+  onSelectScreener: (screener: PinnedScreener) => void;
   onNewStrategy: () => void | Promise<void>;
 };
 
 export function StrategySidebar({
-  strategies,
+  strategies = [],
+  screeners = [],
+  deployedStrategies = [],
   activeStrategyId,
+  activeScreenerId = null,
   disabled = false,
   onSelectStrategy,
+  onSelectScreener,
   onNewStrategy,
 }: StrategySidebarProps) {
   return (
@@ -47,6 +55,77 @@ export function StrategySidebar({
       </div>
 
       <div className="px-4 pb-1 pt-4">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/75">
+          Pinned screeners
+        </p>
+      </div>
+
+      <div className="flex max-h-40 flex-col gap-0.5 overflow-y-auto px-2 pb-3">
+        {screeners.length === 0 ? (
+          <p className="px-2.5 py-2 text-xs text-sidebar-foreground/75">
+            Pin a screener to keep it here.
+          </p>
+        ) : null}
+
+        {screeners.map((screener) => {
+          const isActive = screener.id === activeScreenerId;
+
+          return (
+            <button
+              key={screener.id}
+              type="button"
+              onClick={() => onSelectScreener(screener)}
+              disabled={disabled}
+              title={screener.id}
+              className={cn(
+                "relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+                isActive
+                  ? "bg-sidebar-accent text-sidebar-accent-foreground shadow-sm ring-1 ring-sidebar-border before:absolute before:bottom-2 before:left-0 before:top-2 before:w-1 before:rounded-full before:bg-sidebar-primary"
+                  : "text-sidebar-foreground hover:bg-sidebar-accent/60",
+              )}
+            >
+              <BarChart3
+                className={cn(
+                  "size-4 shrink-0",
+                  isActive
+                    ? "text-sidebar-accent-foreground"
+                    : "text-sidebar-foreground/75",
+                )}
+              />
+              <span className="truncate">{screener.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="px-4 pb-1 pt-2">
+        <p className="text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/75">
+          Deployed strategies
+        </p>
+      </div>
+
+      <div className="flex max-h-36 flex-col gap-0.5 overflow-y-auto px-2 pb-3">
+        {deployedStrategies.length === 0 ? (
+          <p className="px-2.5 py-2 text-xs text-sidebar-foreground/75">
+            On-chain vaults will appear here.
+          </p>
+        ) : null}
+        {deployedStrategies.map((strategy) => (
+          <div
+            key={strategy.mandate_id}
+            title={strategy.vault_address}
+            className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-medium text-sidebar-foreground"
+          >
+            <Wallet className="size-4 shrink-0 text-sidebar-foreground/75" />
+            <span className="min-w-0 flex-1 truncate">{strategy.label}</span>
+            <span className="rounded-full bg-sidebar-accent px-1.5 py-0.5 text-[10px] uppercase text-sidebar-foreground/75">
+              {strategy.status}
+            </span>
+          </div>
+        ))}
+      </div>
+
+      <div className="px-4 pb-1 pt-2">
         <p className="text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/75">
           Strategies
         </p>
@@ -90,6 +169,7 @@ export function StrategySidebar({
             );
           })}
         </div>
+
       </ScrollArea>
 
       <div className="border-t border-sidebar-border p-2">

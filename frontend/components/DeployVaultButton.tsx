@@ -6,13 +6,16 @@ import { usePrivy, useWallets } from "@privy-io/react-auth";
 import { Button } from "@/components/ui/button";
 import {
   assertVaultDeployable,
+  closeVaultPositionsAndWithdrawIdleOnChain,
   deployVaultOnChain,
+  executeVaultAllocationOnChain,
   fundVaultOnChain,
   readAllocationReadiness,
   saveVaultBinding,
   type VaultAllocationReadiness,
   type VaultBindingResponse,
 } from "@/lib/deploy-vault";
+import { upsertDeployedStrategy } from "@/lib/local-store";
 
 type DeployState =
   | { status: "idle" }
@@ -57,6 +60,14 @@ export function DeployVaultButton({ runId }: { runId: string }) {
         deployment,
         accessToken,
       );
+      upsertDeployedStrategy({
+        mandate_id: binding.mandate_id,
+        chain_id: binding.chain_id,
+        vault_address: binding.vault_address,
+        asset_address: binding.asset_address,
+        status: binding.status,
+      });
+      window.dispatchEvent(new Event("agent-invest:deployed-strategies"));
       setState({ status: "deployed", binding });
     } catch (error) {
       setState({
@@ -107,6 +118,52 @@ export function DeployVaultButton({ runId }: { runId: string }) {
     }
   }
 
+  async function handleExecute(allocation: VaultAllocationReadiness, idleBalance: string) {
+    const wallet = wallets[0];
+    if (!wallet) {
+      setState({ status: "error", message: "Connect a wallet to execute" });
+      return;
+    }
+    try {
+      const provider = await wallet.getEthereumProvider();
+      await executeVaultAllocationOnChain(provider, allocation, idleBalance);
+      setState((current) =>
+        current.status === "deployed"
+          ? { ...current, allocation: { ...allocation, reason: "GMX increase orders submitted." } }
+          : current,
+      );
+    } catch (error) {
+      setState((current) =>
+        current.status === "deployed"
+          ? { ...current, allocationError: error instanceof Error ? error.message : "Execution failed" }
+          : current,
+      );
+    }
+  }
+
+  async function handleClose(allocation: VaultAllocationReadiness, notionalUsd: string) {
+    const wallet = wallets[0];
+    if (!wallet) {
+      setState({ status: "error", message: "Connect a wallet to close" });
+      return;
+    }
+    try {
+      const provider = await wallet.getEthereumProvider();
+      await closeVaultPositionsAndWithdrawIdleOnChain(provider, allocation, notionalUsd);
+      setState((current) =>
+        current.status === "deployed"
+          ? { ...current, allocation: { ...allocation, reason: "Close orders submitted and idle collateral withdrawn." } }
+          : current,
+      );
+    } catch (error) {
+      setState((current) =>
+        current.status === "deployed"
+          ? { ...current, allocationError: error instanceof Error ? error.message : "Close failed" }
+          : current,
+      );
+    }
+  }
+
   if (state.status === "deployed" || state.status === "funding") {
     const binding = state.binding;
     const isFunding = state.status === "funding";
@@ -122,6 +179,8 @@ export function DeployVaultButton({ runId }: { runId: string }) {
         funding={isFunding}
         onFund={handleFund}
         onAllocate={handleAllocate}
+        onExecute={handleExecute}
+        onClose={handleClose}
       />
     );
   }
@@ -151,6 +210,8 @@ function FundVaultPanel({
   funding,
   onFund,
   onAllocate,
+  onExecute,
+  onClose,
 }: {
   binding: VaultBindingResponse;
   idleBalance?: string;
@@ -160,8 +221,11 @@ function FundVaultPanel({
   funding: boolean;
   onFund: (binding: VaultBindingResponse, amount: string) => void;
   onAllocate: (binding: VaultBindingResponse, idleBalance?: string) => void;
+  onExecute: (allocation: VaultAllocationReadiness, idleBalance: string) => void;
+  onClose: (allocation: VaultAllocationReadiness, notionalUsd: string) => void;
 }) {
   const [amount, setAmount] = useState("");
+  const [closeNotional, setCloseNotional] = useState("");
 
   return (
     <div className="min-w-72 space-y-2 rounded-lg border bg-background p-3 text-sm">
@@ -195,7 +259,7 @@ function FundVaultPanel({
         onClick={() => onAllocate(binding, idleBalance)}
         disabled={!idleBalance}
       >
-        Allocate
+        Check allocation
       </Button>
       {allocation ? (
         <div className="space-y-1 text-xs text-muted-foreground">
@@ -206,6 +270,33 @@ function FundVaultPanel({
                 .map((item) => `${item.coin_id ?? "asset"} ${Math.round((item.weight ?? 0) * 100)}%`)
                 .join(", ")}
             </p>
+          ) : null}
+          <div className="flex flex-wrap gap-2 pt-2">
+            <Button
+              size="sm"
+              onClick={() => idleBalance ? onExecute(allocation, idleBalance) : undefined}
+              disabled={!idleBalance}
+            >
+              Execute strategy
+            </Button>
+            <input
+              className="min-w-0 flex-1 rounded-md border bg-background px-2 py-1"
+              inputMode="decimal"
+              placeholder="Close notional USDC"
+              value={closeNotional}
+              onChange={(event) => setCloseNotional(event.target.value)}
+            />
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={() => onClose(allocation, closeNotional)}
+              disabled={closeNotional.trim().length === 0}
+            >
+              Close + withdraw
+            </Button>
+          </div>
+          {allocation.missing?.length ? (
+            <p>Missing config: {allocation.missing.join(", ")}</p>
           ) : null}
         </div>
       ) : null}

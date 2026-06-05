@@ -21,6 +21,10 @@ contract VaultFactory {
     /// @notice All vaults deployed by this factory, in creation order.
     address[] public vaults;
 
+    address public immutable gmxExchangeRouter;
+    address public immutable gmxRouter;
+    address public immutable gmxOrderVault;
+
     /// @notice Vault address => the user that owns it.
     mapping(address vault => address owner) public vaultOwner;
 
@@ -30,16 +34,23 @@ contract VaultFactory {
 
     /// @param implementation_ The {StrategyVault} logic contract (must have disabled initializers).
     /// @param beaconOwner The upgrade authority over every vault (use a Timelock + multisig).
-    constructor(address implementation_, address beaconOwner) {
-        if (implementation_ == address(0) || beaconOwner == address(0)) revert VaultFactory__ZeroAddress();
+    constructor(address implementation_, address beaconOwner, address gmxExchangeRouter_, address gmxRouter_, address gmxOrderVault_) {
+        if (
+            implementation_ == address(0) || beaconOwner == address(0) || gmxExchangeRouter_ == address(0)
+                || gmxRouter_ == address(0) || gmxOrderVault_ == address(0)
+        ) revert VaultFactory__ZeroAddress();
         beacon = new UpgradeableBeacon(implementation_, beaconOwner);
+        gmxExchangeRouter = gmxExchangeRouter_;
+        gmxRouter = gmxRouter_;
+        gmxOrderVault = gmxOrderVault_;
     }
 
     /// @notice Deploy a new vault for `owner` over collateral `asset`.
     function createVault(IERC20 asset, address owner) external returns (address vault) {
         if (address(asset) == address(0) || owner == address(0)) revert VaultFactory__ZeroAddress();
 
-        bytes memory initData = abi.encodeCall(StrategyVault.initialize, (asset, owner));
+        bytes memory initData =
+            abi.encodeCall(StrategyVault.initialize, (asset, owner, gmxExchangeRouter, gmxRouter, gmxOrderVault));
         vault = address(new BeaconProxy(address(beacon), initData));
 
         vaults.push(vault);

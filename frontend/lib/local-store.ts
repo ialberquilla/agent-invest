@@ -16,11 +16,22 @@ export type KnownStrategy = {
   created_at: string;
 };
 
+export type DeployedStrategy = {
+  mandate_id: string;
+  chain_id: number;
+  vault_address: string;
+  asset_address: string;
+  status: string;
+  label: string;
+  updated_at: string;
+};
+
 const STRATEGY_ID_KEY = "agent-invest:strategy-id";
 const KNOWN_STRATEGIES_KEY = "agent-invest:known-strategies";
 const ANONYMOUS_USER_ID_KEY = "agent-invest:anonymous-user-id";
 const MESSAGE_KEY_PREFIX = "agent-invest:messages:";
 const PINNED_SCREENERS_KEY = "agent-invest:pinned-screeners";
+const DEPLOYED_STRATEGIES_KEY = "agent-invest:deployed-strategies";
 const STRATEGY_LABEL_MAX_LENGTH = 40;
 
 export type PinnedScreener = {
@@ -95,6 +106,19 @@ function isKnownStrategy(value: unknown): value is KnownStrategy {
     isNonEmptyString(strategy.strategy_id) &&
     isNonEmptyString(strategy.label) &&
     isNonEmptyString(strategy.created_at)
+  );
+}
+
+function isDeployedStrategy(value: unknown): value is DeployedStrategy {
+  if (!isRecord(value)) return false;
+  return (
+    isNonEmptyString(value.mandate_id) &&
+    typeof value.chain_id === "number" &&
+    isNonEmptyString(value.vault_address) &&
+    isNonEmptyString(value.asset_address) &&
+    isNonEmptyString(value.status) &&
+    isNonEmptyString(value.label) &&
+    isNonEmptyString(value.updated_at)
   );
 }
 
@@ -297,20 +321,58 @@ export function getPinnedScreeners() {
   return screeners ?? [];
 }
 
+export function getDeployedStrategies() {
+  const strategies = parseStoredJson(
+    DEPLOYED_STRATEGIES_KEY,
+    (value): value is DeployedStrategy[] =>
+      Array.isArray(value) && value.every((entry) => isDeployedStrategy(entry)),
+  );
+  return strategies ?? [];
+}
+
+export function upsertDeployedStrategy(strategy: {
+  mandate_id: string;
+  chain_id: number;
+  vault_address: string;
+  asset_address: string;
+  status: string;
+  label?: string;
+}) {
+  if (!canUseLocalStorage()) return;
+  const current = getDeployedStrategies();
+  const next: DeployedStrategy = {
+    ...strategy,
+    label:
+      normalizeKnownStrategyLabel(strategy.label) ||
+      `Vault ${strategy.vault_address.slice(0, 6)}...${strategy.vault_address.slice(-4)}`,
+    updated_at: new Date().toISOString(),
+  };
+  window.localStorage.setItem(
+    DEPLOYED_STRATEGIES_KEY,
+    JSON.stringify([
+      next,
+      ...current.filter((entry) => entry.mandate_id !== strategy.mandate_id),
+    ]),
+  );
+}
+
 export function isScreenerPinned(definition: ScreenerResult["definition"]) {
   const id = screenerId(definition);
   return getPinnedScreeners().some((screener) => screener.id === id);
 }
 
-export function pinScreener(result: ScreenerResult) {
+export function pinScreener(result: ScreenerResult, label = result.title) {
   const id = screenerId(result.definition);
+  const screeners = getPinnedScreeners();
+  const current = screeners.filter((screener) => screener.id !== id);
+  const existing = screeners.find((screener) => screener.id === id);
+  const normalizedLabel = normalizeText(label) || existing?.label || result.title;
   const pinned: PinnedScreener = {
     id,
-    label: result.title,
+    label: normalizedLabel,
     definition: result.definition,
     updated_at: new Date().toISOString(),
   };
-  const current = getPinnedScreeners().filter((screener) => screener.id !== id);
   writePinnedScreeners([pinned, ...current]);
 }
 
