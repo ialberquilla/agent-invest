@@ -36,7 +36,7 @@ export type ProposeCandidatesResult = {
 
 export const NEXT_STEP: StepName = "run_and_validate";
 
-const MAX_EXPANDED_CANDIDATES = 12;
+const MAX_EXPANDED_CANDIDATES = 8;
 
 const PARSE_RETRY_NOTE =
   "Your previous response could not be parsed as JSON. Reply with only valid JSON matching the Proposal schema. No Markdown fences. No prose.";
