@@ -54,6 +54,21 @@ function fakeRecommend(response: RecommendWindowResponse) {
   return Object.assign(fn, { calls });
 }
 
+function fakeRecommendSequence(
+  responses: RecommendWindowResponse[],
+) {
+  const calls: RecommendWindowRequest[] = [];
+  let i = 0;
+  const fn = async (req: RecommendWindowRequest) => {
+    calls.push(req);
+    const response = responses[i] ?? responses[responses.length - 1];
+    i += 1;
+    if (!response) throw new Error("missing fake response");
+    return response;
+  };
+  return Object.assign(fn, { calls });
+}
+
 function deps(
   recommendWindow: ReturnType<typeof fakeRecommend>,
 ): SelectWindowDeps {
@@ -208,4 +223,139 @@ test("selectWindow flags a window shorter than the thesis horizon", async () => 
   assert.equal(result.delta.window.effective.window_length_days, 23);
   assert.equal(capHits.length, 1);
   assert.equal(capHits[0]?.cap, "window_length_below_horizon");
+});
+
+test("selectWindow retries dynamic-universe windows without short-history limiting coins", async () => {
+  const recommendWindow = fakeRecommendSequence([
+    {
+      start: "2025-01-01",
+      end: "2026-05-24",
+      rationale: "limited by hyperliquid",
+      covered_drawdowns: [],
+      history_constraints: {
+        intersection_start: "2025-01-01",
+        intersection_end: "2026-05-24",
+        target_window_length_days: 1460,
+        window_length_days: 500,
+        limiting_coin: "hyperliquid",
+      },
+    },
+    {
+      start: "2022-05-25",
+      end: "2026-05-24",
+      rationale: "deep anchor universe",
+      covered_drawdowns: [{ asset: "bitcoin", drawdown_pct: -0.5 }],
+      history_constraints: {
+        intersection_start: "2021-01-01",
+        intersection_end: "2026-05-24",
+        target_window_length_days: 1460,
+        window_length_days: 1460,
+        limiting_coin: "bitcoin",
+      },
+    },
+  ]);
+
+  const result = await selectWindow(
+    {
+      run_id: "test-dynamic-window",
+      thesis: BASE_THESIS,
+      universe: {
+        ...BASE_UNIVERSE,
+        coin_ids: [
+          "bitcoin",
+          "ethereum",
+          "binancecoin",
+          "solana",
+          "ripple",
+          "hyperliquid",
+        ],
+      },
+      template_selection: {
+        rationale: "momentum",
+        selected: [
+          {
+            family: "relative_momentum_rotation",
+            rank: 1,
+            rationale: "dynamic selector",
+          },
+        ],
+      },
+    },
+    deps(recommendWindow),
+  );
+
+  assert.equal(recommendWindow.calls.length, 2);
+  assert.deepEqual(recommendWindow.calls[0]?.coin_ids, [
+    "bitcoin",
+    "ethereum",
+    "binancecoin",
+    "solana",
+    "ripple",
+    "hyperliquid",
+  ]);
+  assert.deepEqual(recommendWindow.calls[1]?.coin_ids, [
+    "bitcoin",
+    "ethereum",
+    "binancecoin",
+    "solana",
+    "ripple",
+  ]);
+  assert.equal(
+    result.delta.window.effective.strategy_window_mode,
+    "dynamic_universe",
+  );
+  assert.deepEqual(result.delta.window.effective.excluded_window_coin_ids, [
+    "hyperliquid",
+  ]);
+  assert.equal(result.delta.window.effective.window_length_days, 1460);
+});
+
+test("selectWindow keeps fixed-universe windows on the full coin intersection", async () => {
+  const recommendWindow = fakeRecommend({
+    start: "2025-01-01",
+    end: "2026-05-24",
+    rationale: "limited by hyperliquid",
+    covered_drawdowns: [],
+    history_constraints: {
+      intersection_start: "2025-01-01",
+      intersection_end: "2026-05-24",
+      target_window_length_days: 1460,
+      window_length_days: 500,
+      limiting_coin: "hyperliquid",
+    },
+  });
+
+  const result = await selectWindow(
+    {
+      run_id: "test-fixed-window",
+      thesis: BASE_THESIS,
+      universe: {
+        ...BASE_UNIVERSE,
+        coin_ids: ["bitcoin", "ethereum", "hyperliquid"],
+      },
+      template_selection: {
+        rationale: "fixed",
+        selected: [
+          {
+            family: "periodic_rebalanced_allocation",
+            rank: 1,
+            rationale: "fixed basket",
+          },
+        ],
+      },
+    },
+    deps(recommendWindow),
+  );
+
+  assert.equal(recommendWindow.calls.length, 1);
+  assert.deepEqual(recommendWindow.calls[0]?.coin_ids, [
+    "bitcoin",
+    "ethereum",
+    "hyperliquid",
+  ]);
+  assert.equal(
+    result.delta.window.effective.strategy_window_mode,
+    "fixed_universe",
+  );
+  assert.equal(result.delta.window.effective.excluded_window_coin_ids, undefined);
 });

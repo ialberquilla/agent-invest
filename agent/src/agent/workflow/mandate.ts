@@ -7,6 +7,7 @@
 import {
   type AllocationTemplate,
   type AllocationWeight,
+  DYNAMIC_UNIVERSE_FAMILIES,
   type FinalWinner,
   type Objective,
   type ProposedCandidate,
@@ -24,24 +25,13 @@ import {
 // changes in a way the executor must branch on. Not the same as a re-issue
 // version (a re-run produces a fresh mandate_id, not a new version here).
 export const MANDATE_VERSION = 1;
+export { DYNAMIC_UNIVERSE_FAMILIES };
 
 export type MandateStatus = "pending" | "active" | "halted" | "retired";
 
 // long_only maps to per-market long positions on GMX; long_short additionally
 // allows isLong=false legs. Derived from the family, not free-form.
 export type AllowedSides = "long_only" | "long_short";
-
-// Families that re-select WHICH coins are held each period from the ranked
-// universe (not just re-size a fixed set). For these the bot must re-rank live
-// data every rebalance; the mandate's coin_ids are the eligible pool, not a
-// fixed holdings list. State-dependent SIZING families (threshold, vol-target,
-// drawdown) keep their asset set and are NOT dynamic-universe.
-export const DYNAMIC_UNIVERSE_FAMILIES: ReadonlySet<AllocationTemplate> =
-  new Set([
-    "relative_momentum_rotation",
-    "trend_following_long_neutral",
-    "trend_following_long_short",
-  ]);
 
 // Everything the rebalance bot needs to execute the strategy, with no prose to
 // re-interpret. Stored as the `spec` jsonb on strategy_mandates.

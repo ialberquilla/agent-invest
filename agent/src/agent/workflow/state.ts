@@ -210,6 +210,9 @@ export type Window = {
     intersection_start?: string;
     intersection_end?: string;
     covered_drawdowns_count: number;
+    strategy_window_mode?: "fixed_universe" | "dynamic_universe";
+    window_coin_ids?: string[];
+    excluded_window_coin_ids?: string[];
   };
 };
 
@@ -217,6 +220,7 @@ export type SelectWindowInput = {
   run_id: string;
   thesis: Thesis;
   universe: Universe;
+  template_selection?: TemplateSelection;
 };
 
 // Executable strategy families, each backed by a `bt` recipe in agent/scripts
@@ -239,6 +243,17 @@ export const ALLOCATION_TEMPLATES = [
   "drawdown_based_hedge",
 ] as const;
 export type AllocationTemplate = (typeof ALLOCATION_TEMPLATES)[number];
+
+// Families that re-select WHICH coins are held each period from the ranked
+// universe. Their backtest window should not be forced to the common-history
+// intersection of every eligible coin, because newly-listed coins can be
+// ignored until they have enough signal history.
+export const DYNAMIC_UNIVERSE_FAMILIES: ReadonlySet<AllocationTemplate> =
+  new Set([
+    "relative_momentum_rotation",
+    "trend_following_long_neutral",
+    "trend_following_long_short",
+  ]);
 
 // Families that accept a rebalance_trigger slot. synthetic_long (held once),
 // trend_following (weekly by construction), pair-trade/drawdown-hedge (fixed
@@ -944,11 +959,12 @@ export function validateProposal(
     throw new ProposalValidationError("candidates must be an array");
   }
   // run_candidate_batch (the downstream Python CLI) requires >= 3
-  // candidates per batch. Match that here so we fail fast instead of
-  // burning a backtest call on an invalid batch.
-  if (value.candidates.length < 3 || value.candidates.length > 5) {
+  // candidates per batch. The workflow allows up to 12 because
+  // propose_candidates expands the LLM's small seed shortlist into a
+  // bounded deterministic parameter sweep before backtesting.
+  if (value.candidates.length < 3 || value.candidates.length > 12) {
     throw new ProposalValidationError(
-      `candidates must contain between 3 and 5 entries (got ${value.candidates.length})`,
+      `candidates must contain between 3 and 12 entries (got ${value.candidates.length})`,
     );
   }
 

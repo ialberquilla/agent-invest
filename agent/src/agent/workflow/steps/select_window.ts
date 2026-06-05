@@ -4,13 +4,18 @@
 // horizon (downstream validate_against_thesis depends on it) and
 // exposes recommender diagnostics in `effective`.
 
-import { runRecommendBacktestWindow } from "../cli.ts";
+import {
+  runRecommendBacktestWindow,
+  type RecommendWindowResponse,
+} from "../cli.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
 import type {
+  AllocationTemplate,
   SelectWindowInput,
   StepName,
   Window,
 } from "../state.ts";
+import { DYNAMIC_UNIVERSE_FAMILIES } from "../state.ts";
 
 export type SelectWindowDeps = {
   recommendWindow?: typeof runRecommendBacktestWindow;
@@ -24,6 +29,8 @@ export type SelectWindowResult = {
 
 export const NEXT_STEP: StepName = "propose_candidates";
 
+const MAX_DYNAMIC_WINDOW_RETRIES = 6;
+
 export async function selectWindow(
   input: SelectWindowInput,
   deps: SelectWindowDeps = {},
@@ -32,17 +39,17 @@ export async function selectWindow(
     deps.logger ??
     createStepLogger({ run_id: input.run_id, step: "select_window" });
   const recommendWindow = deps.recommendWindow ?? runRecommendBacktestWindow;
+  const mode = isDynamicWindow(input) ? "dynamic_universe" : "fixed_universe";
 
   logger.enter({
     horizon_days: input.thesis.horizon_days,
     universe_size: input.universe.coin_ids.length,
+    strategy_window_mode: mode,
   });
 
   try {
-    const response = await recommendWindow({
-      coin_ids: input.universe.coin_ids,
-      horizon_days: input.thesis.horizon_days,
-    });
+    const recommendation = await resolveRecommendation(input, recommendWindow, mode);
+    const response = recommendation.response;
 
     const constraints = response.history_constraints;
     const drawdowns = Array.isArray(response.covered_drawdowns)
@@ -72,6 +79,12 @@ export async function selectWindow(
         intersection_start: constraints?.intersection_start,
         intersection_end: constraints?.intersection_end,
         covered_drawdowns_count: drawdowns,
+        strategy_window_mode: mode,
+        window_coin_ids: recommendation.coin_ids,
+        excluded_window_coin_ids:
+          recommendation.excluded_coin_ids.length > 0
+            ? recommendation.excluded_coin_ids
+            : undefined,
       },
     };
 
@@ -92,6 +105,9 @@ export async function selectWindow(
       end: window.end,
       window_length_days: window.effective.window_length_days,
       limiting_coin: window.effective.limiting_coin ?? null,
+      strategy_window_mode: mode,
+      window_coin_count: recommendation.coin_ids.length,
+      excluded_window_coin_count: recommendation.excluded_coin_ids.length,
       drawdowns: window.effective.covered_drawdowns_count,
     });
     return { delta: { window }, next: NEXT_STEP };
@@ -99,6 +115,81 @@ export async function selectWindow(
     logger.error(error);
     throw error;
   }
+}
+
+type Recommendation = {
+  response: RecommendWindowResponse;
+  coin_ids: string[];
+  excluded_coin_ids: string[];
+};
+
+async function resolveRecommendation(
+  input: SelectWindowInput,
+  recommendWindow: typeof runRecommendBacktestWindow,
+  mode: "fixed_universe" | "dynamic_universe",
+): Promise<Recommendation> {
+  if (mode === "fixed_universe") {
+    return {
+      response: await recommendWindow({
+        coin_ids: input.universe.coin_ids,
+        horizon_days: input.thesis.horizon_days,
+      }),
+      coin_ids: input.universe.coin_ids,
+      excluded_coin_ids: [],
+    };
+  }
+
+  let coinIds = [...input.universe.coin_ids];
+  const excluded: string[] = [];
+  const minAnchors = Math.min(
+    input.universe.coin_ids.length,
+    Math.max(1, input.thesis.constraints.asset_count_min),
+  );
+  let last: RecommendWindowResponse | undefined;
+
+  for (let attempt = 0; attempt <= MAX_DYNAMIC_WINDOW_RETRIES; attempt += 1) {
+    const response = await recommendWindow({
+      coin_ids: coinIds,
+      horizon_days: input.thesis.horizon_days,
+    });
+    last = response;
+
+    const constraints = response.history_constraints;
+    const windowLength =
+      constraints?.window_length_days ?? daysBetween(response.start, response.end);
+    const targetLength =
+      constraints?.target_window_length_days ?? input.thesis.horizon_days * 2;
+    const limitingCoin = constraints?.limiting_coin;
+
+    if (windowLength >= targetLength) {
+      return { response, coin_ids: coinIds, excluded_coin_ids: excluded };
+    }
+    if (!limitingCoin || !coinIds.includes(limitingCoin)) {
+      return { response, coin_ids: coinIds, excluded_coin_ids: excluded };
+    }
+    if (coinIds.length <= minAnchors) {
+      return { response, coin_ids: coinIds, excluded_coin_ids: excluded };
+    }
+
+    coinIds = coinIds.filter((id) => id !== limitingCoin);
+    excluded.push(limitingCoin);
+  }
+
+  return {
+    response: last ??
+      (await recommendWindow({
+        coin_ids: coinIds,
+        horizon_days: input.thesis.horizon_days,
+      })),
+    coin_ids: coinIds,
+    excluded_coin_ids: excluded,
+  };
+}
+
+function isDynamicWindow(input: SelectWindowInput): boolean {
+  return (input.template_selection?.selected ?? []).some((s) =>
+    DYNAMIC_UNIVERSE_FAMILIES.has(s.family as AllocationTemplate),
+  );
 }
 
 // Extracts the limiting coin's first/last price dates from the

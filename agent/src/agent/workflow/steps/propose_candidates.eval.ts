@@ -1,9 +1,8 @@
 // Eval runner for the propose_candidates step.
 //
-// LLM-driven. Emits 3-5 allocation-template candidates from the
-// thesis/universe/window, biased by the select_templates family
-// shortlist, and -- on refine rounds -- by the prior attempt's
-// validation failures + refinement_hint. The signals worth sweeping:
+// LLM-driven. Gets a focused 3-5 candidate shortlist from the model, then
+// deterministically expands it to a bounded parameter sweep before backtest.
+// The signals worth sweeping:
 //  - cold: objective/constraints with no prior attempt (structural sanity)
 //  - templates: the family shortlist must map to the right executable
 //    template (periodic_rebalanced -> periodic_rebalance; threshold ->
@@ -12,7 +11,7 @@
 //    and candidates implement the hint, without repeating the failed config
 //  - bounds: select_top must respect asset_count bounds AND universe size
 //
-// Structural invariants the validator already enforces (count 3-5,
+// Structural invariants the validator already enforces (count 3-12,
 // select_top range, trigger rules) are re-checked for visibility; the
 // one it does NOT enforce -- candidate diversity -- is asserted on every
 // case.
@@ -359,7 +358,7 @@ function evaluate(expect: Expect, p: Proposal, input: ProposeCandidatesInput): A
   const templates = cs.map((c) => c.template_id);
 
   // --- universal structural invariants ---
-  push("candidate_count", "3..5", cs.length, cs.length >= 3 && cs.length <= 5);
+  push("candidate_count", "3..12", cs.length, cs.length >= 3 && cs.length <= 12);
 
   const lo = input.thesis.constraints.asset_count_min;
   const hi = Math.min(input.thesis.constraints.asset_count_max, input.universe.coin_ids.length);
