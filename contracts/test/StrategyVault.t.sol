@@ -6,6 +6,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {Test} from "forge-std/Test.sol";
 import {IGmxV2ExchangeRouter} from "src/interfaces/IGmxV2ExchangeRouter.sol";
+import {DeployStrategyVault} from "script/DeployStrategyVault.s.sol";
 import {StrategyVault} from "src/StrategyVault.sol";
 import {StrategyVaultBase} from "src/StrategyVaultBase.sol";
 import {VaultFactory} from "src/VaultFactory.sol";
@@ -115,7 +116,23 @@ contract StrategyVaultV2 is StrategyVault {
     }
 }
 
+contract DeployStrategyVaultHarness is DeployStrategyVault {
+    function validateProductionConfig(
+        bool ownerWasExplicit,
+        address beaconOwner,
+        address gmxExchangeRouter,
+        address gmxRouter,
+        address gmxOrderVault
+    ) external view {
+        _validateProductionConfig(ownerWasExplicit, beaconOwner, gmxExchangeRouter, gmxRouter, gmxOrderVault);
+    }
+}
+
 contract StrategyVaultTest is Test {
+    address internal constant ARBITRUM_GMX_EXCHANGE_ROUTER = 0x1C3fa76e6E1088bCE750f23a5BFcffa1efEF6A41;
+    address internal constant ARBITRUM_GMX_ROUTER = 0x7452c558d45f8afC8c83dAe62C3f8A5BE19c71f6;
+    address internal constant ARBITRUM_GMX_ORDER_VAULT = 0x31eF83a530Fde1B38EE9A18093A333D8Bbbc40D5;
+
     MockAsset internal asset;
     MockGmxExchangeRouter internal gmxExchangeRouter;
     address internal gmxRouter;
@@ -132,11 +149,13 @@ contract StrategyVaultTest is Test {
         gmxExchangeRouter = new MockGmxExchangeRouter(gmxRouter);
         gmxOrderVault = address(0x5678);
         StrategyVault implementation = new StrategyVault();
-        factory = new VaultFactory(address(implementation), beaconOwner, address(gmxExchangeRouter), gmxRouter, gmxOrderVault);
+        factory = new VaultFactory(
+            address(implementation), beaconOwner, address(gmxExchangeRouter), gmxRouter, gmxOrderVault
+        );
         vault = StrategyVault(payable(factory.createVault(asset, owner)));
     }
 
-    function _gmx() internal returns (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) {
+    function _gmx() internal view returns (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) {
         router = gmxRouter;
         exchangeRouter = gmxExchangeRouter;
         orderVault = gmxOrderVault;
@@ -551,5 +570,73 @@ contract StrategyVaultTest is Test {
     function test_FactoryCreateVaultRevertsOnZeroOwner() external {
         vm.expectRevert(VaultFactory.VaultFactory__ZeroAddress.selector);
         factory.createVault(asset, address(0));
+    }
+
+    function test_DeployScriptAllowsLocalDefaults() external {
+        vm.chainId(31337);
+        _setDeployEnv(address(asset), address(0), address(0), address(gmxExchangeRouter), gmxRouter, gmxOrderVault);
+
+        DeployStrategyVault deployer = new DeployStrategyVault();
+        (StrategyVault implementation, VaultFactory deployedFactory, address deployedVault) = deployer.run();
+
+        assertTrue(address(implementation) != address(0));
+        assertEq(deployedFactory.implementation(), address(implementation));
+        assertTrue(StrategyVault(payable(deployedVault)).owner() != address(0));
+        assertEq(address(StrategyVault(payable(deployedVault)).asset()), address(asset));
+    }
+
+    function test_DeployScriptProductionRequiresExplicitVaultOwner() external {
+        vm.chainId(42161);
+        DeployStrategyVaultHarness deployer = new DeployStrategyVaultHarness();
+
+        vm.expectRevert(DeployStrategyVault.DeployStrategyVault__ProductionRequiresExplicitOwner.selector);
+        deployer.validateProductionConfig(
+            false, beaconOwner, ARBITRUM_GMX_EXCHANGE_ROUTER, ARBITRUM_GMX_ROUTER, ARBITRUM_GMX_ORDER_VAULT
+        );
+    }
+
+    function test_DeployScriptProductionRequiresExplicitBeaconOwner() external {
+        vm.chainId(42161);
+        DeployStrategyVaultHarness deployer = new DeployStrategyVaultHarness();
+
+        vm.expectRevert(DeployStrategyVault.DeployStrategyVault__ProductionRequiresExplicitBeaconOwner.selector);
+        deployer.validateProductionConfig(
+            true, address(0), ARBITRUM_GMX_EXCHANGE_ROUTER, ARBITRUM_GMX_ROUTER, ARBITRUM_GMX_ORDER_VAULT
+        );
+    }
+
+    function test_DeployScriptProductionRejectsUnexpectedGmxRouting() external {
+        vm.chainId(42161);
+        DeployStrategyVaultHarness deployer = new DeployStrategyVaultHarness();
+
+        vm.expectRevert(DeployStrategyVault.DeployStrategyVault__UnexpectedProductionGmxRouting.selector);
+        deployer.validateProductionConfig(
+            true, beaconOwner, address(gmxExchangeRouter), ARBITRUM_GMX_ROUTER, ARBITRUM_GMX_ORDER_VAULT
+        );
+    }
+
+    function test_DeployScriptProductionAllowsExplicitSafeConfig() external {
+        vm.chainId(42161);
+        DeployStrategyVaultHarness deployer = new DeployStrategyVaultHarness();
+
+        deployer.validateProductionConfig(
+            true, beaconOwner, ARBITRUM_GMX_EXCHANGE_ROUTER, ARBITRUM_GMX_ROUTER, ARBITRUM_GMX_ORDER_VAULT
+        );
+    }
+
+    function _setDeployEnv(
+        address asset_,
+        address owner_,
+        address beaconOwner_,
+        address exchangeRouter,
+        address router,
+        address orderVault
+    ) internal {
+        vm.setEnv("STRATEGY_VAULT_ASSET", vm.toString(asset_));
+        vm.setEnv("STRATEGY_VAULT_OWNER", vm.toString(owner_));
+        vm.setEnv("BEACON_OWNER", vm.toString(beaconOwner_));
+        vm.setEnv("GMX_EXCHANGE_ROUTER", vm.toString(exchangeRouter));
+        vm.setEnv("GMX_ROUTER", vm.toString(router));
+        vm.setEnv("GMX_ORDER_VAULT", vm.toString(orderVault));
     }
 }
