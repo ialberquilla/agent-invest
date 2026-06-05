@@ -7,12 +7,8 @@ import {
   http,
   parseEventLogs,
   parseUnits,
-  type Hex,
 } from "viem";
 import { arbitrum, arbitrumSepolia } from "viem/chains";
-
-import strategyVaultArtifact from "../../contracts/out/StrategyVault.sol/StrategyVault.json";
-import vaultFactoryArtifact from "../../contracts/out/VaultFactory.sol/VaultFactory.json";
 
 const SUPPORTED_CHAINS = [arbitrum, arbitrumSepolia] as const;
 
@@ -81,16 +77,7 @@ type VaultCreatedLog = { args: { vault: `0x${string}` } };
 
 const ASSET_DECIMALS = 6;
 
-const STRATEGY_VAULT_BYTECODE = strategyVaultArtifact.bytecode.object as Hex;
-const STRATEGY_VAULT_ABI = [] as const;
 const VAULT_FACTORY_ABI = [
-  {
-    type: "constructor",
-    inputs: [
-      { name: "implementation", type: "address" },
-      { name: "beaconOwner", type: "address" },
-    ],
-  },
   {
     type: "function",
     name: "createVault",
@@ -128,14 +115,14 @@ const STRATEGY_VAULT_USER_ABI = [
   },
   {
     type: "function",
-    name: "setGmxRouting",
-    inputs: [
+    name: "gmxRouting",
+    inputs: [],
+    outputs: [
       { name: "exchangeRouter", type: "address" },
       { name: "router", type: "address" },
       { name: "orderVault", type: "address" },
     ],
-    outputs: [],
-    stateMutability: "nonpayable",
+    stateMutability: "view",
   },
   {
     type: "function",
@@ -201,7 +188,6 @@ const STRATEGY_VAULT_USER_ABI = [
     stateMutability: "payable",
   },
 ] as const;
-const VAULT_FACTORY_BYTECODE = vaultFactoryArtifact.bytecode.object as Hex;
 
 function strategyVaultChain() {
   const chain = SUPPORTED_CHAINS.find(
@@ -232,61 +218,15 @@ export async function deployVaultOnChain(
     await walletClient.switchChain({ id: STRATEGY_VAULT_CHAIN_ID });
   }
 
-  if (STRATEGY_VAULT_FACTORY_ADDRESS) {
-    const createVaultHash = await walletClient.writeContract({
-      address: STRATEGY_VAULT_FACTORY_ADDRESS as `0x${string}`,
-      abi: VAULT_FACTORY_ABI,
-      functionName: "createVault",
-      args: [STRATEGY_VAULT_ASSET, account],
-      account,
-      chain,
-    });
-    const createVaultReceipt = await publicClient.waitForTransactionReceipt({
-      hash: createVaultHash,
-    });
-    const vaultAddress = vaultAddressFromReceipt(createVaultReceipt.logs);
-
-    return {
-      chainId: STRATEGY_VAULT_CHAIN_ID,
-      vaultAddress,
-      assetAddress: STRATEGY_VAULT_ASSET,
-    };
-  }
-
-  const implementationHash = await walletClient.deployContract({
-    abi: STRATEGY_VAULT_ABI,
-    account,
-    bytecode: STRATEGY_VAULT_BYTECODE,
-    chain,
-  });
-  const implementationReceipt = await publicClient.waitForTransactionReceipt({
-    hash: implementationHash,
-  });
-  if (!implementationReceipt.contractAddress) {
-    throw new Error(
-      "StrategyVault implementation deployment receipt did not include a contract address",
-    );
-  }
-
-  const factoryHash = await walletClient.deployContract({
-    abi: VAULT_FACTORY_ABI,
-    account,
-    args: [implementationReceipt.contractAddress, account],
-    bytecode: VAULT_FACTORY_BYTECODE,
-    chain,
-  });
-  const factoryReceipt = await publicClient.waitForTransactionReceipt({
-    hash: factoryHash,
-  });
-  if (!factoryReceipt.contractAddress) {
-    throw new Error("VaultFactory deployment receipt did not include a contract address");
+  if (!STRATEGY_VAULT_FACTORY_ADDRESS) {
+    throw new Error("Set NEXT_PUBLIC_STRATEGY_VAULT_FACTORY_ADDRESS before deploying a vault");
   }
 
   const createVaultHash = await walletClient.writeContract({
-    address: factoryReceipt.contractAddress,
+    address: STRATEGY_VAULT_FACTORY_ADDRESS as `0x${string}`,
     abi: VAULT_FACTORY_ABI,
     functionName: "createVault",
-    args: [STRATEGY_VAULT_ASSET, account],
+    args: [STRATEGY_VAULT_ASSET as `0x${string}`, account],
     account,
     chain,
   });
@@ -453,13 +393,20 @@ export async function readAllocationReadiness(
 const ZERO_REFERRAL = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
 const USD_DECIMALS = 30;
 
-function requiredEnv(name: string, value: string | undefined) {
-  if (!value) throw new Error(`Set ${name} before submitting GMX orders`);
-  return value;
-}
-
 function executionFee() {
   return BigInt(process.env.NEXT_PUBLIC_GMX_EXECUTION_FEE_WEI ?? "0");
+}
+
+async function readGmxRouting(
+  publicClient: ReturnType<typeof createPublicClient>,
+  vaultAddress: string,
+) {
+  const [exchangeRouter, router, orderVault] = await publicClient.readContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "gmxRouting",
+  });
+  return { exchangeRouter, router, orderVault };
 }
 
 function acceptablePrice() {
@@ -498,27 +445,18 @@ export async function executeVaultAllocationOnChain(
   const [account] = await walletClient.getAddresses();
   if (!account) throw new Error("Connect a wallet before execution");
 
-  const exchangeRouter = requiredEnv("NEXT_PUBLIC_GMX_EXCHANGE_ROUTER", process.env.NEXT_PUBLIC_GMX_EXCHANGE_ROUTER);
-  const router = requiredEnv("NEXT_PUBLIC_GMX_ROUTER", process.env.NEXT_PUBLIC_GMX_ROUTER);
-  const orderVault = requiredEnv("NEXT_PUBLIC_GMX_ORDER_VAULT", process.env.NEXT_PUBLIC_GMX_ORDER_VAULT);
+  const { exchangeRouter, router, orderVault } = await readGmxRouting(
+    publicClient,
+    allocation.vault_address,
+  );
   const collateralUnits = parseUnits(idleBalance, ASSET_DECIMALS);
   const inputs = orderInputs(allocation, collateralUnits);
   if (inputs.length === 0) throw new Error("No positive allocation legs to execute");
 
-  const routingHash = await walletClient.writeContract({
-    address: allocation.vault_address as `0x${string}`,
-    abi: STRATEGY_VAULT_USER_ABI,
-    functionName: "setGmxRouting",
-    args: [exchangeRouter as `0x${string}`, router as `0x${string}`, orderVault as `0x${string}`],
-    account,
-    chain,
-  });
-  await publicClient.waitForTransactionReceipt({ hash: routingHash });
-
   const orders = inputs.map((input) => ({
-    exchangeRouter: exchangeRouter as `0x${string}`,
-    router: router as `0x${string}`,
-    orderVault: orderVault as `0x${string}`,
+    exchangeRouter,
+    router,
+    orderVault,
     market: input.market as `0x${string}`,
     collateralToken: allocation.asset_address as `0x${string}`,
     isLong: true,
@@ -554,13 +492,15 @@ export async function closeVaultPositionsAndWithdrawIdleOnChain(
   const [account] = await walletClient.getAddresses();
   if (!account) throw new Error("Connect a wallet before closing");
 
-  const exchangeRouter = requiredEnv("NEXT_PUBLIC_GMX_EXCHANGE_ROUTER", process.env.NEXT_PUBLIC_GMX_EXCHANGE_ROUTER);
-  const orderVault = requiredEnv("NEXT_PUBLIC_GMX_ORDER_VAULT", process.env.NEXT_PUBLIC_GMX_ORDER_VAULT);
+  const { exchangeRouter, orderVault } = await readGmxRouting(
+    publicClient,
+    allocation.vault_address,
+  );
   const inputs = orderInputs(allocation, parseUnits(notionalUsd, ASSET_DECIMALS));
   if (inputs.length > 0) {
     const orders = inputs.map((input) => ({
-      exchangeRouter: exchangeRouter as `0x${string}`,
-      orderVault: orderVault as `0x${string}`,
+      exchangeRouter,
+      orderVault,
       market: input.market as `0x${string}`,
       collateralToken: allocation.asset_address as `0x${string}`,
       isLong: true,

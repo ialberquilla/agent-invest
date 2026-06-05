@@ -117,6 +117,9 @@ contract StrategyVaultV2 is StrategyVault {
 
 contract StrategyVaultTest is Test {
     MockAsset internal asset;
+    MockGmxExchangeRouter internal gmxExchangeRouter;
+    address internal gmxRouter;
+    address internal gmxOrderVault;
     VaultFactory internal factory;
     StrategyVault internal vault;
     address internal owner = address(0xA11CE);
@@ -125,18 +128,18 @@ contract StrategyVaultTest is Test {
 
     function setUp() external {
         asset = new MockAsset();
+        gmxRouter = address(new MockGmxRouter());
+        gmxExchangeRouter = new MockGmxExchangeRouter(gmxRouter);
+        gmxOrderVault = address(0x5678);
         StrategyVault implementation = new StrategyVault();
-        factory = new VaultFactory(address(implementation), beaconOwner);
+        factory = new VaultFactory(address(implementation), beaconOwner, address(gmxExchangeRouter), gmxRouter, gmxOrderVault);
         vault = StrategyVault(payable(factory.createVault(asset, owner)));
     }
 
     function _gmx() internal returns (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) {
-        router = address(new MockGmxRouter());
-        exchangeRouter = new MockGmxExchangeRouter(router);
-        orderVault = address(0x5678);
-
-        vm.prank(owner);
-        vault.setGmxRouting(address(exchangeRouter), router, orderVault);
+        router = gmxRouter;
+        exchangeRouter = gmxExchangeRouter;
+        orderVault = gmxOrderVault;
     }
 
     function _increaseOrder(address exchangeRouter, address router, address orderVault)
@@ -205,12 +208,12 @@ contract StrategyVaultTest is Test {
     function test_ImplementationIsLocked() external {
         StrategyVault implementation = new StrategyVault();
         vm.expectRevert();
-        implementation.initialize(asset, owner);
+        implementation.initialize(asset, owner, address(gmxExchangeRouter), gmxRouter, gmxOrderVault);
     }
 
     function test_InitializeCannotBeCalledTwice() external {
         vm.expectRevert();
-        vault.initialize(asset, owner);
+        vault.initialize(asset, owner, address(gmxExchangeRouter), gmxRouter, gmxOrderVault);
     }
 
     function test_BeaconUpgradeSwapsLogicAndPreservesStorage() external {
@@ -518,13 +521,26 @@ contract StrategyVaultTest is Test {
 
     function test_FactoryConstructorRevertsOnZeroImplementation() external {
         vm.expectRevert(VaultFactory.VaultFactory__ZeroAddress.selector);
-        new VaultFactory(address(0), beaconOwner);
+        new VaultFactory(address(0), beaconOwner, address(gmxExchangeRouter), gmxRouter, gmxOrderVault);
     }
 
     function test_FactoryConstructorRevertsOnZeroBeaconOwner() external {
         StrategyVault implementation = new StrategyVault();
         vm.expectRevert(VaultFactory.VaultFactory__ZeroAddress.selector);
-        new VaultFactory(address(implementation), address(0));
+        new VaultFactory(address(implementation), address(0), address(gmxExchangeRouter), gmxRouter, gmxOrderVault);
+    }
+
+    function test_FactoryConstructorRevertsOnZeroGmxRouting() external {
+        StrategyVault implementation = new StrategyVault();
+
+        vm.expectRevert(VaultFactory.VaultFactory__ZeroAddress.selector);
+        new VaultFactory(address(implementation), beaconOwner, address(0), gmxRouter, gmxOrderVault);
+
+        vm.expectRevert(VaultFactory.VaultFactory__ZeroAddress.selector);
+        new VaultFactory(address(implementation), beaconOwner, address(gmxExchangeRouter), address(0), gmxOrderVault);
+
+        vm.expectRevert(VaultFactory.VaultFactory__ZeroAddress.selector);
+        new VaultFactory(address(implementation), beaconOwner, address(gmxExchangeRouter), gmxRouter, address(0));
     }
 
     function test_FactoryCreateVaultRevertsOnZeroAsset() external {

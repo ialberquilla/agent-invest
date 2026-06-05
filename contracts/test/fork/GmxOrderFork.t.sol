@@ -81,11 +81,9 @@ contract GmxOrderForkTest is Test {
 
         vm.createSelectFork(rpcUrl, 452_780_000);
         StrategyVault implementation = new StrategyVault();
-        VaultFactory factory = new VaultFactory(address(implementation), address(this));
+        VaultFactory factory =
+            new VaultFactory(address(implementation), address(this), GMX_EXCHANGE_ROUTER, GMX_ROUTER, GMX_ORDER_VAULT);
         vault = StrategyVault(payable(factory.createVault(IERC20(ARBITRUM_USDC), owner)));
-
-        vm.prank(owner);
-        vault.setGmxRouting(GMX_EXCHANGE_ROUTER, GMX_ROUTER, GMX_ORDER_VAULT);
     }
 
     function testFork_CanSubmitGmxLongMarketIncreaseOrder() external {
