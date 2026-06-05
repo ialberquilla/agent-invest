@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Pin, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import { ArrowUpDown, Pin, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -37,6 +37,13 @@ type OrderTicket = {
   row: ScreenerRow;
 };
 
+type SortKey = "rank" | "market" | "gmx" | `metric:${string}`;
+
+type SortState = {
+  key: SortKey;
+  direction: "asc" | "desc";
+};
+
 type ScreenerResultCardProps = {
   result: ScreenerResult;
   onPinnedScreenersChange?: () => void;
@@ -55,6 +62,9 @@ export function ScreenerResultCard({
   const [ticket, setTicket] = useState<OrderTicket | null>(null);
   const [isPinDialogOpen, setIsPinDialogOpen] = useState(false);
   const [pinLabel, setPinLabel] = useState(result.title);
+  const [sort, setSort] = useState<SortState>({ key: "rank", direction: "asc" });
+  const metricColumns = metricColumnsFor(current.rows);
+  const sortedRows = [...current.rows].sort((left, right) => compareRows(left, right, sort));
 
   useEffect(() => {
     let isActive = true;
@@ -160,9 +170,19 @@ export function ScreenerResultCard({
     onPinnedScreenersChange?.();
   }
 
+  function toggleSort(key: SortKey) {
+    setSort((currentSort) => {
+      if (currentSort.key !== key) return { key, direction: "desc" };
+      return {
+        key,
+        direction: currentSort.direction === "asc" ? "desc" : "asc",
+      };
+    });
+  }
+
   return (
     <>
-      <Card className="max-w-6xl border-primary/20 bg-[linear-gradient(135deg,color-mix(in_oklab,var(--primary)_8%,transparent),transparent_35%),var(--card)] shadow-sm">
+      <Card className="mx-auto w-full max-w-6xl border-primary/20 bg-[linear-gradient(135deg,color-mix(in_oklab,var(--primary)_8%,transparent),transparent_35%),var(--card)] shadow-sm">
         <CardHeader>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">GMX screener</Badge>
@@ -199,18 +219,42 @@ export function ScreenerResultCard({
             </p>
           ) : null}
           <div className="overflow-x-auto rounded-xl border bg-background/70">
-            <table className="w-full min-w-[760px] text-left text-sm">
+            <table className="w-full min-w-[920px] text-left text-sm">
               <thead className="border-b bg-muted/50 text-xs uppercase tracking-wide text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 font-medium">Rank</th>
-                  <th className="px-3 py-2 font-medium">Market</th>
-                  <th className="px-3 py-2 font-medium">Metrics</th>
-                  <th className="px-3 py-2 font-medium">GMX</th>
+                  <SortableHeader
+                    label="Rank"
+                    sortKey="rank"
+                    sort={sort}
+                    onSort={toggleSort}
+                  />
+                  <SortableHeader
+                    label="Market"
+                    sortKey="market"
+                    sort={sort}
+                    onSort={toggleSort}
+                  />
+                  {metricColumns.map((metric) => (
+                    <SortableHeader
+                      key={metric.id}
+                      label={metric.label}
+                      sortKey={`metric:${metric.id}`}
+                      sort={sort}
+                      onSort={toggleSort}
+                      align="right"
+                    />
+                  ))}
+                  <SortableHeader
+                    label="GMX"
+                    sortKey="gmx"
+                    sort={sort}
+                    onSort={toggleSort}
+                  />
                   <th className="px-3 py-2 text-right font-medium">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {current.rows.map((row) => (
+                {sortedRows.map((row) => (
                   <tr key={row.coin_id} className="border-b last:border-0">
                     <td className="px-3 py-3 font-mono text-xs text-muted-foreground">
                       #{row.rank}
@@ -221,23 +265,18 @@ export function ScreenerResultCard({
                         {row.market_name ?? row.coin_id}
                       </div>
                     </td>
-                    <td className="px-3 py-3">
-                      <div className="flex flex-wrap gap-2">
-                        {row.metrics.map((metric) => (
-                          <span
-                            key={metric.id}
-                            className="rounded-full border bg-muted/35 px-2.5 py-1 text-xs"
-                          >
-                            <span className="text-muted-foreground">
-                              {metric.label}: 
-                            </span>
-                            <span className="font-mono font-medium">
-                              {formatMetric(metric.value, metric.format)}
-                            </span>
-                          </span>
-                        ))}
-                      </div>
-                    </td>
+                    {metricColumns.map((column) => {
+                      const metric = row.metrics.find((item) => item.id === column.id);
+
+                      return (
+                        <td
+                          key={column.id}
+                          className="px-3 py-3 text-right font-mono text-sm font-medium tabular-nums"
+                        >
+                          {formatMetric(metric?.value ?? null, metric?.format ?? column.format)}
+                        </td>
+                      );
+                    })}
                     <td className="px-3 py-3">
                       {row.is_gmx_tradeable ? (
                         <Badge variant="default">Arbitrum V2</Badge>
@@ -251,15 +290,16 @@ export function ScreenerResultCard({
                           size="sm"
                           disabled={!row.actions.long.enabled}
                           onClick={() => setTicket({ side: "Long", row })}
+                          className="border-emerald-500/30 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 disabled:border-input disabled:bg-transparent disabled:text-muted-foreground dark:text-emerald-300"
                         >
                           <TrendingUp className="size-3.5" />
                           Long
                         </Button>
                         <Button
                           size="sm"
-                          variant="outline"
                           disabled={!row.actions.short.enabled}
                           onClick={() => setTicket({ side: "Short", row })}
+                          className="border-red-500/30 bg-red-500/10 text-red-700 hover:bg-red-500/15 disabled:border-input disabled:bg-transparent disabled:text-muted-foreground dark:text-red-300"
                         >
                           <TrendingDown className="size-3.5" />
                           Short
@@ -383,6 +423,95 @@ function TicketLine({ label, value }: { label: string; value: string }) {
       <span className="text-right font-medium">{value}</span>
     </div>
   );
+}
+
+function SortableHeader({
+  label,
+  sortKey,
+  sort,
+  onSort,
+  align = "left",
+}: {
+  label: string;
+  sortKey: SortKey;
+  sort: SortState;
+  onSort: (key: SortKey) => void;
+  align?: "left" | "right";
+}) {
+  const isActive = sort.key === sortKey;
+  const directionLabel = sort.direction === "asc" ? "ascending" : "descending";
+
+  return (
+    <th
+      className={cn(
+        "px-3 py-2 font-medium",
+        align === "right" && "text-right",
+      )}
+      aria-sort={isActive ? directionLabel : "none"}
+    >
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-md transition-colors hover:text-foreground",
+          align === "right" && "justify-end",
+        )}
+      >
+        <span>{label}</span>
+        <ArrowUpDown
+          className={cn("size-3", isActive ? "text-foreground" : "opacity-50")}
+        />
+      </button>
+    </th>
+  );
+}
+
+function metricColumnsFor(rows: ScreenerRow[]) {
+  const columns: { id: string; label: string; format: "percent" | "number" }[] = [];
+  const seen = new Set<string>();
+
+  for (const row of rows) {
+    for (const metric of row.metrics) {
+      if (seen.has(metric.id)) continue;
+      seen.add(metric.id);
+      columns.push({
+        id: metric.id,
+        label: metric.label,
+        format: metric.format,
+      });
+    }
+  }
+
+  return columns;
+}
+
+function compareRows(left: ScreenerRow, right: ScreenerRow, sort: SortState) {
+  const multiplier = sort.direction === "asc" ? 1 : -1;
+  return compareSortValues(sortValue(left, sort.key), sortValue(right, sort.key)) * multiplier;
+}
+
+function sortValue(row: ScreenerRow, key: SortKey) {
+  if (key === "rank") return row.rank;
+  if (key === "market") return row.symbol || row.market_name || row.coin_id;
+  if (key === "gmx") return row.is_gmx_tradeable ? 1 : 0;
+
+  const metricId = key.slice("metric:".length);
+  return row.metrics.find((metric) => metric.id === metricId)?.value ?? null;
+}
+
+function compareSortValues(left: string | number | null, right: string | number | null) {
+  if (left === null && right === null) return 0;
+  if (left === null) return 1;
+  if (right === null) return -1;
+
+  if (typeof left === "number" && typeof right === "number") {
+    return left - right;
+  }
+
+  return String(left).localeCompare(String(right), undefined, {
+    numeric: true,
+    sensitivity: "base",
+  });
 }
 
 function formatMetric(value: number | null, format: "percent" | "number") {
