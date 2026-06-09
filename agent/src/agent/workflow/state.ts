@@ -215,6 +215,11 @@ export const STRATEGY_FAMILIES = [
   "single_asset_trend_setup",
   // pair_trade strategy_mode only (REQUIRES SHORTS). Explicit long/short legs.
   "explicit_pair_trade",
+  // momentum_rotation strategy_mode: regime-gated long/flat rotation.
+  "long_flat_momentum_rotation",
+  // long_short_portfolio strategy_mode (REQUIRES SHORTS): long strongest,
+  // short weakest by momentum.
+  "long_short_momentum_rotation",
 ] as const;
 export type StrategyFamily = (typeof STRATEGY_FAMILIES)[number];
 
@@ -223,6 +228,17 @@ export type StrategyFamily = (typeof STRATEGY_FAMILIES)[number];
 // mode-only family is forced in for its mode and dropped everywhere else.
 export const SINGLE_ASSET_FAMILY = "single_asset_trend_setup";
 export const PAIR_TRADE_FAMILY = "explicit_pair_trade";
+export const MOMENTUM_ROTATION_FAMILY = "long_flat_momentum_rotation";
+export const LONG_SHORT_FAMILY = "long_short_momentum_rotation";
+
+// Mode-only families, forced in by select_templates for their mode and
+// dropped from every other shortlist.
+export const MODE_ONLY_FAMILIES: ReadonlySet<string> = new Set([
+  SINGLE_ASSET_FAMILY,
+  PAIR_TRADE_FAMILY,
+  MOMENTUM_ROTATION_FAMILY,
+  LONG_SHORT_FAMILY,
+]);
 
 // Families that require short exposure. select_templates only shortlists
 // these when the thesis permits shorts (allowed_sides === "long_short").
@@ -232,6 +248,7 @@ export const SHORT_REQUIRING_FAMILIES: ReadonlySet<StrategyFamily> = new Set([
   "relative_value_pair_trade",
   "beta_hedged_alt_exposure",
   "drawdown_based_hedge",
+  "long_short_momentum_rotation",
   "explicit_pair_trade",
 ]);
 
@@ -374,6 +391,8 @@ export const ALLOCATION_TEMPLATES = [
   "drawdown_based_hedge",
   "single_asset_trend_setup",
   "explicit_pair_trade",
+  "long_flat_momentum_rotation",
+  "long_short_momentum_rotation",
 ] as const;
 export type AllocationTemplate = (typeof ALLOCATION_TEMPLATES)[number];
 
@@ -400,6 +419,8 @@ export const REBALANCE_TRIGGER_FAMILIES = [
   "relative_momentum_rotation",
   "partial_hedge_overlay",
   "beta_hedged_alt_exposure",
+  "long_flat_momentum_rotation",
+  "long_short_momentum_rotation",
 ] as const;
 // Structural-slot families (core_weight; barbell additionally caps the sleeve).
 export const CORE_WEIGHT_FAMILIES = [
@@ -443,6 +464,9 @@ export type ProposedCandidate = {
   long_coin_id?: string;
   short_coin_id?: string;
   hedge_ratio?: number;
+  // Momentum-rotation slot (long_flat / long_short rotation): the trailing
+  // return window used to rank the pool. Forbidden on every other family.
+  momentum_lookback?: number;
   rationale: string;
 };
 
@@ -1314,6 +1338,28 @@ function validateCandidate(
       );
     }
   }
+
+  // Momentum-rotation slot. Only the rotation families accept it.
+  if (candidate.momentum_lookback !== undefined) {
+    if (
+      family !== MOMENTUM_ROTATION_FAMILY &&
+      family !== LONG_SHORT_FAMILY
+    ) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: momentum_lookback is only allowed on the momentum rotation families`,
+      );
+    }
+    requireFiniteInteger(
+      candidate.momentum_lookback,
+      `candidates[${index}].momentum_lookback`,
+    );
+    const lookback = candidate.momentum_lookback as number;
+    if (lookback < 2 || lookback > 400) {
+      throw new ProposalValidationError(
+        `candidates[${index}].momentum_lookback must be in [2, 400]`,
+      );
+    }
+  }
 }
 
 // Wizard brief stays loosely typed until we re-wire it in the controller.
@@ -1532,6 +1578,20 @@ function validateFeasibility(
     ) {
       throw new ThesisValidationError(
         "pair_trade strategy_mode requires asset_count_min == asset_count_max == 2",
+      );
+    }
+  } else if (
+    mode === "momentum_rotation" ||
+    mode === "long_short_portfolio"
+  ) {
+    // Rotation books hold a subset of a ranked pool (long/flat) or both
+    // sides of it (long/short), so the fully-invested long-basket coverage
+    // inequality does not apply. They just need a pool big enough to rank:
+    // long/short needs both sides, so it wants more names.
+    const minPool = mode === "long_short_portfolio" ? 4 : 3;
+    if (constraints.asset_count_min < minPool) {
+      throw new ThesisValidationError(
+        `${mode} strategy_mode requires asset_count_min >= ${minPool} (a pool to rotate within)`,
       );
     }
   } else {

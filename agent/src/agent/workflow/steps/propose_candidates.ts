@@ -11,6 +11,8 @@ import {
   REBALANCE_TRIGGER_FAMILIES,
   REBALANCE_TRIGGERS,
   resolveStrategyMode,
+  LONG_SHORT_FAMILY,
+  MOMENTUM_ROTATION_FAMILY,
   PAIR_TRADE_FAMILY,
   SINGLE_ASSET_FAMILY,
   WEIGHTING_SCHEMES,
@@ -149,6 +151,19 @@ export async function proposeCandidates(
     });
     return { delta: { proposal }, next: NEXT_STEP };
   }
+  if (mode === "momentum_rotation" || mode === "long_short_portfolio") {
+    const family =
+      mode === "long_short_portfolio"
+        ? LONG_SHORT_FAMILY
+        : MOMENTUM_ROTATION_FAMILY;
+    const proposal = buildRotationProposal(input, family);
+    logger.exit(NEXT_STEP, {
+      candidate_count: proposal.candidates.length,
+      template_mix: summariseTemplates(proposal.candidates),
+      rotation: mode,
+    });
+    return { delta: { proposal }, next: NEXT_STEP };
+  }
 
   const userMessage = buildUserMessage(input);
   let lastError: Error | undefined;
@@ -267,6 +282,46 @@ export function buildPairTradeProposal(
   );
   const proposal: Proposal = {
     iteration_hypothesis: `Pair trade: long ${long}, short ${short}; sweep the hedge ratio.`,
+    candidates,
+  };
+  validateProposal(proposal, {
+    thesis: input.thesis,
+    universe: input.universe,
+  });
+  return proposal;
+}
+
+// Deterministic momentum-rotation proposal (long/flat or long/short): rank a
+// pool of select_top names and sweep the momentum-lookback window. The pool
+// is the thesis asset_count_max, capped by the resolved universe size.
+const ROTATION_MOMENTUM_LOOKBACKS = [30, 90, 180] as const;
+
+export function buildRotationProposal(
+  input: ProposeCandidatesInput,
+  family: typeof MOMENTUM_ROTATION_FAMILY | typeof LONG_SHORT_FAMILY,
+): Proposal {
+  const pool = Math.min(
+    input.thesis.constraints.asset_count_max,
+    input.universe.coin_ids.length,
+  );
+  if (pool < input.thesis.constraints.asset_count_min) {
+    throw new ProposalValidationError(
+      `rotation proposal: universe (${input.universe.coin_ids.length}) cannot satisfy asset_count_min=${input.thesis.constraints.asset_count_min}`,
+    );
+  }
+  const candidates: ProposedCandidate[] = ROTATION_MOMENTUM_LOOKBACKS.map(
+    (momentum_lookback, index) => ({
+      candidate_id: `mr${index + 1}`,
+      template_id: family,
+      select_top: pool,
+      weighting: "equal",
+      rebalance_trigger: "periodic_30d",
+      momentum_lookback,
+      rationale: `${family} over a ${pool}-name pool with a ${momentum_lookback}-day momentum window.`,
+    }),
+  );
+  const proposal: Proposal = {
+    iteration_hypothesis: `${family}: rank a ${pool}-name pool and sweep the momentum lookback.`,
     candidates,
   };
   validateProposal(proposal, {

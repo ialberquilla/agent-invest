@@ -7,6 +7,9 @@
 import type { LLMClient } from "../llm.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
 import {
+  LONG_SHORT_FAMILY,
+  MODE_ONLY_FAMILIES,
+  MOMENTUM_ROTATION_FAMILY,
   PAIR_TRADE_FAMILY,
   resolveAllowedSides,
   resolveStrategyMode,
@@ -18,6 +21,7 @@ import {
   type AllowedSides,
   type SelectTemplatesInput,
   type StepName,
+  type StrategyFamily,
   type StrategyMode,
   type TemplateSelection,
   type Thesis,
@@ -77,7 +81,7 @@ Rules:
 - family ids must come from the catalog and be unique within the shortlist.
 - ranks must be the contiguous set 1..n with no gaps or duplicates.
 - SHORTS GATE: only shortlist a family marked "REQUIRES SHORTS" when the thesis allowed_sides is "long_short". For "long_only" or "long_flat", shortlist long-only families only. (The workflow also enforces this deterministically, so a short family picked under a non-short thesis will be dropped.)
-- NEVER shortlist "single_asset_trend_setup" or "explicit_pair_trade": they are selected automatically for single_asset / pair_trade theses and dropped from any other shortlist.
+- NEVER shortlist "single_asset_trend_setup", "explicit_pair_trade", "long_flat_momentum_rotation", or "long_short_momentum_rotation": they are selected automatically for their strategy_mode and dropped from any other shortlist.
 - Map thesis signals to families:
   - objective preserve_capital / income, low max_drawdown -> prefer core_satellite, threshold_rebalanced, periodic_rebalanced, volatility_targeted. When max_drawdown is TIGHT (<= 0.20), rank a drawdown-aware family (volatility_targeted, or threshold_rebalanced for low turnover) FIRST -- plain calendar rebalancing (periodic_rebalanced) does not control drawdown, so it should not be the rank-1 pick for a tight-drawdown mandate.
   - objective balanced_growth -> core_satellite, periodic_rebalanced, synthetic_long.
@@ -172,7 +176,7 @@ export async function selectTemplates(
 // a family via the LLM. These short-circuit select_templates entirely.
 function forcedFamilyForMode(
   mode: StrategyMode,
-): { family: typeof SINGLE_ASSET_FAMILY | typeof PAIR_TRADE_FAMILY; rationale: string } | undefined {
+): { family: StrategyFamily; rationale: string } | undefined {
   switch (mode) {
     case "single_asset":
       return {
@@ -184,20 +188,33 @@ function forcedFamilyForMode(
         family: PAIR_TRADE_FAMILY,
         rationale: "pair_trade mode: long one named market, short another.",
       };
+    case "momentum_rotation":
+      return {
+        family: MOMENTUM_ROTATION_FAMILY,
+        rationale:
+          "momentum_rotation mode: rotate into the strongest names, de-risk to cash when the market trend is down.",
+      };
+    case "long_short_portfolio":
+      return {
+        family: LONG_SHORT_FAMILY,
+        rationale:
+          "long_short_portfolio mode: long the strongest names, short the weakest by momentum.",
+      };
     default:
       return undefined;
   }
 }
 
-// Drop mode-only families (single-asset, pair) from a shortlist for any
-// other mode -- they are forced in for their own mode and never valid
-// elsewhere -- re-ranking the survivors. Falls back to a long-only default
-// if it empties the list.
+// Drop mode-only families (single-asset, pair, the two rotation families)
+// from a shortlist for any other mode -- they are forced in for their own
+// mode and never valid elsewhere -- re-ranking the survivors. Falls back to
+// a long-only default if it empties the list.
 function dropModeOnlyFamilies(
   selection: TemplateSelection,
 ): TemplateSelection {
-  const modeOnly = new Set<string>([SINGLE_ASSET_FAMILY, PAIR_TRADE_FAMILY]);
-  const kept = selection.selected.filter((s) => !modeOnly.has(s.family));
+  const kept = selection.selected.filter(
+    (s) => !MODE_ONLY_FAMILIES.has(s.family),
+  );
   if (kept.length === selection.selected.length) return selection;
   const survivors =
     kept.length > 0

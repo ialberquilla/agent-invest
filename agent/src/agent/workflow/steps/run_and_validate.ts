@@ -164,6 +164,19 @@ function candidateToBatchEntry(
     if (candidate.hedge_ratio !== undefined) {
       config.hedge_ratio = candidate.hedge_ratio;
     }
+  } else if (
+    candidate.template_id === "long_flat_momentum_rotation" ||
+    candidate.template_id === "long_short_momentum_rotation"
+  ) {
+    // The rotation recipes take the momentum window and an optional rebalance
+    // trigger; no weighting slot. select_top stays top-level (the recipe's
+    // own slot, injected into config by run_candidate_batch).
+    if (candidate.momentum_lookback !== undefined) {
+      config.momentum_lookback = candidate.momentum_lookback;
+    }
+    if (candidate.rebalance_trigger !== undefined) {
+      config.rebalance_trigger = candidate.rebalance_trigger;
+    }
   } else {
     config.weighting = candidate.weighting;
     if (candidate.rebalance_trigger !== undefined) {
@@ -219,10 +232,11 @@ export function scriptObjectiveFromWorkflow(
 // convention); we negate it here so the floor check matches semantics.
 export function thesisForValidate(thesis: Thesis): Record<string, unknown> {
   const dd = -Math.abs(thesis.constraints.max_drawdown);
-  // Short-bearing books (pair/hedge/long-short) are not long baskets, so the
-  // long-only rules (max_weight_per_asset, asset_count) don't apply. Validate
-  // drawdown plus any explicit exposure ceilings the thesis carries.
-  if (resolveAllowedSides(thesis) === "long_short" || usesShorts(thesis)) {
+  // Non-basket books are not fully-invested diversified long baskets, so the
+  // long-only rules (max_weight_per_asset, asset_count) don't apply: a pair /
+  // long-short book carries shorts, and a momentum rotation concentrates into
+  // a few names. Validate drawdown plus any explicit exposure ceilings.
+  if (usesExposureValidation(thesis)) {
     const constraints: Record<string, unknown> = { max_drawdown: dd };
     for (const key of [
       "max_gross_exposure",
@@ -249,12 +263,17 @@ export function thesisForValidate(thesis: Thesis): Record<string, unknown> {
   };
 }
 
-function usesShorts(thesis: Thesis): boolean {
+// True for books validated by exposure/drawdown rather than the long-only
+// max_weight/asset_count rules: short-bearing books AND the long/flat
+// momentum rotation (long-only but concentrated into a few names).
+function usesExposureValidation(thesis: Thesis): boolean {
+  if (resolveAllowedSides(thesis) === "long_short") return true;
   const mode = resolveStrategyMode(thesis);
   return (
     mode === "pair_trade" ||
     mode === "hedge_overlay" ||
-    mode === "long_short_portfolio"
+    mode === "long_short_portfolio" ||
+    mode === "momentum_rotation"
   );
 }
 
