@@ -3,8 +3,10 @@ import {
   createWalletClient,
   custom,
   erc20Abi,
+  formatEther,
   formatUnits,
   http,
+  parseEther,
   parseEventLogs,
   parseUnits,
 } from "viem";
@@ -13,6 +15,11 @@ import {
   STRATEGY_VAULT_ADDRESSES,
   STRATEGY_VAULT_CHAIN_ID,
 } from "@/lib/contract-addresses";
+import {
+  estimateExecutionFee,
+  getAcceptablePrice,
+  getMarketIndexToken,
+} from "@/lib/gmx-prices";
 
 const SUPPORTED_CHAINS = [arbitrum, arbitrumSepolia] as const;
 
@@ -122,6 +129,30 @@ const STRATEGY_VAULT_USER_ABI = [
   {
     type: "function",
     name: "withdraw",
+    inputs: [
+      { name: "amount", type: "uint256" },
+      { name: "to", type: "address" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "nativeBalance",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "depositNative",
+    inputs: [],
+    outputs: [],
+    stateMutability: "payable",
+  },
+  {
+    type: "function",
+    name: "withdrawNative",
     inputs: [
       { name: "amount", type: "uint256" },
       { name: "to", type: "address" },
@@ -383,10 +414,15 @@ export async function readAllocationReadiness(
 
 const ZERO_REFERRAL = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
 const USD_DECIMALS = 30;
+const DEFAULT_SLIPPAGE_BPS = 100; // 1%
 
-function executionFee() {
-  return BigInt(process.env.NEXT_PUBLIC_GMX_EXECUTION_FEE_WEI ?? "0");
-}
+type OrderLeg = {
+  market: `0x${string}`;
+  collateralAmount: bigint;
+  sizeDeltaUsd: bigint;
+  fee: bigint;
+  price: bigint;
+};
 
 async function readGmxRouting(
   publicClient: ReturnType<typeof createPublicClient>,
@@ -400,35 +436,131 @@ async function readGmxRouting(
   return { exchangeRouter, router, orderVault };
 }
 
-function acceptablePrice() {
-  return BigInt(process.env.NEXT_PUBLIC_GMX_ACCEPTABLE_PRICE ?? "0");
+// Build one GMX order leg per positive-weight allocation item, resolving a LIVE acceptable price
+// (per market) and a single estimated execution fee. All legs are long in the MVP.
+//
+// `maxLegs` (TEST ONLY): keep just the top-N legs by weight and renormalize their weights so the
+// full collateral is deployed across them. Use this to keep small test sizes above GMX's
+// $1 MIN_COLLATERAL_USD per position (e.g. 3 USDC across 2 legs = $1.50 each). Unset = full allocation.
+async function buildOrderLegs(
+  publicClient: ReturnType<typeof createPublicClient>,
+  allocation: VaultAllocationReadiness,
+  collateralUnits: bigint,
+  slippageBps: number,
+  maxLegs?: number,
+): Promise<OrderLeg[]> {
+  const fee = await estimateExecutionFee(publicClient);
+
+  const positive = allocation.target_allocation.filter(
+    (item) => (item.weight ?? 0) > 0 && item.coin_id,
+  );
+  let kept = positive;
+  let renormalize = false;
+  if (maxLegs != null && maxLegs > 0 && maxLegs < positive.length) {
+    kept = [...positive].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0)).slice(0, maxLegs);
+    renormalize = true;
+  }
+  const keptWeightSum = kept.reduce((sum, item) => sum + (item.weight ?? 0), 0);
+  if (kept.length === 0 || keptWeightSum <= 0) return [];
+
+  const legs: OrderLeg[] = [];
+  for (const item of kept) {
+    const market = item.gmx_market?.market_token;
+    if (!market) throw new Error(`Backend did not resolve a GMX market for ${item.coin_id}`);
+
+    const weight = renormalize ? (item.weight ?? 0) / keptWeightSum : (item.weight ?? 0);
+    const weightBps = BigInt(Math.round(weight * 10_000));
+    const collateralAmount = (collateralUnits * weightBps) / BigInt(10_000);
+    const sizeDeltaUsd = parseUnits(
+      (Number(collateralAmount) / 10 ** ASSET_DECIMALS).toFixed(6),
+      USD_DECIMALS,
+    );
+
+    const indexToken = await getMarketIndexToken(market);
+    const price = await getAcceptablePrice(indexToken, true, slippageBps);
+    legs.push({ market: market as `0x${string}`, collateralAmount, sizeDeltaUsd, fee, price });
+  }
+  return legs;
 }
 
-function orderInputs(allocation: VaultAllocationReadiness, collateralUnits: bigint) {
-  const fee = executionFee();
-  const price = acceptablePrice();
-  if (fee <= BigInt(0)) throw new Error("Set NEXT_PUBLIC_GMX_EXECUTION_FEE_WEI greater than zero");
-  if (price <= BigInt(0)) throw new Error("Set NEXT_PUBLIC_GMX_ACCEPTABLE_PRICE greater than zero");
+// Fund the vault's native ETH gas tank (pays GMX execution fees). Returns the new native balance.
+export async function fundVaultGasOnChain(
+  provider: EthereumProvider,
+  vaultAddress: string,
+  ethAmount: string,
+) {
+  const chain = strategyVaultChain();
+  const walletClient = createWalletClient({ chain, transport: custom(provider) });
+  const publicClient = createPublicClient({ chain, transport: http() });
+  const [account] = await walletClient.getAddresses();
+  if (!account) throw new Error("Connect a wallet before funding gas");
 
-  return allocation.target_allocation
-    .filter((item) => (item.weight ?? 0) > 0 && item.coin_id)
-    .map((item) => {
-      const weightBps = BigInt(Math.round((item.weight ?? 0) * 10_000));
-      const collateralAmount = (collateralUnits * weightBps) / BigInt(10_000);
-      const sizeDeltaUsd = parseUnits(
-        ((Number(collateralAmount) / 10 ** ASSET_DECIMALS).toFixed(6)),
-        USD_DECIMALS,
-      );
-      const market = item.gmx_market?.market_token;
-      if (!market) throw new Error(`Backend did not resolve a GMX market for ${item.coin_id}`);
-      return { market, collateralAmount, sizeDeltaUsd, fee, price };
-    });
+  const currentChainId = await walletClient.getChainId();
+  if (currentChainId !== STRATEGY_VAULT_CHAIN_ID) {
+    await walletClient.switchChain({ id: STRATEGY_VAULT_CHAIN_ID });
+  }
+
+  const value = parseEther(ethAmount);
+  if (value <= BigInt(0)) throw new Error("Enter an ETH amount greater than zero");
+
+  const hash = await walletClient.writeContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "depositNative",
+    value,
+    account,
+    chain,
+  });
+  await publicClient.waitForTransactionReceipt({ hash });
+  return readVaultNativeBalance(provider, vaultAddress);
+}
+
+export async function readVaultNativeBalance(provider: EthereumProvider, vaultAddress: string) {
+  const chain = strategyVaultChain();
+  const publicClient = createPublicClient({ chain, transport: custom(provider) });
+  const balance = await publicClient.readContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "nativeBalance",
+  });
+  return formatEther(balance);
+}
+
+// Sweep native ETH (GMX fee refunds + leftover gas tank) back to the owner.
+export async function withdrawVaultNativeOnChain(
+  provider: EthereumProvider,
+  vaultAddress: string,
+) {
+  const chain = strategyVaultChain();
+  const walletClient = createWalletClient({ chain, transport: custom(provider) });
+  const publicClient = createPublicClient({ chain, transport: http() });
+  const [account] = await walletClient.getAddresses();
+  if (!account) throw new Error("Connect a wallet before sweeping gas");
+
+  const balance = await publicClient.readContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "nativeBalance",
+  });
+  if (balance <= BigInt(0)) return formatEther(BigInt(0));
+
+  const hash = await walletClient.writeContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "withdrawNative",
+    args: [balance, account],
+    account,
+    chain,
+  });
+  await publicClient.waitForTransactionReceipt({ hash });
+  return readVaultNativeBalance(provider, vaultAddress);
 }
 
 export async function executeVaultAllocationOnChain(
   provider: EthereumProvider,
   allocation: VaultAllocationReadiness,
   idleBalance: string,
+  options?: { payFromTank?: boolean; slippageBps?: number; maxLegs?: number },
 ) {
   const chain = strategyVaultChain();
   const walletClient = createWalletClient({ chain, transport: custom(provider) });
@@ -441,24 +573,33 @@ export async function executeVaultAllocationOnChain(
     allocation.vault_address,
   );
   const collateralUnits = parseUnits(idleBalance, ASSET_DECIMALS);
-  const inputs = orderInputs(allocation, collateralUnits);
-  if (inputs.length === 0) throw new Error("No positive allocation legs to execute");
+  const legs = await buildOrderLegs(
+    publicClient,
+    allocation,
+    collateralUnits,
+    options?.slippageBps ?? DEFAULT_SLIPPAGE_BPS,
+    options?.maxLegs,
+  );
+  if (legs.length === 0) throw new Error("No positive allocation legs to execute");
 
-  const orders = inputs.map((input) => ({
+  const orders = legs.map((leg) => ({
     exchangeRouter,
     router,
     orderVault,
-    market: input.market as `0x${string}`,
+    market: leg.market,
     collateralToken: allocation.asset_address as `0x${string}`,
     isLong: true,
     shouldUnwrapNativeToken: false,
-    sizeDeltaUsd: input.sizeDeltaUsd,
-    collateralAmount: input.collateralAmount,
-    acceptablePrice: input.price,
-    executionFee: input.fee,
+    sizeDeltaUsd: leg.sizeDeltaUsd,
+    collateralAmount: leg.collateralAmount,
+    acceptablePrice: leg.price,
+    executionFee: leg.fee,
     referralCode: ZERO_REFERRAL,
   }));
-  const value = inputs.reduce((sum, input) => sum + input.fee, BigInt(0));
+  // payFromTank: rely on the vault's pre-funded gas tank (keeper-style, value 0). Otherwise attach
+  // the total execution fee inline (owner-style). Either satisfies the on-chain gas check.
+  const totalFee = legs.reduce((sum, leg) => sum + leg.fee, BigInt(0));
+  const value = options?.payFromTank ? BigInt(0) : totalFee;
   const hash = await walletClient.writeContract({
     address: allocation.vault_address as `0x${string}`,
     abi: STRATEGY_VAULT_USER_ABI,
@@ -476,6 +617,7 @@ export async function closeVaultPositionsAndWithdrawIdleOnChain(
   provider: EthereumProvider,
   allocation: VaultAllocationReadiness,
   notionalUsd: string,
+  options?: { payFromTank?: boolean; slippageBps?: number; maxLegs?: number },
 ) {
   const chain = strategyVaultChain();
   const walletClient = createWalletClient({ chain, transport: custom(provider) });
@@ -487,24 +629,31 @@ export async function closeVaultPositionsAndWithdrawIdleOnChain(
     publicClient,
     allocation.vault_address,
   );
-  const inputs = orderInputs(allocation, parseUnits(notionalUsd, ASSET_DECIMALS));
-  if (inputs.length > 0) {
-    const orders = inputs.map((input) => ({
+  const legs = await buildOrderLegs(
+    publicClient,
+    allocation,
+    parseUnits(notionalUsd, ASSET_DECIMALS),
+    options?.slippageBps ?? DEFAULT_SLIPPAGE_BPS,
+    options?.maxLegs,
+  );
+  if (legs.length > 0) {
+    const orders = legs.map((leg) => ({
       exchangeRouter,
       orderVault,
-      market: input.market as `0x${string}`,
+      market: leg.market,
       collateralToken: allocation.asset_address as `0x${string}`,
       isLong: true,
       shouldUnwrapNativeToken: false,
-      sizeDeltaUsd: input.sizeDeltaUsd,
+      sizeDeltaUsd: leg.sizeDeltaUsd,
       collateralWithdrawalAmount: BigInt(0),
-      acceptablePrice: input.price,
-      executionFee: input.fee,
+      acceptablePrice: leg.price,
+      executionFee: leg.fee,
       minOutputAmount: BigInt(0),
       decreasePositionSwapType: 0,
       referralCode: ZERO_REFERRAL,
     }));
-    const value = inputs.reduce((sum, input) => sum + input.fee, BigInt(0));
+    const totalFee = legs.reduce((sum, leg) => sum + leg.fee, BigInt(0));
+    const value = options?.payFromTank ? BigInt(0) : totalFee;
     const closeHash = await walletClient.writeContract({
       address: allocation.vault_address as `0x${string}`,
       abi: STRATEGY_VAULT_USER_ABI,

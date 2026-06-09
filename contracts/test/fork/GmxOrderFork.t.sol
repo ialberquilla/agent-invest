@@ -134,7 +134,7 @@ contract GmxOrderForkTest is Test {
 
         vm.warp(block.timestamp + 301);
         vm.prank(owner);
-        vault.cancelGmxOrder(GMX_EXCHANGE_ROUTER, orderKey, 0);
+        vault.cancelGmxOrder(GMX_EXCHANGE_ROUTER, orderKey);
 
         _assertNoPendingOrder(orderKey);
     }

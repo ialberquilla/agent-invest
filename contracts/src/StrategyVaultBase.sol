@@ -51,6 +51,8 @@ abstract contract StrategyVaultBase {
 
     event Deposited(address indexed from, uint256 amount);
     event Withdrawn(address indexed to, uint256 amount);
+    event NativeDeposited(address indexed from, uint256 amount);
+    event NativeWithdrawn(address indexed to, uint256 amount);
     event GmxRoutingUpdated(address indexed exchangeRouter, address indexed router, address indexed orderVault);
     event GmxMarketIncreaseOrderCreated(
         bytes32 indexed orderKey,
@@ -80,7 +82,9 @@ abstract contract StrategyVaultBase {
     error StrategyVault__ZeroAddress();
     error StrategyVault__UntrustedRouting();
     error StrategyVault__InsufficientIdleBalance();
-    error StrategyVault__InvalidExecutionFee();
+    error StrategyVault__InsufficientExecutionGas();
+    error StrategyVault__InsufficientNativeBalance();
+    error StrategyVault__NativeTransferFailed();
 
     function _strategyVaultStorage() internal pure returns (StrategyVaultStorage storage $) {
         assembly {
