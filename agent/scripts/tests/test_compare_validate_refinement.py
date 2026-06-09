@@ -229,3 +229,52 @@ def test_validate_exposure_constraints_for_long_short_book() -> None:
     over = next(r for r in out["results"] if r["candidate_id"] == "over_levered")
     failed = {v["constraint"] for v in over["violations"]}
     assert failed == {"max_gross_exposure", "max_leg_weight"}
+
+def _curve(values: list[float]) -> list[dict[str, object]]:
+    # 2024-01-01 .. : one point per day, only date+value matter for beta.
+    return [
+        {"date": f"2024-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}", "value": v}
+        for i, v in enumerate(values)
+    ]
+
+
+def test_validate_target_net_beta() -> None:
+    """A market-neutral book (flat vs a moving benchmark) passes target 0; a
+    net-long book (tracks the benchmark, beta ~1) fails it."""
+    import math
+
+    # 30 days of a benchmark that actually moves.
+    bench_values = [100.0 * math.exp(0.002 * i) for i in range(30)]
+    neutral_values = [100.0] * 30  # zero returns -> beta 0
+    long_values = list(bench_values)  # tracks benchmark -> beta ~1
+
+    batch = {
+        "batch_id": "b",
+        "run_id": "r",
+        "round": 1,
+        "results": [
+            {
+                "candidate_id": "neutral",
+                "template_id": "long_short_momentum_rotation",
+                "config": {},
+                "metrics": {"max_drawdown": -0.1},
+                "equity_curve": _curve(neutral_values),
+                "benchmark_curve": _curve(bench_values),
+            },
+            {
+                "candidate_id": "net_long",
+                "template_id": "long_short_momentum_rotation",
+                "config": {},
+                "metrics": {"max_drawdown": -0.1},
+                "equity_curve": _curve(long_values),
+                "benchmark_curve": _curve(bench_values),
+            },
+        ],
+    }
+    thesis = {"objective": "growth", "constraints": {"target_net_beta": 0.0}}
+    out = validate_against_thesis.validate_batch(batch, thesis)
+
+    assert out["passing_candidate_ids"] == ["neutral"]
+    net_long = next(r for r in out["results"] if r["candidate_id"] == "net_long")
+    failed = {v["constraint"] for v in net_long["violations"]}
+    assert "target_net_beta" in failed
