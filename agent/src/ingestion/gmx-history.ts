@@ -49,15 +49,11 @@ export interface GmxHistoryOptions {
   dryRun: boolean;
 }
 
-const EXCLUDED_SYMBOLS = new Set([
-  "XAUT",
-  "XAUT.v2",
-  "GOLD",
-  "SILVER",
-  "BRENTOIL",
-  "WTIOIL",
-  "NATGAS",
-]);
+// Synthetic commodity/metal feeds (gold, silver, oil, gas) used to be excluded
+// because the downstream momentum screener is crypto-only. They are now pulled
+// so consumers can build multi-asset (e.g. BTC + gold) allocations; the screener
+// is responsible for filtering them out of its tradable crypto universe.
+const EXCLUDED_SYMBOLS = new Set<string>([]);
 
 class CliArgumentError extends Error {
   constructor(message: string) {

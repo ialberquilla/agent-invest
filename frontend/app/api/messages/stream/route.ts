@@ -1,8 +1,9 @@
 import { agentFetch, isAgentFetchError } from "@/lib/agent-client";
-import { USER_ID } from "@/lib/constants";
+import { resolveUserIdentity } from "@/lib/proxy-auth";
 
 type StreamRequestBody = {
   strategy_id?: unknown;
+  user_id?: unknown;
   text?: unknown;
   wizard_params?: unknown;
 };
@@ -29,10 +30,11 @@ export async function POST(request: Request) {
   }
 
   try {
+    const identity = await resolveUserIdentity(request, body);
     const upstream = await agentFetch("/messages/stream", {
       method: "POST",
       body: {
-        user_id: USER_ID,
+        user_id: identity.userId,
         strategy_id: body.strategy_id,
         text: body.text,
         wizard_params: body.wizard_params,

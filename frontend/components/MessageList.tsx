@@ -1,41 +1,99 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { type MouseEvent, useEffect, useRef, useState } from "react";
 
 import { ArtifactGallery } from "@/components/ArtifactGallery";
+import { ChatEmptyState } from "@/components/ChatEmptyState";
 import { LiveActivity } from "@/components/LiveActivity";
-import { Card, CardContent } from "@/components/ui/card";
+import { MarkdownMessage } from "@/components/MarkdownMessage";
+import { ScreenerResultCard } from "@/components/ScreenerResultCard";
+import { StrategyResultReport } from "@/components/StrategyResultReport";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { TimelinePart } from "@/lib/agent-events";
 import { ChatMessage } from "@/lib/local-store";
+import type { ScreenerResult, StrategyResult, StructuredChatResult } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+// A structured result is worth rendering as the full report card only
+// when it carries real backtest output -- an equity curve or at least
+// one finite KPI. A no_viable result (empty kpis/charts) falls back to
+// the plain text bubble.
+function reportWithData(
+  result: StructuredChatResult | null | undefined,
+): StrategyResult | null {
+  if (!result || isScreenerResult(result)) return null;
+  const curve = result.charts?.equity_curve;
+  const hasCurve = Array.isArray(curve) && curve.length > 0;
+  const hasKpi = Object.values(result.kpis ?? {}).some(
+    (value) => typeof value === "number" && Number.isFinite(value),
+  );
+  return hasCurve || hasKpi ? result : null;
+}
+
+function isScreenerResult(
+  result: StructuredChatResult | null | undefined,
+): result is ScreenerResult {
+  if (!result) return false;
+  return "type" in result && result.type === "market_screener";
+}
 
 type MessageListProps = {
   messages: ChatMessage[];
   isThinking: boolean;
+  liveRunId?: string | null;
   liveParts?: TimelinePart[];
   onInspectRun?: (runId: string, trigger: HTMLButtonElement) => void;
+  emptyStateDisabled?: boolean;
+  onSelectPrompt?: (prompt: string) => void;
+  onOpenWizard?: () => void;
+  onPinnedScreenersChange?: () => void;
 };
 
 export function MessageList({
   messages,
   isThinking,
+  liveRunId = null,
   liveParts = [],
   onInspectRun,
+  emptyStateDisabled = false,
+  onSelectPrompt,
+  onOpenWizard,
+  onPinnedScreenersChange,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
+  const latestReportRef = useRef<HTMLDivElement | null>(null);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
+  const hasStreamingAssistant = messages.some(
+    (message) => message.role === "agent" && message.status === "streaming",
+  );
 
   useEffect(() => {
+    if (!isThinking && latestReportRef.current) {
+      latestReportRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "start",
+      });
+      return;
+    }
+
     endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [isThinking, liveParts, messages]);
 
   return (
     <ScrollArea className="h-full">
-      <div className="flex min-h-full flex-col gap-4 px-4 py-4 sm:px-5">
+      <div className="mx-auto flex min-h-full w-full max-w-[100rem] flex-col gap-6 px-4 py-6 sm:px-8">
         {messages.length === 0 ? (
-          <div className="flex flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-muted/20 px-6 py-10 text-center text-sm text-muted-foreground">
-            Your chat history for this strategy will appear here.
-          </div>
+          onSelectPrompt && onOpenWizard ? (
+            <ChatEmptyState
+              disabled={emptyStateDisabled}
+              onSelectPrompt={onSelectPrompt}
+              onOpenWizard={onOpenWizard}
+            />
+          ) : (
+            <div className="flex flex-1 items-center justify-center py-20 text-center text-sm text-muted-foreground">
+              Ask the agent to build or refine a strategy.
+            </div>
+          )
         ) : null}
 
         {messages.map((message, index) => {
@@ -43,85 +101,133 @@ export function MessageList({
           const isInspectable =
             message.role === "agent" && typeof message.run_id === "string";
           const runId = isInspectable ? message.run_id : null;
-          const metadata = [message.status, message.run_id]
+          const isActivityExpanded = runId === expandedRunId;
+          const metadata = [
+            message.status === "streaming" ? null : message.status,
+            message.run_id,
+          ]
             .filter(Boolean)
             .join(" · ");
           const hasArtifacts =
             message.role === "agent" &&
             !!message.artifacts &&
             message.artifacts.length > 0;
-          const bubbleClassName = cn(
-            "py-3 shadow-sm",
-            isUser && "bg-primary text-primary-foreground ring-primary/15",
-            !isUser && !message.error && "bg-card text-card-foreground",
-            message.error &&
-              "bg-destructive/10 text-destructive ring-destructive/20",
-            isInspectable &&
-              "cursor-pointer transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
-          );
-          const bubbleBody = (
-            <Card size="sm" className={bubbleClassName}>
-              <CardContent className="space-y-2">
-                {message.error ? (
-                  <p className="text-sm leading-6">{message.error}</p>
-                ) : (
-                  <pre className="font-sans text-sm leading-6 whitespace-pre-wrap break-words">
-                    {message.text}
-                  </pre>
-                )}
+          const report =
+            message.role === "agent" && !message.error
+              ? reportWithData(message.structured_result)
+              : null;
+          const screener =
+            message.role === "agent" && !message.error
+              ? isScreenerResult(message.structured_result)
+                ? message.structured_result
+                : null
+              : null;
 
-                {metadata ? (
-                  <p className="text-xs opacity-70">{metadata}</p>
-                ) : null}
-              </CardContent>
-            </Card>
+          // User turns read as a compact right-aligned bubble; assistant turns
+          // render as plain flowing text (Open WebUI style). Rich report cards
+          // and errors are the exceptions and get their own treatment.
+          const body = screener ? (
+            <ScreenerResultCard
+              result={screener}
+              onPinnedScreenersChange={onPinnedScreenersChange}
+            />
+          ) : report ? (
+            <StrategyResultReport result={report} runId={runId ?? undefined} />
+          ) : message.error ? (
+            <div className="rounded-xl bg-destructive/10 px-4 py-3 text-sm leading-6 text-destructive ring-1 ring-destructive/20">
+              {message.error}
+            </div>
+          ) : isUser ? (
+            <div className="ml-auto max-w-[85%] rounded-2xl bg-secondary px-4 py-2.5 text-sm leading-6 text-secondary-foreground">
+              <pre className="font-sans whitespace-pre-wrap break-words">
+                {message.text}
+              </pre>
+            </div>
+          ) : (
+            <div
+              className={cn(
+                "max-w-3xl rounded-xl text-[0.95rem] leading-7 text-foreground",
+                isInspectable &&
+                  "-mx-2 cursor-pointer px-2 py-1 transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              )}
+              {...(isInspectable
+                ? {
+                    role: "button" as const,
+                    tabIndex: 0,
+                    "aria-label": `Inspect run ${runId}`,
+                    onClick: (event: MouseEvent<HTMLDivElement>) => {
+                      if (runId) {
+                        onInspectRun?.(
+                          runId,
+                          event.currentTarget as unknown as HTMLButtonElement,
+                        );
+                      }
+                    },
+                  }
+                : {})}
+            >
+              {message.text ? (
+                <MarkdownMessage text={message.text} />
+              ) : message.status === "streaming" ? (
+                <p className="text-sm italic text-muted-foreground">
+                  thinking...
+                </p>
+              ) : null}
+              {metadata ? (
+                <p className="mt-2 text-xs text-muted-foreground">{metadata}</p>
+              ) : null}
+            </div>
           );
+          const activityToggle = runId ? (
+            <div className="space-y-2">
+              <button
+                type="button"
+                className="inline-flex items-center rounded-full border border-primary/30 bg-primary/10 px-3.5 py-2 text-sm font-semibold text-primary shadow-sm transition-colors hover:bg-primary/15 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() =>
+                  setExpandedRunId((current) =>
+                    current === runId ? null : runId,
+                  )
+                }
+              >
+                {isActivityExpanded
+                  ? "Hide run activity"
+                  : "Show run activity"}
+              </button>
+              {isActivityExpanded ? (
+                <LiveActivity runId={runId} fullWidth />
+              ) : null}
+            </div>
+          ) : null;
 
           return (
             <div
               key={`${message.role}-${message.run_id ?? index}`}
-              className={cn("flex", isUser ? "justify-end" : "justify-start")}
+              className="flex w-full flex-col gap-2"
+              ref={report && index === messages.length - 1 ? latestReportRef : null}
             >
-              <div className="flex max-w-[90%] flex-col gap-2 sm:max-w-[80%]">
-                {isInspectable ? (
-                  <button
-                    type="button"
-                    className="rounded-xl text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                    aria-label={`Inspect run ${runId}`}
-                    onClick={(event) => {
-                      if (runId) {
-                        onInspectRun?.(runId, event.currentTarget);
-                      }
-                    }}
-                  >
-                    {bubbleBody}
-                  </button>
-                ) : (
-                  bubbleBody
-                )}
+              {report ? activityToggle : null}
 
-                {hasArtifacts && message.artifacts ? (
-                  <ArtifactGallery artifacts={message.artifacts} />
-                ) : null}
-              </div>
+              {body}
+
+              {hasArtifacts && message.artifacts ? (
+                <ArtifactGallery artifacts={message.artifacts} />
+              ) : null}
+
+              {report ? null : activityToggle}
             </div>
           );
         })}
 
-        {isThinking ? (
-          liveParts.length > 0 ? (
-            <LiveActivity parts={liveParts} />
+        {isThinking && !hasStreamingAssistant ? (
+          liveRunId || liveParts.length > 0 ? (
+            <LiveActivity
+              runId={liveRunId ?? undefined}
+              parts={liveRunId ? [] : liveParts}
+              fullWidth={Boolean(liveRunId)}
+              includeText
+            />
           ) : (
-            <div className="flex justify-start">
-              <Card
-                size="sm"
-                className="max-w-[90%] bg-muted py-3 text-muted-foreground sm:max-w-[80%]"
-              >
-                <CardContent>
-                  <p className="text-sm italic">thinking...</p>
-                </CardContent>
-              </Card>
-            </div>
+            <p className="text-sm italic text-muted-foreground">thinking...</p>
           )
         ) : null}
 

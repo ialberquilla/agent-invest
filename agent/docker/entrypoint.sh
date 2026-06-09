@@ -10,7 +10,7 @@ retry_delay="${MIGRATION_RETRY_DELAY_SECONDS:-2}"
 attempt=1
 
 while true; do
-  if pnpm --filter @agent-invest/agent db:migrate; then
+  if pnpm --filter @pond3r-portfolio/agent db:migrate; then
     break
   fi
 

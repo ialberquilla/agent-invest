@@ -250,7 +250,7 @@ export function WizardRunView() {
 
         let response: Response;
         try {
-          response = await fetch("/api/messages/stream", {
+          response = await fetch("/api/strategy-pipeline/runs/stream", {
             method: "POST",
             headers: { "content-type": "application/json" },
             cache: "no-store",
@@ -425,8 +425,9 @@ export function WizardRunView() {
                       </div>
                     ) : null}
 
-                    {runState.timeline.parts.length > 0 ? (
+                    {runState.runId || runState.timeline.parts.length > 0 ? (
                       <LiveActivity
+                        runId={runState.runId ?? undefined}
                         parts={runState.timeline.parts}
                         fullWidth
                         includeText={false}
@@ -462,9 +463,10 @@ export function WizardRunView() {
                   {runState.error ?? "Unable to run allocation agent"}
                 </div>
 
-                {runState.timeline.parts.length > 0 ? (
+                {runState.runId || runState.timeline.parts.length > 0 ? (
                   <div className="rounded-2xl border bg-muted/20 p-4">
                     <LiveActivity
+                      runId={runState.runId ?? undefined}
                       parts={runState.timeline.parts}
                       fullWidth
                       includeText={false}
@@ -484,7 +486,10 @@ export function WizardRunView() {
           </section>
         ) : structuredResult ? (
           <section className="w-full">
-            <StrategyResultReport result={structuredResult} />
+            <StrategyResultReport
+              result={structuredResult}
+              runId={runState.runId ?? undefined}
+            />
           </section>
         ) : (
           <section className="w-full">

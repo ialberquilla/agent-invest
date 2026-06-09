@@ -16,7 +16,7 @@ import {
 test("AGENT_STORAGE_DISABLED disables local storage reads and writes", async () => {
   const previousStorageRoot = process.env.STORAGE_ROOT;
   const previousStorageDisabled = process.env.AGENT_STORAGE_DISABLED;
-  const storageRoot = await mkdtemp(join(tmpdir(), "agent-invest-storage-"));
+  const storageRoot = await mkdtemp(join(tmpdir(), "pond3r-portfolio-storage-"));
 
   process.env.STORAGE_ROOT = storageRoot;
   process.env.AGENT_STORAGE_DISABLED = "1";

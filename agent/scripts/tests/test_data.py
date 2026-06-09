@@ -38,6 +38,42 @@ def test_daily_prices_queries_agent_daily_close_prices(monkeypatch) -> None:
     assert 'ORDER BY "date", "coin_id"' in sql
 
 
+def test_daily_ohlc_queries_agent_daily_ohlc(monkeypatch) -> None:
+    calls: list[str] = []
+    columns = ["date", "asset_id", "coin_id", "open", "high", "low", "close", "volume"]
+    expected = pd.DataFrame(
+        [
+            {
+                "date": "2024-01-01",
+                "asset_id": 1,
+                "coin_id": "bitcoin",
+                "open": 41000.0,
+                "high": 43000.0,
+                "low": 40000.0,
+                "close": 42000.0,
+                "volume": 1000.0,
+            }
+        ],
+        columns=columns,
+    )
+
+    def fake_read_sql_frame(sql: str) -> pd.DataFrame:
+        calls.append(sql)
+        return expected
+
+    monkeypatch.setattr(data, "read_sql_frame", fake_read_sql_frame)
+
+    actual = data.daily_ohlc()
+
+    pd.testing.assert_frame_equal(actual, expected)
+    assert list(actual.columns) == columns
+    sql = calls[0]
+    assert 'FROM "agent_daily_ohlc"' in sql
+    for column in columns:
+        assert f'"{column}"' in sql
+    assert 'ORDER BY "date", "coin_id"' in sql
+
+
 def test_asset_universe_queries_agent_asset_universe(monkeypatch) -> None:
     calls: list[str] = []
     columns = ["coin_id", "symbol", "name", "market_cap", "market_cap_rank", "price"]

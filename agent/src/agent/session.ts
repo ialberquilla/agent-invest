@@ -7,6 +7,9 @@ import {
   type Event as OpencodeEvent,
   type Part,
 } from "@opencode-ai/sdk";
+import { existsSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { db as defaultDb } from "../db/client";
 import {
@@ -15,6 +18,38 @@ import {
 } from "../db/repositories/strategies";
 
 export const DEFAULT_OPENCODE_MODEL = "azure/gpt-5.4";
+
+export const OPENCODE_BUILTIN_TOOLS = [
+  "bash",
+  "edit",
+  "glob",
+  "google_search",
+  "grep",
+  "list",
+  "lsp",
+  "patch",
+  "read",
+  "skill",
+  "task",
+  "todowrite",
+  "webfetch",
+  "websearch",
+  "write",
+] as const;
+
+export const AGENT_INVEST_MCP_NAME = "agent_invest";
+export const RUN_STRATEGY_PIPELINE_TOOL = `${AGENT_INVEST_MCP_NAME}_run_strategy_pipeline`;
+export const SCREEN_MARKETS_TOOL = `${AGENT_INVEST_MCP_NAME}_screen_markets`;
+export const RUN_RESEARCH_CODE_TOOL = `${AGENT_INVEST_MCP_NAME}_run_research_code`;
+
+export function disabledOpencodeBuiltinsTools(
+  options: { except?: readonly string[] } = {},
+): Record<string, boolean> {
+  const except = new Set(options.except ?? []);
+  return Object.fromEntries(
+    OPENCODE_BUILTIN_TOOLS.map((tool) => [tool, except.has(tool)]),
+  );
+}
 
 type SessionDb = Parameters<typeof readStrategySession>[2];
 
@@ -55,7 +90,7 @@ type SessionManagerOptions = {
   updateStrategySession?: typeof updateStrategySession;
 };
 
-type ManagedOpencode = {
+export type ManagedOpencode = {
   client: OpencodeClient;
   close(): void;
 };
@@ -91,6 +126,36 @@ function resolveOpencodeDirectory(env: NodeJS.ProcessEnv = process.env) {
   const directory = env.OPENCODE_DIRECTORY?.trim();
 
   return directory ? directory : process.cwd();
+}
+
+function resolveAgentToolUrl(env: NodeJS.ProcessEnv = process.env) {
+  const explicit = env.AGENT_TOOL_URL?.trim();
+  if (explicit) return explicit;
+
+  const port = env.PORT?.trim() || "3000";
+  return `http://127.0.0.1:${port}`;
+}
+
+function resolveRunStrategyPipelineMcpScript() {
+  const candidates: string[] = [];
+  let current = path.dirname(fileURLToPath(import.meta.url));
+  while (true) {
+    candidates.push(
+      path.join(current, "src/agent/tools/run-strategy-pipeline-mcp.mjs"),
+      path.join(current, "agent/src/agent/tools/run-strategy-pipeline-mcp.mjs"),
+    );
+
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  const script = candidates.find((candidate) => existsSync(candidate));
+  if (!script) {
+    throw new Error("Unable to locate run-strategy-pipeline MCP script");
+  }
+
+  return script;
 }
 
 function resolveOpencodeAuth(env: NodeJS.ProcessEnv = process.env) {
@@ -168,6 +233,28 @@ async function createManagedOpencode(
     port: 0,
     config: {
       model: resolveOpencodeModel(env),
+      mcp: {
+        [AGENT_INVEST_MCP_NAME]: {
+          type: "local",
+          command: ["node", resolveRunStrategyPipelineMcpScript()],
+          enabled: true,
+          environment: {
+            AGENT_TOOL_URL: resolveAgentToolUrl(env),
+            ...(env.AGENT_API_KEY ? { AGENT_API_KEY: env.AGENT_API_KEY } : {}),
+          },
+        },
+      },
+      permission: {
+        bash: {
+          "./pond3r-portfolio *": "allow",
+          "./pond3r-portfolio": "allow",
+          "pond3r-portfolio *": "allow",
+          "pond3r-portfolio": "allow",
+          "*": "deny",
+        },
+        edit: "deny",
+        webfetch: "deny",
+      },
     },
   });
 
@@ -186,7 +273,7 @@ async function createManagedOpencode(
   };
 }
 
-async function getOrCreateManagedOpencode(
+export async function getOrCreateManagedOpencode(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<ManagedOpencode> {
   if (!sharedOpencode) {

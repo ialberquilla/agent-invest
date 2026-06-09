@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { appendEvent } from "../src/db/repositories/agent-events";
+import {
+  appendEvent,
+  subscribeAgentEvents,
+} from "../src/db/repositories/agent-events";
 import { createArtifact } from "../src/db/repositories/artifacts";
 import { createRequest, storeResult } from "../src/db/repositories/backtests";
 import {
@@ -9,6 +12,11 @@ import {
   createThread,
 } from "../src/db/repositories/conversations";
 import { markRunCompleted, markRunFailed } from "../src/db/repositories/runs";
+import { insertMandate } from "../src/db/repositories/strategy-mandates";
+import {
+  bindVaultToMandate,
+  insertVault,
+} from "../src/db/repositories/vaults";
 import {
   ensureStrategy,
   readStrategySession,
@@ -47,8 +55,26 @@ function createDbDouble(options: { selectRows?: unknown[] } = {}) {
         values(values: unknown) {
           call.values = values;
           return {
-            async onConflictDoNothing() {
+            onConflictDoNothing() {
               call.conflictIgnored = true;
+              return {
+                async returning() {
+                  return [values];
+                },
+                then<TResult1 = undefined, TResult2 = never>(
+                  onfulfilled?:
+                    | ((value: undefined) => TResult1 | PromiseLike<TResult1>)
+                    | null,
+                  onrejected?:
+                    | ((reason: unknown) => TResult2 | PromiseLike<TResult2>)
+                    | null,
+                ) {
+                  return Promise.resolve(undefined).then(
+                    onfulfilled,
+                    onrejected,
+                  );
+                },
+              };
             },
             async returning() {
               return [values];
@@ -296,6 +322,36 @@ test("appendEvent inserts an agent event", async () => {
   });
 });
 
+test("subscribeAgentEvents notifies SSE listeners for the matching run only", async () => {
+  const { db } = createDbDouble();
+  const received: string[] = [];
+  const unsubscribe = subscribeAgentEvents("run-A", (event) => {
+    received.push(event.eventId);
+  });
+
+  await appendEvent(
+    { eventId: "ev-a", eventType: "stage.started", runId: "run-A" },
+    db,
+  );
+  await appendEvent(
+    { eventId: "ev-b", eventType: "stage.started", runId: "run-B" },
+    db,
+  );
+  await appendEvent(
+    { eventId: "ev-c", eventType: "stage.completed", runId: "run-A" },
+    db,
+  );
+
+  assert.deepEqual(received, ["ev-a", "ev-c"]);
+
+  unsubscribe();
+  await appendEvent(
+    { eventId: "ev-d", eventType: "stage.started", runId: "run-A" },
+    db,
+  );
+  assert.deepEqual(received, ["ev-a", "ev-c"]);
+});
+
 test("createRequest and storeResult persist backtest rows", async () => {
   const { db, insertCalls } = createDbDouble();
 
@@ -337,6 +393,84 @@ test("createRequest and storeResult persist backtest rows", async () => {
     report: { ok: true },
     runId: "run-1",
   });
+});
+
+test("insertMandate promotes index columns and stores the full spec", async () => {
+  const { db, insertCalls } = createDbDouble();
+
+  const mandate = {
+    mandate_id: "mandate-1",
+    run_id: "run-1",
+    version: 1,
+    created_at: "2026-06-01T00:00:00.000Z",
+    template_id: "synthetic_long_allocation",
+    select_top: 5,
+    weighting: "equal",
+    objective: "growth",
+    rebalance_frequency: "monthly",
+    universe_hints: { top_n: 10, exclude_stablecoins: true, exclude_wrapped: true },
+    coin_ids: ["bitcoin", "ethereum"],
+    dynamic_universe: false,
+    constraints: { max_weight_per_asset: 0.3, max_cash_weight: 0.2, max_drawdown: 0.4 },
+    allowed_sides: "long_only",
+    initial_target_allocation: [{ coin_id: "bitcoin", weight: 1 }],
+    status: "pending",
+  } as never;
+
+  await insertMandate(mandate, db);
+
+  assert.equal(insertCalls.length, 1);
+  assert.deepEqual(insertCalls[0]?.values, {
+    mandateId: "mandate-1",
+    runId: "run-1",
+    version: 1,
+    status: "pending",
+    templateId: "synthetic_long_allocation",
+    spec: mandate,
+  });
+});
+
+test("insertVault writes a deployed vault row with conflict ignored", async () => {
+  const { db, insertCalls } = createDbDouble();
+
+  await insertVault(
+    {
+      chainId: 42161,
+      vaultAddress: "0xVault",
+      mandateId: "mandate-1",
+      assetAddress: "0xUSDC",
+    },
+    db,
+  );
+
+  assert.equal(insertCalls.length, 1);
+  assert.equal(insertCalls[0]?.conflictIgnored, true);
+  assert.deepEqual(insertCalls[0]?.values, {
+    chainId: 42161,
+    vaultAddress: "0xVault",
+    mandateId: "mandate-1",
+    assetAddress: "0xUSDC",
+    status: "active",
+  });
+});
+
+test("bindVaultToMandate inserts the vault and promotes the mandate to active", async () => {
+  const { db, insertCalls, updateCalls } = createDbDouble();
+
+  await bindVaultToMandate(
+    {
+      chainId: 42161,
+      vaultAddress: "0xVault",
+      mandateId: "mandate-1",
+      assetAddress: "0xUSDC",
+    },
+    db,
+  );
+
+  assert.equal(insertCalls.length, 1);
+  assert.equal(insertCalls[0]?.values && (insertCalls[0].values as { mandateId: string }).mandateId, "mandate-1");
+  assert.equal(updateCalls.length, 1);
+  assert.equal(updateCalls[0]?.set.status, "active");
 });
 
 test("createArtifact inserts an artifact row", async () => {

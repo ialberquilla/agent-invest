@@ -1,0 +1,17 @@
+{
+  "bitcoin": ["l1"],
+  "ethereum": ["l1", "defi", "nft"],
+  "solana": ["l1", "nft", "gaming"],
+  "usd-coin": ["stablecoin"],
+  "tether": ["stablecoin"],
+  "binancecoin": ["cex_token", "l1"],
+  "chainlink": ["oracle"],
+  "uniswap": ["defi"],
+  "aave": ["defi"],
+  "maker": ["defi", "rwa"],
+  "dogecoin": ["meme"],
+  "shiba-inu": ["meme"],
+  "render-token": ["ai"],
+  "bittensor": ["ai"],
+  "monero": ["privacy"]
+}

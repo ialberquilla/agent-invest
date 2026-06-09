@@ -1,0 +1,16 @@
+{
+  "name": "@pond3r-portfolio/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test",
+    "fmt": "forge fmt",
+    "fmt:check": "forge fmt --check"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.4.0",
+    "@openzeppelin/contracts-upgradeable": "^5.6.1",
+    "forge-std": "github:foundry-rs/forge-std#v1.10.0"
+  }
+}

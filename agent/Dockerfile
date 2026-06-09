@@ -8,7 +8,7 @@ FROM python:3.12-slim AS base
 ARG NODE_VERSION=22.17.0
 ARG PNPM_VERSION=10.19.0
 ARG OPENCODE_VERSION=1.14.25
-ARG UV_VERSION=0.7.21
+ARG UV_VERSION=0.11.18
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=/pnpm:/usr/local/bin:${PATH}
@@ -39,19 +39,18 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY scripts/enforce-pnpm.cjs ./scripts/enforce-pnpm.cjs
 COPY agent/package.json ./agent/package.json
-RUN pnpm install --frozen-lockfile --filter @agent-invest/agent
+RUN pnpm install --frozen-lockfile --filter @pond3r-portfolio/agent
 
 FROM deps AS builder
 WORKDIR /app
 COPY agent ./agent
-RUN pnpm --filter @agent-invest/agent build
+RUN pnpm --filter @pond3r-portfolio/agent build
 
 FROM base AS python-deps
 WORKDIR /app/agent/scripts
-COPY agent/scripts/pyproject.toml agent/scripts/uv.lock agent/scripts/uv-age-policy.sh ./
+COPY agent/scripts/pyproject.toml agent/scripts/uv.lock ./
 COPY agent/scripts/agent_invest_scripts ./agent_invest_scripts
-RUN chmod +x ./uv-age-policy.sh \
-  && ./uv-age-policy.sh sync --frozen
+RUN uv sync --frozen
 
 FROM base AS runner
 WORKDIR /app

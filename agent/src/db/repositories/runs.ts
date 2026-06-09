@@ -13,6 +13,15 @@ export type RunRow = {
   exitCode: number | null;
   reply: string | null;
   error: string | null;
+  metadata?: unknown;
+};
+
+type RunSummaryFields = {
+  winnerTemplateId?: string | null;
+  winnersByDimension?: unknown;
+  roundHistory?: unknown;
+  refinementReasons?: unknown;
+  metadata?: unknown;
 };
 
 const runColumns = {
@@ -21,6 +30,7 @@ const runColumns = {
   exitCode: runs.exitCode,
   reply: runs.reply,
   runId: runs.runId,
+  metadata: runs.metadata,
   startedAt: runs.startedAt,
   status: runs.status,
 };
@@ -48,9 +58,12 @@ export async function readRun(
 export async function markRunCompleted(
   runId: string,
   reply: string,
+  summaryFieldsOrDb: RunSummaryFields | Db = {},
   db: Db = defaultDb,
 ) {
-  await db
+  const summaryFields = isDb(summaryFieldsOrDb) ? {} : summaryFieldsOrDb;
+  const client = isDb(summaryFieldsOrDb) ? summaryFieldsOrDb : db;
+  await client
     .update(runs)
     .set({
       endedAt: sql`NOW()`,
@@ -58,8 +71,13 @@ export async function markRunCompleted(
       exitCode: 0,
       reply,
       status: "completed",
+      ...summaryFields,
     })
     .where(eq(runs.runId, runId));
+}
+
+function isDb(value: RunSummaryFields | Db): value is Db {
+  return typeof (value as { update?: unknown }).update === "function";
 }
 
 export async function markRunFailed(
