@@ -3,7 +3,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { Compass } from "lucide-react";
 
-import { AllocationWizard } from "@/components/AllocationWizard";
+import { StrategyTypePicker } from "@/components/StrategyTypePicker";
 import { Composer } from "@/components/Composer";
 import { IdentityBar } from "@/components/IdentityBar";
 import { MessageList } from "@/components/MessageList";
@@ -125,11 +125,33 @@ function sleep(ms: number) {
 
 type RunSubmission =
   | { text: string; displayText?: string }
-  | { wizard_params: AllocationWizardState; displayText: string };
+  | {
+      wizard_params: AllocationWizardState;
+      displayText: string;
+      // Deterministic thesis overrides for a non-basket strategy type chosen
+      // in the picker. Applied after interpret_brief and re-validated.
+      overrides?: Record<string, unknown>;
+    };
 
 function wizardSubmissionText() {
   return "Allocation wizard submission";
 }
+
+// A neutral base brief for the non-basket picker paths. interpret_brief turns
+// it into a starting thesis; the strategy-type overrides then reshape it.
+const BASE_WIZARD_PARAMS: AllocationWizardState = {
+  universe: "top25",
+  exclusions: ["stablecoins", "wrapped"],
+  minimumMarketCap: "1b",
+  concentrationLimit: "agent",
+  maxDrawdown: "50",
+  riskPreference: "balanced",
+  horizon: "1y",
+  rebalance: "monthly",
+  initialCapitalUsd: "",
+  cashAllocation: "none",
+  targetAssets: "agent",
+};
 
 export function ChatView({
   strategyId,
@@ -333,6 +355,7 @@ export function ChatView({
         body: JSON.stringify({
           strategy_id: strategyId,
           wizard_params: submission.wizard_params,
+          overrides: submission.overrides,
           user_id: getAnonymousUserId(),
         }),
       });
@@ -449,6 +472,21 @@ export function ChatView({
     });
   }
 
+  // Non-basket strategy types from the picker: a base wizard brief gives
+  // interpret_brief something to work from, and the overrides deterministically
+  // reshape the thesis into the chosen single-asset / pair / long-short shape.
+  async function handleWizardOverrides(
+    overrides: Record<string, unknown>,
+    label: string,
+  ) {
+    setIsWizardOpen(false);
+    await submitRun({
+      wizard_params: BASE_WIZARD_PARAMS,
+      overrides,
+      displayText: `Guided setup: ${label}`,
+    });
+  }
+
   async function waitForRunCompletion(runId: string, accessToken: string | null) {
     while (true) {
       const response = await fetch(`/api/runs/${encodeURIComponent(runId)}`, {
@@ -534,7 +572,11 @@ export function ChatView({
                 </Button>
               </div>
               <div className="p-2 sm:p-3">
-                <AllocationWizard embedded onSubmit={handleWizardSubmit} />
+                <StrategyTypePicker
+                  onSubmitBasket={handleWizardSubmit}
+                  onSubmitOverrides={handleWizardOverrides}
+                  disabled={isDisabled}
+                />
               </div>
             </div>
           </section>

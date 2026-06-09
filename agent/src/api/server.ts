@@ -1127,6 +1127,10 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const userId = requiredText(body, "user_id");
     const strategyId = requiredText(body, "strategy_id");
     const text = resolveMessageText(body);
+    // Deterministic thesis overrides (e.g. the wizard's strategy-type picker
+    // selecting a single-asset / pair / long-short shape). Applied after
+    // interpret_brief and re-validated, same as a structured rerun.
+    const overrides = parseStrategyRunOverrides(body.overrides);
     const runId = randomUUID();
 
     const strategy = await repositories.ensureStrategy(userId, strategyId);
@@ -1192,6 +1196,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
         {
           llm: workflowLLM,
         },
+        { overrides },
       );
       request.log.info(
         { runId, final_kind: workflowState.final?.kind ?? null },
@@ -1496,6 +1501,10 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const userId = requiredText(body, "user_id");
     const strategyId = requiredText(body, "strategy_id");
     const text = resolveMessageText(body);
+    // Deterministic thesis overrides (e.g. the wizard's strategy-type picker
+    // selecting a single-asset / pair / long-short shape). Applied after
+    // interpret_brief and re-validated, same as a structured rerun.
+    const overrides = parseStrategyRunOverrides(body.overrides);
     const runId = randomUUID();
 
     const strategy = await repositories.ensureStrategy(userId, strategyId);
@@ -1514,6 +1523,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
         {
           llm: workflowLLM,
         },
+        { overrides },
       );
       request.log.info(
         { runId, final_kind: workflowState.final?.kind ?? null },
