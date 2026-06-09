@@ -99,7 +99,8 @@ export function buildSuggestedReruns(thesis: Thesis): SuggestedRerun[] {
   // offered when the run isn't already single-asset. The overrides collapse
   // the book to one position; the feasibility filter below keeps it only
   // when the resulting thesis is valid.
-  if (resolveStrategyMode(thesis) !== "single_asset") {
+  const mode = resolveStrategyMode(thesis);
+  if (mode !== "single_asset") {
     candidates.push({
       label: "Try as single-asset setup",
       rationale:
@@ -108,6 +109,21 @@ export function buildSuggestedReruns(thesis: Thesis): SuggestedRerun[] {
         strategy_mode: "single_asset",
         asset_count_min: 1,
         asset_count_max: 1,
+      },
+    });
+  }
+
+  // Pivot into a market-neutral long/short momentum book. Only offered for
+  // long books with a pool big enough to rank both sides; the feasibility
+  // filter drops it otherwise.
+  if (mode !== "long_short_portfolio") {
+    candidates.push({
+      label: "Try long/short momentum",
+      rationale:
+        "Long the strongest names and short the weakest by momentum (market-neutral) instead of long-only.",
+      overrides: {
+        strategy_mode: "long_short_portfolio",
+        allowed_sides: "long_short",
       },
     });
   }
