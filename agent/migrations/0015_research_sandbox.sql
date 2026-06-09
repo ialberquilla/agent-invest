@@ -1,4 +1,4 @@
-CREATE VIEW "agent_daily_ohlc" AS
+CREATE OR REPLACE VIEW "agent_daily_ohlc" AS
 WITH coingecko_mappings AS (
   SELECT
     "asset_id",
