@@ -59,8 +59,14 @@ const GMX_READER_ABI = [
               { name: "pendingImpactAmount", type: "int256" },
               { name: "borrowingFactor", type: "uint256" },
               { name: "fundingFeeAmountPerSize", type: "uint256" },
-              { name: "longTokenClaimableFundingAmountPerSize", type: "uint256" },
-              { name: "shortTokenClaimableFundingAmountPerSize", type: "uint256" },
+              {
+                name: "longTokenClaimableFundingAmountPerSize",
+                type: "uint256",
+              },
+              {
+                name: "shortTokenClaimableFundingAmountPerSize",
+                type: "uint256",
+              },
               { name: "increasedAtTime", type: "uint256" },
               { name: "decreasedAtTime", type: "uint256" },
             ],
@@ -161,7 +167,9 @@ export type GmxOpenPosition = {
   marketName: string;
   side: "Long" | "Short";
   sizeUsd: number;
+  sizeUsdRaw: string;
   collateralAmount: number;
+  collateralAmountRaw: string;
   collateralSymbol: string;
   updatedAt?: string;
 };
@@ -231,7 +239,9 @@ const tokenMetaCache = new Map<string, TokenMeta>();
 export async function readGmxAccountActivity(
   accounts: GmxActivityAccount[],
 ): Promise<GmxAccountActivity> {
-  const validAccounts = accounts.filter((account) => isAddress(account.address));
+  const validAccounts = accounts.filter((account) =>
+    isAddress(account.address),
+  );
   if (validAccounts.length === 0) {
     return { openPositions: [], pendingOrders: [] };
   }
@@ -278,8 +288,11 @@ export async function readGmxAccountActivity(
       positions
         .filter((position) => position.numbers.sizeInUsd > BigInt(0))
         .map((position) => {
-          const collateralToken = position.addresses.collateralToken.toLowerCase();
-          const token = tokenMetas.get(collateralToken) ?? fallbackTokenMeta(collateralToken);
+          const collateralToken =
+            position.addresses.collateralToken.toLowerCase();
+          const token =
+            tokenMetas.get(collateralToken) ??
+            fallbackTokenMeta(collateralToken);
           const updatedAt = timestampFromSeconds(
             position.numbers.decreasedAtTime > BigInt(0)
               ? position.numbers.decreasedAtTime
@@ -295,7 +308,12 @@ export async function readGmxAccountActivity(
             marketName: marketNameFor(marketNames, position.addresses.market),
             side: position.flags.isLong ? "Long" : "Short",
             sizeUsd: usdNumber(position.numbers.sizeInUsd),
-            collateralAmount: tokenNumber(position.numbers.collateralAmount, token.decimals),
+            sizeUsdRaw: position.numbers.sizeInUsd.toString(),
+            collateralAmount: tokenNumber(
+              position.numbers.collateralAmount,
+              token.decimals,
+            ),
+            collateralAmountRaw: position.numbers.collateralAmount.toString(),
             collateralSymbol: token.symbol,
             ...(updatedAt ? { updatedAt } : {}),
           };
@@ -304,8 +322,10 @@ export async function readGmxAccountActivity(
     pendingOrders: accountResults.flatMap(({ account, orders }) =>
       orders.map((entry) => {
         const order = entry.order;
-        const collateralToken = order.addresses.initialCollateralToken.toLowerCase();
-        const token = tokenMetas.get(collateralToken) ?? fallbackTokenMeta(collateralToken);
+        const collateralToken =
+          order.addresses.initialCollateralToken.toLowerCase();
+        const token =
+          tokenMetas.get(collateralToken) ?? fallbackTokenMeta(collateralToken);
         const updatedAt = timestampFromSeconds(order.numbers.updatedAtTime);
 
         return {

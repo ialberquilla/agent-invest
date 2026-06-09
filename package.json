@@ -8,6 +8,8 @@
     "build": "pnpm -r --if-present build",
     "db:migrate": "pnpm --filter @pond3r-portfolio/agent db:migrate",
     "ingest:gmx": "pnpm --filter @pond3r-portfolio/agent ingest:gmx",
+    "ingest:gmx:history": "pnpm --filter @pond3r-portfolio/agent ingest:gmx:history",
+    "ingest:gmx:markets": "pnpm --filter @pond3r-portfolio/agent ingest:gmx:markets",
     "ingest:coingecko-market-caps": "pnpm --filter @pond3r-portfolio/agent ingest:coingecko-market-caps",
     "contracts:build": "pnpm --filter @pond3r-portfolio/contracts build",
     "contracts:test": "pnpm --filter @pond3r-portfolio/contracts test",

@@ -31,7 +31,9 @@ async function loadMarketIndexMap(): Promise<Map<string, string>> {
 
 // Resolve a GMX market token -> its index token (the priced asset). The vault allocation only
 // carries the market token, so we look up the index token from GMX's market metadata.
-export async function getMarketIndexToken(marketToken: string): Promise<string> {
+export async function getMarketIndexToken(
+  marketToken: string,
+): Promise<string> {
   if (!marketIndexCache) marketIndexCache = await loadMarketIndexMap();
   const indexToken = marketIndexCache.get(marketToken.toLowerCase());
   if (!indexToken) throw new Error(`No GMX market metadata for ${marketToken}`);
@@ -45,11 +47,40 @@ export async function getAcceptablePrice(
   isLong: boolean,
   slippageBps: number,
 ): Promise<bigint> {
+  const ticker = await getTicker(indexToken, slippageBps);
+  const basePrice = BigInt(isLong ? ticker.maxPrice : ticker.minPrice);
+  const bps = BigInt(Math.round(slippageBps));
+  return isLong
+    ? (basePrice * (10_000n + bps)) / 10_000n
+    : (basePrice * (10_000n - bps)) / 10_000n;
+}
+
+// Acceptable price for a market-decrease order. Closing a long sells the index asset, so lower
+// prices are worse; closing a short buys it back, so higher prices are worse.
+export async function getAcceptablePriceForDecrease(
+  indexToken: string,
+  isLong: boolean,
+  slippageBps: number,
+): Promise<bigint> {
+  const ticker = await getTicker(indexToken, slippageBps);
+  const basePrice = BigInt(isLong ? ticker.minPrice : ticker.maxPrice);
+  const bps = BigInt(Math.round(slippageBps));
+  return isLong
+    ? (basePrice * (10_000n - bps)) / 10_000n
+    : (basePrice * (10_000n + bps)) / 10_000n;
+}
+
+async function getTicker(
+  indexToken: string,
+  slippageBps: number,
+): Promise<{ minPrice: string; maxPrice: string }> {
   if (!Number.isFinite(slippageBps) || slippageBps < 0 || slippageBps > 5_000) {
     throw new Error("Slippage must be between 0% and 50%");
   }
 
-  const response = await fetch(`${GMX_API}/prices/tickers`, { cache: "no-store" });
+  const response = await fetch(`${GMX_API}/prices/tickers`, {
+    cache: "no-store",
+  });
   if (!response.ok) throw new Error("Unable to fetch GMX prices");
 
   const tickers = (await response.json()) as Array<{
@@ -63,10 +94,7 @@ export async function getAcceptablePrice(
   if (!ticker?.minPrice || !ticker.maxPrice) {
     throw new Error(`GMX price unavailable for ${indexToken}`);
   }
-
-  const basePrice = BigInt(isLong ? ticker.maxPrice : ticker.minPrice);
-  const bps = BigInt(Math.round(slippageBps));
-  return isLong ? (basePrice * (10_000n + bps)) / 10_000n : (basePrice * (10_000n - bps)) / 10_000n;
+  return { minPrice: ticker.minPrice, maxPrice: ticker.maxPrice };
 }
 
 // Per-order GMX keeper execution fee, in wei. Scales with current gas price and is floored so a
@@ -74,10 +102,13 @@ export async function getAcceptablePrice(
 export async function estimateExecutionFee(
   publicClient: ReturnType<typeof createPublicClient>,
 ): Promise<bigint> {
-  const envOverride = BigInt(process.env.NEXT_PUBLIC_GMX_EXECUTION_FEE_WEI ?? "0");
+  const envOverride = BigInt(
+    process.env.NEXT_PUBLIC_GMX_EXECUTION_FEE_WEI ?? "0",
+  );
   if (envOverride > 0n) return envOverride;
 
   const gasPrice = await publicClient.getGasPrice();
-  const estimate = (gasPrice * EXECUTION_GAS_LIMIT * EXECUTION_FEE_BUFFER_BPS) / 10_000n;
+  const estimate =
+    (gasPrice * EXECUTION_GAS_LIMIT * EXECUTION_FEE_BUFFER_BPS) / 10_000n;
   return estimate > MIN_EXECUTION_FEE_WEI ? estimate : MIN_EXECUTION_FEE_WEI;
 }

@@ -151,6 +151,9 @@ type ServerDependencies = {
   subscribeToStageRunChanges?: SubscribeToStageRunChanges;
 };
 
+const ARBITRUM_ONE_CHAIN_ID = 42161;
+const ARBITRUM_SEPOLIA_CHAIN_ID = 421614;
+
 function getPort() {
   const raw = process.env.PORT ?? "3000";
   const port = Number.parseInt(raw, 10);
@@ -237,12 +240,17 @@ function optionalPositiveInteger(
   if (value === undefined || value === null) return undefined;
   const parsed = typeof value === "string" ? Number(value) : value;
   if (!Number.isInteger(parsed) || (parsed as number) < 1) {
-    throw httpError(400, `Request body field '${key}' must be a positive integer`);
+    throw httpError(
+      400,
+      `Request body field '${key}' must be a positive integer`,
+    );
   }
   return parsed as number;
 }
 
-function parseScreenMarketsInput(body: Record<string, unknown>): ScreenMarketsInput {
+function parseScreenMarketsInput(
+  body: Record<string, unknown>,
+): ScreenMarketsInput {
   const factor = body.factor;
   if (
     factor !== undefined &&
@@ -790,7 +798,10 @@ function replyFromStructuredResult(structuredResult: unknown): string {
   if (typeof structuredResult.title === "string" && structuredResult.title) {
     parts.push(structuredResult.title);
   }
-  if (typeof structuredResult.summary === "string" && structuredResult.summary) {
+  if (
+    typeof structuredResult.summary === "string" &&
+    structuredResult.summary
+  ) {
     parts.push(structuredResult.summary);
   }
   return parts.join("\n\n") || "Strategy run completed.";
@@ -930,7 +941,8 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   const subscribeAgentEvents =
     dependencies.subscribeAgentEvents ?? defaultSubscribeAgentEvents;
   const executeChatAgent = dependencies.chatAgent ?? chatAgent;
-  const executeScreenMarkets = dependencies.screenMarkets ?? defaultScreenMarkets;
+  const executeScreenMarkets =
+    dependencies.screenMarkets ?? defaultScreenMarkets;
   const subscribeStageRunChanges =
     dependencies.subscribeToStageRunChanges ?? subscribeToStageRunChanges;
   const repositories: Repositories = {
@@ -1051,9 +1063,13 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     let workflowState: WorkflowState | undefined;
     try {
       request.log.info({ runId, strategyId }, "stream: calling workflow");
-      workflowState = await executeWorkflow(runId, text as string | WizardBrief, {
-        llm: workflowLLM,
-      });
+      workflowState = await executeWorkflow(
+        runId,
+        text as string | WizardBrief,
+        {
+          llm: workflowLLM,
+        },
+      );
       request.log.info(
         { runId, final_kind: workflowState.final?.kind ?? null },
         "stream: workflow returned",
@@ -1091,7 +1107,10 @@ export function buildServer(dependencies: ServerDependencies = {}) {
 
     const run = await repositories.readRun(runId);
     if (!run) throw new Error(`Run missing after execution: ${runId}`);
-    const payload = runResponse(run, structuredResult) as Record<string, unknown>;
+    const payload = runResponse(run, structuredResult) as Record<
+      string,
+      unknown
+    >;
     finalize(payload);
     if (workflowError) request.log.error({ workflowError, runId });
   }
@@ -1203,7 +1222,10 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const runId = request.params.id;
     const mandate = await ensureMandateForRun(runId, repositories);
     if (!mandate) {
-      return { deployable: false, reason: "No strategy mandate for this run yet" };
+      return {
+        deployable: false,
+        reason: "No strategy mandate for this run yet",
+      };
     }
 
     const existing = await repositories.readVaultForMandate(mandate.mandateId);
@@ -1215,6 +1237,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
         chain_id: existing.chainId,
         vault_address: existing.vaultAddress,
         asset_address: existing.assetAddress,
+        display_name: existing.displayName,
         status: existing.status,
       };
     }
@@ -1226,48 +1249,49 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     };
   });
 
-  app.post<{ Params: { id: string } }>(
-    "/runs/:id/vault",
-    async (request) => {
-      const runId = request.params.id;
-      const body = (request.body ?? {}) as Record<string, unknown>;
-      const chainId = requiredNumber(body, "chain_id");
-      const vaultAddress = requiredText(body, "vault_address");
-      const assetAddress = requiredText(body, "asset_address");
+  app.post<{ Params: { id: string } }>("/runs/:id/vault", async (request) => {
+    const runId = request.params.id;
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const chainId = requiredNumber(body, "chain_id");
+    const vaultAddress = requiredText(body, "vault_address");
+    const assetAddress = requiredText(body, "asset_address");
+    const displayName = requiredText(body, "display_name");
+    if (displayName.length > 80) {
+      throw httpError(400, "Strategy name must be 80 characters or fewer");
+    }
 
-      const mandate = await ensureMandateForRun(runId, repositories);
-      if (!mandate)
-        throw httpError(404, "No strategy mandate for this run yet");
+    const mandate = await ensureMandateForRun(runId, repositories);
+    if (!mandate) throw httpError(404, "No strategy mandate for this run yet");
 
-      const existing = await repositories.readVaultForMandate(
-        mandate.mandateId,
-      );
-      if (existing)
-        throw httpError(409, "This strategy is already bound to a vault");
+    const existing = await repositories.readVaultForMandate(mandate.mandateId);
+    if (existing)
+      throw httpError(409, "This strategy is already bound to a vault");
 
-      await repositories.bindVaultToMandate({
-        chainId,
-        vaultAddress,
-        mandateId: mandate.mandateId,
-        assetAddress,
-      });
+    await repositories.bindVaultToMandate({
+      chainId,
+      vaultAddress,
+      mandateId: mandate.mandateId,
+      assetAddress,
+      displayName,
+    });
 
-      return {
-        mandate_id: mandate.mandateId,
-        chain_id: chainId,
-        vault_address: vaultAddress,
-        asset_address: assetAddress,
-        status: "active",
-      };
-    },
-  );
+    return {
+      mandate_id: mandate.mandateId,
+      chain_id: chainId,
+      vault_address: vaultAddress,
+      asset_address: assetAddress,
+      display_name: displayName,
+      status: "active",
+    };
+  });
 
   app.get<{ Params: { id: string } }>(
     "/runs/:id/vault/allocation",
     async (request) => {
       const runId = request.params.id;
       const mandate = await ensureMandateForRun(runId, repositories);
-      if (!mandate) throw httpError(404, "No strategy mandate for this run yet");
+      if (!mandate)
+        throw httpError(404, "No strategy mandate for this run yet");
 
       const vault = await repositories.readVaultForMandate(mandate.mandateId);
       if (!vault) throw httpError(404, "No vault bound to this strategy yet");
@@ -1288,16 +1312,33 @@ export function buildServer(dependencies: ServerDependencies = {}) {
             : null,
         )
         .filter((coinId): coinId is string => Boolean(coinId));
-      const { resolved, failures } = await repositories.resolveMarketsBatch(
-        coinIds,
-      );
+      const { resolved, failures } =
+        await repositories.resolveMarketsBatch(coinIds);
+      const unsupportedChainReason =
+        vault.chainId === ARBITRUM_SEPOLIA_CHAIN_ID
+          ? "GMX v2 execution is not configured for Arbitrum Sepolia"
+          : vault.chainId !== ARBITRUM_ONE_CHAIN_ID
+            ? `GMX v2 execution is not configured for chain ${vault.chainId}`
+            : undefined;
+      const missing = [
+        ...(unsupportedChainReason ? [unsupportedChainReason] : []),
+        ...(failures.size > 0
+          ? [
+              `GMX market resolution for ${Array.from(failures.keys()).join(
+                ", ",
+              )}`,
+            ]
+          : []),
+      ];
+      const executable = missing.length === 0;
 
       return {
-        executable: false,
+        executable,
         reason:
-          vault.chainId === 421614
-            ? "GMX v2 execution is not configured for Arbitrum Sepolia"
-            : "GMX order execution is not wired for this vault yet",
+          unsupportedChainReason ??
+          (executable
+            ? "Allocation can be executed as GMX v2 increase orders."
+            : "Resolve missing GMX markets before execution."),
         mandate_id: mandate.mandateId,
         chain_id: vault.chainId,
         vault_address: vault.vaultAddress,
@@ -1322,18 +1363,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
               : null,
           };
         }),
-        missing: [
-          "GMX exchangeRouter/router/orderVault for the active chain",
-          ...(failures.size > 0
-            ? [
-                `GMX market resolution for ${Array.from(failures.keys()).join(
-                  ", ",
-                )}`,
-              ]
-            : []),
-          "acceptable price and execution fee calculation",
-          "owner-signed vault mandate setup transactions",
-        ],
+        missing,
       };
     },
   );
@@ -1355,9 +1385,13 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     let workflowState: WorkflowState | undefined;
     try {
       request.log.info({ runId, strategyId }, "calling workflow");
-      workflowState = await executeWorkflow(runId, text as string | WizardBrief, {
-        llm: workflowLLM,
-      });
+      workflowState = await executeWorkflow(
+        runId,
+        text as string | WizardBrief,
+        {
+          llm: workflowLLM,
+        },
+      );
       request.log.info(
         { runId, final_kind: workflowState.final?.kind ?? null },
         "workflow returned",
@@ -1418,7 +1452,9 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     return defaultRunResearchCode({
       code: requiredText(body, "code"),
       purpose: requiredText(body, "purpose"),
-      ...(typeof body.timeout_seconds === "number" ? { timeoutSeconds: body.timeout_seconds } : {}),
+      ...(typeof body.timeout_seconds === "number"
+        ? { timeoutSeconds: body.timeout_seconds }
+        : {}),
     });
   });
 
@@ -1431,11 +1467,14 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     return executeScreenMarkets(parseScreenMarketsInput(body));
   });
 
-  app.get<{ Querystring: { user_id?: string } }>("/screeners/pins", async (request) => {
-    const userId = request.query.user_id?.trim();
-    if (!userId) throw httpError(400, "Query must include user_id");
-    return repositories.listPinnedScreeners(userId);
-  });
+  app.get<{ Querystring: { user_id?: string } }>(
+    "/screeners/pins",
+    async (request) => {
+      const userId = request.query.user_id?.trim();
+      if (!userId) throw httpError(400, "Query must include user_id");
+      return repositories.listPinnedScreeners(userId);
+    },
+  );
 
   app.post("/screeners/pins", async (request) => {
     const body = (request.body ?? {}) as Record<string, unknown>;

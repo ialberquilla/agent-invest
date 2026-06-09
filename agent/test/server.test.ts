@@ -776,10 +776,9 @@ test("GET /runs/:id/events/stream emits snapshot then live events", async () => 
 
   try {
     const address = await app.listen({ host: "127.0.0.1", port: 0 });
-    const response = await fetch(
-      `${address}/runs/run-events/events/stream`,
-      { signal: abortController.signal },
-    );
+    const response = await fetch(`${address}/runs/run-events/events/stream`, {
+      signal: abortController.signal,
+    });
 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "text/event-stream");
@@ -1543,7 +1542,6 @@ test("POST /messages/stream starts wizard runs without chat agent", async () => 
   }
 });
 
-
 test("POST /chat/messages invokes chat agent and returns JSON response", async () => {
   let receivedInput: unknown;
   const app = buildServer({
@@ -1699,6 +1697,139 @@ test("POST /screeners/markets invokes screener and returns structured payload", 
       gmxOnly: true,
     });
     assert.equal(response.json().type, "market_screener");
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/:id/vault/allocation is executable when GMX markets resolve", async () => {
+  const app = buildServer({
+    repositories: {
+      async readMandatesForRun() {
+        return [
+          {
+            mandateId: "mandate-1",
+            runId: "run-1",
+            version: 1,
+            status: "active",
+            templateId: "top_n_momentum",
+            spec: {
+              allowed_sides: "long_only",
+              initial_target_allocation: [{ coin_id: "bitcoin", weight: 1 }],
+              template_id: "top_n_momentum",
+            },
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          } as never,
+        ];
+      },
+      async readVaultForMandate() {
+        return {
+          assetAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+          chainId: 42161,
+          createdAt: new Date(),
+          mandateId: "mandate-1",
+          status: "active",
+          updatedAt: new Date(),
+          vaultAddress: "0x0000000000000000000000000000000000000001",
+        } as never;
+      },
+      async resolveMarketsBatch() {
+        return {
+          failures: new Map(),
+          resolved: new Map([
+            [
+              "bitcoin",
+              {
+                coinId: "bitcoin",
+                collateralDecimals: 6,
+                collateralToken: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+                gmxMarket: "0x47c031236e19d024b42f8AE6780E44A573170703",
+                indexToken: "0x47904963fc8b2340414262125aF798B9655E58Cd",
+                indexTokenDecimals: 8,
+                isSynthetic: false,
+                longToken: "0x47904963fc8b2340414262125aF798B9655E58Cd",
+                marketName: "BTC/USD [BTC-USDC]",
+                shortToken: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+                symbol: "BTC",
+              },
+            ],
+          ]),
+        };
+      },
+    },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/run-1/vault/allocation",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().executable, true);
+    assert.deepEqual(response.json().missing, []);
+    assert.equal(
+      response.json().target_allocation[0].gmx_market.market_token,
+      "0x47c031236e19d024b42f8AE6780E44A573170703",
+    );
+  } finally {
+    await app.close();
+  }
+});
+
+test("GET /runs/:id/vault/allocation blocks unresolved GMX markets", async () => {
+  const app = buildServer({
+    repositories: {
+      async readMandatesForRun() {
+        return [
+          {
+            mandateId: "mandate-1",
+            runId: "run-1",
+            version: 1,
+            status: "active",
+            templateId: "top_n_momentum",
+            spec: {
+              initial_target_allocation: [{ coin_id: "bitcoin", weight: 1 }],
+              template_id: "top_n_momentum",
+            },
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          } as never,
+        ];
+      },
+      async readVaultForMandate() {
+        return {
+          assetAddress: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
+          chainId: 42161,
+          createdAt: new Date(),
+          mandateId: "mandate-1",
+          status: "active",
+          updatedAt: new Date(),
+          vaultAddress: "0x0000000000000000000000000000000000000001",
+        } as never;
+      },
+      async resolveMarketsBatch() {
+        return {
+          failures: new Map([["bitcoin", new Error("missing")]]),
+          resolved: new Map(),
+        };
+      },
+    },
+  });
+
+  try {
+    const response = await app.inject({
+      method: "GET",
+      url: "/runs/run-1/vault/allocation",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().executable, false);
+    assert.deepEqual(response.json().missing, [
+      "GMX market resolution for bitcoin",
+    ]);
+    assert.equal(response.json().target_allocation[0].gmx_market, null);
   } finally {
     await app.close();
   }
