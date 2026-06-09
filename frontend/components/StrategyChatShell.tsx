@@ -1,12 +1,13 @@
 "use client";
 
-import { startTransition, useEffect, useState } from "react";
-import { usePrivy } from "@privy-io/react-auth";
+import { startTransition, useCallback, useEffect, useState } from "react";
+import { usePrivy, useWallets } from "@privy-io/react-auth";
 
 import { ChatView } from "@/components/ChatView";
 import { ScreenerResultCard } from "@/components/ScreenerResultCard";
 import { StrategySidebar } from "@/components/StrategySidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { WalletPositionsPane } from "@/components/WalletPositionsPane";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -21,6 +22,7 @@ import {
   type PinnedScreener,
   setStrategyId as persistStrategyId,
 } from "@/lib/local-store";
+import { readGmxAccountActivity } from "@/lib/gmx-positions";
 import type { ScreenerResult, StrategyCreateResponse } from "@/lib/types";
 
 type AuthState = {
@@ -31,6 +33,7 @@ type AuthState = {
     email?: { address?: string | null } | null;
     wallet?: { address?: string | null } | null;
   } | null;
+  walletAddress?: string | null;
   login: () => void;
   logout: () => void;
   getAccessToken: () => Promise<string | null>;
@@ -43,6 +46,7 @@ const anonymousAuth: AuthState = {
   login: () => undefined,
   logout: () => undefined,
   getAccessToken: async () => null,
+  walletAddress: null,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -124,10 +128,12 @@ export function StrategyChatShell() {
 function PrivyStrategyChatShell() {
   const { ready, authenticated, user, login, logout, getAccessToken } =
     usePrivy();
+  const { wallets } = useWallets();
+  const walletAddress = wallets[0]?.address ?? user?.wallet?.address ?? null;
 
   return (
     <StrategyChatShellContent
-      auth={{ ready, authenticated, user, login, logout, getAccessToken }}
+      auth={{ ready, authenticated, user, walletAddress, login, logout, getAccessToken }}
     />
   );
 }
@@ -136,6 +142,9 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   const { ready, authenticated, user, login, logout, getAccessToken } = auth;
   const identity = user?.email?.address ?? user?.wallet?.address ?? user?.id;
   const identityLabel = identity ? shortenIdentity(identity) : "Connected";
+  const walletAddress = authenticated
+    ? auth.walletAddress?.trim() || user?.wallet?.address?.trim() || null
+    : null;
   const [strategyId, setStrategyId] = useState<string | null>(null);
   const [knownStrategies, setKnownStrategies] = useState(() =>
     getKnownStrategies(),
@@ -150,6 +159,11 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   const [activeScreener, setActiveScreener] = useState<ScreenerResult | null>(
     null,
   );
+  const [isWalletPositionsActive, setIsWalletPositionsActive] = useState(false);
+  const [walletPositionCount, setWalletPositionCount] = useState<number | null>(null);
+  const [walletPositionStatus, setWalletPositionStatus] = useState<
+    "idle" | "loading" | "error"
+  >("idle");
   const [screenerError, setScreenerError] = useState<string | null>(null);
   const [isLoadingScreener, setIsLoadingScreener] = useState(false);
   const [bootstrapError, setBootstrapError] = useState<string | null>(null);
@@ -170,12 +184,48 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     setDeployedStrategies(getDeployedStrategies());
   }
 
+  const handleWalletActivityCountChange = useCallback((count: number) => {
+    setWalletPositionCount(count);
+    setWalletPositionStatus("idle");
+  }, []);
+
   useEffect(() => {
     window.addEventListener("agent-invest:deployed-strategies", refreshDeployedStrategies);
     return () => {
       window.removeEventListener("agent-invest:deployed-strategies", refreshDeployedStrategies);
     };
   }, []);
+
+  useEffect(() => {
+    let isActive = true;
+
+    async function loadWalletActivityCount() {
+      if (!walletAddress) {
+        setWalletPositionCount(null);
+        setWalletPositionStatus("idle");
+        return;
+      }
+
+      setWalletPositionStatus("loading");
+      try {
+        const activity = await readGmxAccountActivity([
+          { type: "wallet", address: walletAddress },
+        ]);
+        if (!isActive) return;
+        setWalletPositionCount(activity.openPositions.length + activity.pendingOrders.length);
+        setWalletPositionStatus("idle");
+      } catch {
+        if (!isActive) return;
+        setWalletPositionCount(null);
+        setWalletPositionStatus("error");
+      }
+    }
+
+    void loadWalletActivityCount();
+    return () => {
+      isActive = false;
+    };
+  }, [walletAddress]);
 
   useEffect(() => {
     if (!ready || !authenticated) return;
@@ -259,6 +309,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     }
 
     setStrategyError(null);
+    setIsWalletPositionsActive(false);
     setIsCreatingStrategy(true);
 
     try {
@@ -287,6 +338,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     }
 
     setStrategyError(null);
+    setIsWalletPositionsActive(false);
     setActiveScreenerId(null);
     setActiveScreener(null);
     persistStrategyId(nextStrategyId);
@@ -309,6 +361,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
 
     const nextStrategyId = remainingStrategies[0]?.strategy_id;
     setStrategyError(null);
+    setIsWalletPositionsActive(false);
     setActiveScreenerId(null);
     setActiveScreener(null);
 
@@ -350,6 +403,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
 
     setStrategyError(null);
     setScreenerError(null);
+    setIsWalletPositionsActive(false);
     setActiveScreenerId(screener.id);
     setActiveScreener(null);
     setIsLoadingScreener(true);
@@ -378,6 +432,18 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     } finally {
       setIsLoadingScreener(false);
     }
+  }
+
+  function handleSelectWalletPositions() {
+    if (isCreatingStrategy || isChatBusy || isWalletPositionsActive) {
+      return;
+    }
+
+    setStrategyError(null);
+    setScreenerError(null);
+    setActiveScreenerId(null);
+    setActiveScreener(null);
+    setIsWalletPositionsActive(true);
   }
 
   if (bootstrapError) {
@@ -425,10 +491,14 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
         deployedStrategies={deployedStrategies}
         activeStrategyId={strategyId}
         activeScreenerId={activeScreenerId}
+        isWalletPositionsActive={isWalletPositionsActive}
+        walletPositionCount={walletPositionCount}
+        walletPositionStatus={walletPositionStatus}
         disabled={isCreatingStrategy || isChatBusy}
         onSelectStrategy={handleSelectStrategy}
         onDeleteStrategy={handleDeleteStrategy}
         onSelectScreener={handleSelectScreener}
+        onSelectWalletPositions={handleSelectWalletPositions}
         onNewStrategy={handleNewStrategy}
       />
 
@@ -461,7 +531,13 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
             </>
           )}
         </div>
-        {activeScreenerId ? (
+        {isWalletPositionsActive ? (
+          <WalletPositionsPane
+            walletAddress={walletAddress}
+            onBack={() => setIsWalletPositionsActive(false)}
+            onActivityCountChange={handleWalletActivityCountChange}
+          />
+        ) : activeScreenerId ? (
           <PinnedScreenerPane
             screener={activeScreener}
             error={screenerError}

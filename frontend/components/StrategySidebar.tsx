@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import {
+  Activity,
   BarChart3,
   ChevronDown,
   MessageSquare,
@@ -22,10 +23,14 @@ type StrategySidebarProps = {
   deployedStrategies: DeployedStrategy[];
   activeStrategyId: string;
   activeScreenerId?: string | null;
+  isWalletPositionsActive?: boolean;
+  walletPositionCount?: number | null;
+  walletPositionStatus?: "idle" | "loading" | "error";
   disabled?: boolean;
   onSelectStrategy: (strategyId: string) => void;
   onDeleteStrategy: (strategyId: string) => void;
   onSelectScreener: (screener: PinnedScreener) => void;
+  onSelectWalletPositions: () => void;
   onNewStrategy: () => void | Promise<void>;
 };
 
@@ -35,10 +40,14 @@ export function StrategySidebar({
   deployedStrategies = [],
   activeStrategyId,
   activeScreenerId = null,
+  isWalletPositionsActive = false,
+  walletPositionCount = null,
+  walletPositionStatus = "idle",
   disabled = false,
   onSelectStrategy,
   onDeleteStrategy,
   onSelectScreener,
+  onSelectWalletPositions,
   onNewStrategy,
 }: StrategySidebarProps) {
   const [openSection, setOpenSection] = useState<"screeners" | "deployed" | null>(
@@ -178,6 +187,44 @@ export function StrategySidebar({
             })}
           </div>
         ) : null}
+
+        <button
+          type="button"
+          onClick={onSelectWalletPositions}
+          disabled={disabled}
+          className={cn(
+            "flex w-full items-center rounded-lg py-2 text-left text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+            isCollapsed ? "justify-center px-0" : "gap-2.5 px-2.5",
+            isWalletPositionsActive
+              ? "bg-sidebar-accent text-sidebar-accent-foreground"
+              : "hover:bg-sidebar-accent",
+          )}
+          aria-label="Direct positions"
+          title={isCollapsed ? "Direct positions" : undefined}
+        >
+          <Activity className="size-4 shrink-0" />
+          {isCollapsed ? null : (
+            <>
+              <span className="min-w-0 flex-1 truncate">Direct positions</span>
+              {walletPositionStatus === "error" ? (
+                <span className="rounded-full bg-destructive/10 px-1.5 py-0.5 text-[10px] font-semibold text-destructive">
+                  !
+                </span>
+              ) : walletPositionCount != null ? (
+                <span
+                  className={cn(
+                    "rounded-full px-1.5 py-0.5 text-[10px] font-semibold tabular-nums",
+                    walletPositionCount > 0
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-sidebar-accent text-sidebar-foreground/75",
+                  )}
+                >
+                  {walletPositionCount}
+                </span>
+              ) : null}
+            </>
+          )}
+        </button>
 
         <button
           type="button"
