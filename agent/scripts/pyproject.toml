@@ -3,9 +3,9 @@ requires = ["hatchling>=1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "agent-invest-scripts"
+name = "pond3r-portfolio-scripts"
 version = "0.1.0"
-description = "Agent-facing Python scripts for agent-invest."
+description = "Agent-facing Python scripts for pond3r-portfolio."
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "bt==1.2.0",
@@ -25,7 +25,7 @@ dev = [
 ]
 
 [project.scripts]
-agent-invest = "agent_invest_scripts.cli:main"
+pond3r-portfolio = "agent_invest_scripts.cli:main"
 
 [tool.uv]
 default-groups = ["dev"]

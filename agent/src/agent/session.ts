@@ -246,10 +246,10 @@ async function createManagedOpencode(
       },
       permission: {
         bash: {
-          "./agent-invest *": "allow",
-          "./agent-invest": "allow",
-          "agent-invest *": "allow",
-          "agent-invest": "allow",
+          "./pond3r-portfolio *": "allow",
+          "./pond3r-portfolio": "allow",
+          "pond3r-portfolio *": "allow",
+          "pond3r-portfolio": "allow",
           "*": "deny",
         },
         edit: "deny",

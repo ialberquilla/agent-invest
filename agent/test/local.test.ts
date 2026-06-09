@@ -15,7 +15,7 @@ async function withStorageRoot(
   callback: (storageRoot: string) => Promise<void>,
 ) {
   const previousStorageRoot = process.env.STORAGE_ROOT;
-  const storageRoot = await mkdtemp(join(tmpdir(), "agent-invest-storage-"));
+  const storageRoot = await mkdtemp(join(tmpdir(), "pond3r-portfolio-storage-"));
 
   process.env.STORAGE_ROOT = storageRoot;
 
