@@ -16,6 +16,7 @@ import {
   type WorkflowDeps,
 } from "./controller.ts";
 import { buildMandate } from "./mandate.ts";
+import { buildSuggestedReruns } from "./suggested-reruns.ts";
 import type {
   CandidateBacktest,
   EquityPoint,
@@ -222,6 +223,10 @@ export function workflowStateToStructuredResult(
       allocation: buildAllocation(backtest),
       kpis: backtest ? buildKpis(backtest) : {},
       charts,
+      // One-click follow-up reruns derived from the resolved thesis. The
+      // frontend renders these as buttons that relaunch the pipeline with
+      // based_on_run_id + the suggestion's overrides.
+      suggested_reruns: buildSuggestedReruns(final.thesis),
       artifacts: [],
     };
   }
@@ -241,6 +246,9 @@ export function workflowStateToStructuredResult(
     refinement_reasons: final.reasons,
     allocation: [],
     kpis: {},
+    // A no-viable run still has a thesis when one was interpreted; offer
+    // reruns off it so the user can loosen constraints in one click.
+    suggested_reruns: final.thesis ? buildSuggestedReruns(final.thesis) : [],
     artifacts: [],
   };
 }
