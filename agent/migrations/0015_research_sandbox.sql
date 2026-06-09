@@ -47,19 +47,20 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'agent_readonly') THEN
     CREATE ROLE agent_readonly LOGIN;
   END IF;
+
+  ALTER ROLE agent_readonly SET statement_timeout = '10s';
+  ALTER ROLE agent_readonly SET default_transaction_read_only = on;
+
+  GRANT USAGE ON SCHEMA public TO agent_readonly;
+  GRANT SELECT ON TABLE
+    "asset_prices",
+    "agent_daily_close_prices",
+    "agent_daily_ohlc",
+    "agent_asset_universe",
+    "agent_asset_universe_features"
+  TO agent_readonly;
+EXCEPTION
+  WHEN insufficient_privilege OR undefined_object THEN
+    RAISE NOTICE 'Skipping agent_readonly setup: %', SQLERRM;
 END
 $$;
---> statement-breakpoint
-ALTER ROLE agent_readonly SET statement_timeout = '10s';
---> statement-breakpoint
-ALTER ROLE agent_readonly SET default_transaction_read_only = on;
---> statement-breakpoint
-GRANT USAGE ON SCHEMA public TO agent_readonly;
---> statement-breakpoint
-GRANT SELECT ON TABLE
-  "asset_prices",
-  "agent_daily_close_prices",
-  "agent_daily_ohlc",
-  "agent_asset_universe",
-  "agent_asset_universe_features"
-TO agent_readonly;
