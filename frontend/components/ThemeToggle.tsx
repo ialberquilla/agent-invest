@@ -3,6 +3,8 @@
 import { useSyncExternalStore } from "react";
 import { Moon, Sun } from "lucide-react";
 
+import { cn } from "@/lib/utils";
+
 const THEME_KEY = "agent-invest:theme";
 
 // The theme lives on <html class="dark">, applied before paint by the inline
@@ -21,7 +23,13 @@ function getIsDark() {
   return document.documentElement.classList.contains("dark");
 }
 
-export function ThemeToggle() {
+export function ThemeToggle({
+  compact = false,
+  surface = "sidebar",
+}: {
+  compact?: boolean;
+  surface?: "sidebar" | "topbar";
+}) {
   // Default to dark on the server snapshot to match the pre-paint default.
   const isDark = useSyncExternalStore(subscribe, getIsDark, () => true);
 
@@ -35,18 +43,28 @@ export function ThemeToggle() {
     }
   }
 
+  const label = isDark ? "Light mode" : "Dark mode";
+
   return (
     <button
       type="button"
       onClick={toggle}
-      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent/60"
+      aria-label={label}
+      title={compact ? label : undefined}
+      className={cn(
+        "flex items-center text-sm transition-colors",
+        surface === "topbar"
+          ? "rounded-full border border-border/70 bg-muted/45 text-muted-foreground shadow-xs hover:bg-muted hover:text-foreground"
+          : "w-full rounded-lg py-2 text-sidebar-foreground hover:bg-sidebar-accent/60",
+        compact ? "size-8 justify-center p-0" : "gap-2.5 px-2.5 py-2",
+      )}
     >
       {isDark ? (
         <Sun className="size-4 shrink-0" />
       ) : (
         <Moon className="size-4 shrink-0" />
       )}
-      {isDark ? "Light mode" : "Dark mode"}
+      {compact ? null : label}
     </button>
   );
 }

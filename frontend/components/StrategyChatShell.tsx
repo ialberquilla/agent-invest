@@ -6,6 +6,7 @@ import { usePrivy } from "@privy-io/react-auth";
 import { ChatView } from "@/components/ChatView";
 import { ScreenerResultCard } from "@/components/ScreenerResultCard";
 import { StrategySidebar } from "@/components/StrategySidebar";
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -16,6 +17,7 @@ import {
   getAnonymousUserId,
   getPinnedScreeners,
   getStrategyId,
+  removeKnownStrategy,
   type PinnedScreener,
   setStrategyId as persistStrategyId,
 } from "@/lib/local-store";
@@ -293,6 +295,54 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     });
   }
 
+  async function handleDeleteStrategy(deletedStrategyId: string) {
+    if (isCreatingStrategy || isChatBusy) {
+      return;
+    }
+
+    const remainingStrategies = removeKnownStrategy(deletedStrategyId);
+    setKnownStrategies(remainingStrategies);
+
+    if (deletedStrategyId !== strategyId) {
+      return;
+    }
+
+    const nextStrategyId = remainingStrategies[0]?.strategy_id;
+    setStrategyError(null);
+    setActiveScreenerId(null);
+    setActiveScreener(null);
+
+    if (nextStrategyId) {
+      persistStrategyId(nextStrategyId);
+      startTransition(() => {
+        setStrategyId(nextStrategyId);
+      });
+      return;
+    }
+
+    clearStrategyId();
+    setStrategyId(null);
+    setIsCreatingStrategy(true);
+
+    try {
+      const next = await requestStrategy(authenticated, getAccessToken);
+      ensureKnownStrategy(next.strategy_id);
+      persistStrategyId(next.strategy_id);
+      refreshKnownStrategies();
+      startTransition(() => {
+        setStrategyId(next.strategy_id);
+      });
+    } catch (error) {
+      setBootstrapError(
+        error instanceof Error
+          ? error.message
+          : "Unable to create a replacement strategy",
+      );
+    } finally {
+      setIsCreatingStrategy(false);
+    }
+  }
+
   async function handleSelectScreener(screener: PinnedScreener) {
     if (isCreatingStrategy || isChatBusy || screener.id === activeScreenerId) {
       return;
@@ -377,6 +427,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
         activeScreenerId={activeScreenerId}
         disabled={isCreatingStrategy || isChatBusy}
         onSelectStrategy={handleSelectStrategy}
+        onDeleteStrategy={handleDeleteStrategy}
         onSelectScreener={handleSelectScreener}
         onNewStrategy={handleNewStrategy}
       />
@@ -392,6 +443,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
                 <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
                 <span className="truncate font-mono text-xs">{identityLabel}</span>
               </span>
+              <ThemeToggle compact surface="topbar" />
               <Button
                 size="sm"
                 className="rounded-full px-4 shadow-sm"
@@ -401,9 +453,12 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
               </Button>
             </>
           ) : (
-            <Button className="rounded-full px-4" size="sm" onClick={login}>
-              Log in
-            </Button>
+            <>
+              <ThemeToggle compact surface="topbar" />
+              <Button className="rounded-full px-4" size="sm" onClick={login}>
+                Log in
+              </Button>
+            </>
           )}
         </div>
         {activeScreenerId ? (

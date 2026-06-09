@@ -294,6 +294,24 @@ export function upsertKnownStrategy(strategy: {
   writeKnownStrategies([next, ...current]);
 }
 
+export function removeKnownStrategy(strategyId: string) {
+  const normalizedStrategyId = strategyId.trim();
+  if (!normalizedStrategyId) {
+    return getKnownStrategies();
+  }
+
+  const next = getKnownStrategies().filter(
+    (strategy) => strategy.strategy_id !== normalizedStrategyId,
+  );
+  writeKnownStrategies(next);
+
+  if (canUseLocalStorage()) {
+    window.localStorage.removeItem(messageKey(normalizedStrategyId));
+  }
+
+  return next;
+}
+
 export function getMessages(strategyId: string) {
   const messages = parseStoredJson(
     messageKey(strategyId),
