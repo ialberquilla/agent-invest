@@ -20,6 +20,7 @@ import { buildMandate } from "../agent/workflow/mandate";
 import { workflowStateToStructuredResult } from "../agent/workflow/persist";
 import type {
   FinalWinner,
+  StrategyRunOverrides,
   WizardBrief,
   WorkflowState,
 } from "../agent/workflow/state";
@@ -140,7 +141,12 @@ type ServerDependencies = {
       onEvent: (event: unknown) => void | Promise<void>,
     ): Promise<ChatAgentResponse>;
     runStrategyPipeline?(
-      input: { brief: string },
+      input: {
+        brief: string;
+        based_on_run_id?: string;
+        overrides?: StrategyRunOverrides;
+        data_as_of?: string;
+      },
       chatSessionId?: string,
     ): Promise<{ run_id: string }>;
   };
@@ -209,6 +215,76 @@ function requiredNumber(body: Record<string, unknown>, key: string) {
     throw httpError(400, `Request body field '${key}' must be a number`);
   }
   return parsed;
+}
+
+// Shape-validate the optional `overrides` object from a strategy-pipeline
+// request. Type checks only -- feasibility (e.g. asset_count_min <= max)
+// is enforced later by applyOverrides against the interpreted thesis.
+// Returns undefined when no overrides were sent.
+function parseStrategyRunOverrides(
+  raw: unknown,
+): StrategyRunOverrides | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isRecord(raw)) {
+    throw httpError(400, "Request body field 'overrides' must be an object");
+  }
+
+  const out: Record<string, unknown> = {};
+  const numberFields = [
+    "asset_count_min",
+    "asset_count_max",
+    "max_weight_per_asset",
+    "max_cash_weight",
+    "max_drawdown",
+    "horizon_days",
+    "top_n",
+    "top_skip",
+  ] as const;
+  for (const key of numberFields) {
+    if (raw[key] === undefined) continue;
+    const value =
+      typeof raw[key] === "string" ? Number(raw[key]) : raw[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw httpError(400, `overrides.${key} must be a number`);
+    }
+    out[key] = value;
+  }
+
+  for (const key of ["exclude_stablecoins", "exclude_wrapped"] as const) {
+    if (raw[key] === undefined) continue;
+    if (typeof raw[key] !== "boolean") {
+      throw httpError(400, `overrides.${key} must be a boolean`);
+    }
+    out[key] = raw[key];
+  }
+
+  if (raw.rebalance_frequency !== undefined) {
+    const allowed = ["daily", "weekly", "monthly", "quarterly"];
+    if (!allowed.includes(raw.rebalance_frequency as string)) {
+      throw httpError(
+        400,
+        `overrides.rebalance_frequency must be one of ${allowed.join(", ")}`,
+      );
+    }
+    out.rebalance_frequency = raw.rebalance_frequency;
+  }
+
+  if (raw.hand_picked_coin_ids !== undefined) {
+    if (
+      !Array.isArray(raw.hand_picked_coin_ids) ||
+      !raw.hand_picked_coin_ids.every((id) => typeof id === "string")
+    ) {
+      throw httpError(
+        400,
+        "overrides.hand_picked_coin_ids must be an array of strings",
+      );
+    }
+    out.hand_picked_coin_ids = raw.hand_picked_coin_ids;
+  }
+
+  return Object.keys(out).length > 0
+    ? (out as StrategyRunOverrides)
+    : undefined;
 }
 
 function requiredChoice<T extends readonly string[]>(
@@ -1432,7 +1508,20 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       throw httpError(500, "Chat agent cannot start strategy pipeline runs");
     }
 
-    return executeChatAgent.runStrategyPipeline({ brief }, chatSessionId);
+    const based_on_run_id =
+      typeof body.based_on_run_id === "string" && body.based_on_run_id.trim()
+        ? body.based_on_run_id.trim()
+        : undefined;
+    const data_as_of =
+      typeof body.data_as_of === "string" && body.data_as_of.trim()
+        ? body.data_as_of.trim()
+        : undefined;
+    const overrides = parseStrategyRunOverrides(body.overrides);
+
+    return executeChatAgent.runStrategyPipeline(
+      { brief, based_on_run_id, overrides, data_as_of },
+      chatSessionId,
+    );
   });
 
   app.post("/internal/tools/screen-markets", async (request) => {

@@ -96,7 +96,7 @@ function runStrategyPipelineToolDefinition() {
   return {
     name: RUN_STRATEGY_PIPELINE_TOOL_NAME,
     description:
-      "Start an asynchronous Agent Invest strategy research workflow from an investment brief. Use only when the user asks to build, test, run, launch, or evaluate a strategy.",
+      "Start an asynchronous Agent Invest strategy research workflow from an investment brief. Use only when the user asks to build, test, run, launch, or evaluate a strategy. To iterate on a prior run (e.g. 'try fewer assets', 'lower the max drawdown'), pass based_on_run_id and an overrides object instead of re-briefing from scratch.",
     inputSchema: {
       type: "object",
       properties: {
@@ -108,6 +108,42 @@ function runStrategyPipelineToolDefinition() {
           type: "string",
           description:
             "The current Agent Invest chat_session_id from the system prompt.",
+        },
+        based_on_run_id: {
+          type: "string",
+          description:
+            "Optional. The run_id of a prior strategy run this one iterates on. Records provenance for the rerun.",
+        },
+        overrides: {
+          type: "object",
+          description:
+            "Optional deterministic reshaping of the interpreted thesis for a rerun. Only set the fields the user asked to change.",
+          properties: {
+            asset_count_min: { type: "integer", minimum: 1 },
+            asset_count_max: { type: "integer", minimum: 1 },
+            max_weight_per_asset: { type: "number", minimum: 0, maximum: 1 },
+            max_cash_weight: { type: "number", minimum: 0, maximum: 1 },
+            max_drawdown: { type: "number", minimum: 0, maximum: 1 },
+            horizon_days: { type: "integer", minimum: 30 },
+            rebalance_frequency: {
+              type: "string",
+              enum: ["daily", "weekly", "monthly", "quarterly"],
+            },
+            top_n: { type: "integer", minimum: 1 },
+            top_skip: { type: "integer", minimum: 0 },
+            exclude_stablecoins: { type: "boolean" },
+            exclude_wrapped: { type: "boolean" },
+            hand_picked_coin_ids: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+          additionalProperties: false,
+        },
+        data_as_of: {
+          type: "string",
+          description:
+            "Optional ISO date pinning the data snapshot for reproducibility.",
         },
       },
       required: ["brief", "chat_session_id"],
@@ -235,10 +271,21 @@ async function callRunStrategyPipeline(args) {
     headers["x-api-key"] = process.env.AGENT_API_KEY;
   }
 
+  const requestBody = { brief, chat_session_id: chatSessionId };
+  if (typeof args.based_on_run_id === "string" && args.based_on_run_id.trim()) {
+    requestBody.based_on_run_id = args.based_on_run_id.trim();
+  }
+  if (args.overrides !== undefined && args.overrides !== null) {
+    requestBody.overrides = args.overrides;
+  }
+  if (typeof args.data_as_of === "string" && args.data_as_of.trim()) {
+    requestBody.data_as_of = args.data_as_of.trim();
+  }
+
   const response = await fetch(url, {
     method: "POST",
     headers,
-    body: JSON.stringify({ brief, chat_session_id: chatSessionId }),
+    body: JSON.stringify(requestBody),
   });
   const text = await response.text();
   if (!response.ok) {

@@ -12,9 +12,11 @@ import pino from "pino";
 
 import { appendEvent as defaultAppendEvent } from "../../db/repositories/agent-events.ts";
 import type { LLMClient } from "./llm.ts";
+import { applyOverrides, hasOverrides } from "./overrides.ts";
 import { bestCandidate } from "./rank.ts";
 import {
   DEFAULT_WORKFLOW_CAPS,
+  WORKFLOW_VERSION,
   type Attempt,
   type CandidateBacktest,
   type Decision,
@@ -23,6 +25,7 @@ import {
   type FinalWinner,
   type ReinterpretHint,
   type StepName,
+  type StrategyRunOverrides,
   type UniverseHint,
   type WizardBrief,
   type WorkflowCaps,
@@ -89,10 +92,20 @@ export type WorkflowDeps = {
   appendEvent?: typeof defaultAppendEvent;
 };
 
+// Per-run inputs that reshape or trace a run without changing the brief:
+// deterministic thesis overrides and the provenance of a structured
+// rerun. Kept separate from WorkflowDeps (which is wiring/test seams).
+export type RunWorkflowOptions = {
+  overrides?: StrategyRunOverrides;
+  based_on_run_id?: string;
+  data_as_of?: string;
+};
+
 export async function runWorkflow(
   run_id: string,
   brief: string | WizardBrief,
   deps: WorkflowDeps = {},
+  options: RunWorkflowOptions = {},
 ): Promise<WorkflowState> {
   const runners: StepRunners = { ...DEFAULT_RUNNERS, ...deps.runners };
   const caps: WorkflowCaps = { ...DEFAULT_WORKFLOW_CAPS, ...deps.caps };
@@ -102,11 +115,21 @@ export async function runWorkflow(
   const state: WorkflowState = {
     run_id,
     brief,
+    workflow_version: WORKFLOW_VERSION,
+    overrides: options.overrides,
+    based_on_run_id: options.based_on_run_id,
+    data_as_of: options.data_as_of,
     attempts: [],
     counters: { reinterpret_brief: 0, broaden_universe: 0 },
   };
 
-  log.info({ phase: "workflow_start", caps });
+  log.info({
+    phase: "workflow_start",
+    caps,
+    workflow_version: state.workflow_version,
+    has_overrides: hasOverrides(state.overrides),
+    based_on_run_id: state.based_on_run_id ?? null,
+  });
   await safeAppend(appendEvent, log, {
     runId: run_id,
     eventType: "stage.started",
@@ -116,6 +139,9 @@ export async function runWorkflow(
       round: 0,
       caps,
       brief_kind: typeof brief === "string" ? "text" : "wizard",
+      workflow_version: state.workflow_version,
+      has_overrides: hasOverrides(state.overrides),
+      based_on_run_id: state.based_on_run_id ?? null,
     },
   });
 
@@ -460,7 +486,15 @@ async function dispatch(
         { run_id: state.run_id, brief: state.brief, hint },
         { llm: resolveLLM(llm) },
       );
-      state.thesis = result.delta.thesis;
+      // Apply deterministic overrides onto the interpreted thesis and
+      // re-validate (overrides never bypass feasibility). Re-applied on
+      // every interpret_brief entry, including the reinterpret_brief
+      // backward edge, so the user's overrides always win. An infeasible
+      // override set throws and the controller surfaces it as the run's
+      // failure reason.
+      state.thesis = hasOverrides(state.overrides)
+        ? applyOverrides(result.delta.thesis, state.overrides)
+        : result.delta.thesis;
       return result.next;
     }
     case "select_templates": {

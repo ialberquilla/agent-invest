@@ -24,6 +24,7 @@ function stubWorkflowState(
   return {
     run_id: "stub",
     brief: "stub",
+    workflow_version: "test",
     attempts: [],
     counters: { reinterpret_brief: 0, broaden_universe: 0 },
     final: {

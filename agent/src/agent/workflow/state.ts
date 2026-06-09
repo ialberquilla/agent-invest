@@ -70,6 +70,29 @@ export type Thesis = {
   interpretation_notes: string;
 };
 
+// Deterministic overrides applied to the interpreted Thesis after
+// interpret_brief and before universe/template selection. They let a
+// follow-up run re-shape a prior result ("fewer assets", "lower
+// drawdown") without re-briefing from scratch. PR1 covers the subset
+// that maps cleanly onto existing Thesis fields and re-validates;
+// strategy-mode / leg / template-family overrides arrive in later phases
+// (see plans/workflow_backtest_improvements.md section 13). Applied by
+// applyOverrides() in overrides.ts.
+export type StrategyRunOverrides = {
+  asset_count_min?: number;
+  asset_count_max?: number;
+  max_weight_per_asset?: number;
+  max_cash_weight?: number;
+  max_drawdown?: number;
+  horizon_days?: number;
+  rebalance_frequency?: RebalanceFrequency;
+  top_n?: number;
+  top_skip?: number;
+  exclude_stablecoins?: boolean;
+  exclude_wrapped?: boolean;
+  hand_picked_coin_ids?: string[];
+};
+
 // The strategy-family catalog mirrors spec.md section 9. select_templates
 // classifies a Thesis onto a ranked shortlist of these families before
 // propose_candidates parameterizes concrete candidates. The eight long-only
@@ -567,12 +590,25 @@ export const DEFAULT_WORKFLOW_CAPS: WorkflowCaps = {
   max_wall_clock_ms: 15 * 60 * 1000,
 };
 
+// Bumped whenever a change could alter the mandate produced from the same
+// typed inputs + data snapshot (new steps, changed sweep/validation, new
+// override semantics). Persisted on every run so a `based_on_run_id`
+// rerun can be checked for reproducibility against its parent.
+export const WORKFLOW_VERSION = "2026-06-09.1";
+
 // Full workflow state. The controller maintains one of these per run
 // and passes it (read-only) into each step; deltas are merged into
 // state by the dispatcher rather than by the step itself.
 export type WorkflowState = {
   run_id: string;
   brief: string | WizardBrief;
+  // Provenance + reproducibility (PR1). workflow_version is stamped at
+  // run start; overrides/based_on_run_id/data_as_of carry the rerun
+  // inputs so the persisted run records exactly what reshaped it.
+  workflow_version: string;
+  overrides?: StrategyRunOverrides;
+  based_on_run_id?: string;
+  data_as_of?: string;
   thesis?: Thesis;
   template_selection?: TemplateSelection;
   universe?: Universe;
