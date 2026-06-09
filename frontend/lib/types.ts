@@ -15,6 +15,16 @@ export type StrategyResult = {
   next_steps: string[];
   backtest: StrategyBacktestSummary;
   charts: StrategyCharts;
+  suggested_reruns?: SuggestedRerun[];
+};
+
+// One-click follow-up emitted by the backend (buildSuggestedReruns). Each
+// is a labelled overrides delta the UI relaunches as a deterministic rerun
+// anchored to the source run via based_on_run_id.
+export type SuggestedRerun = {
+  label: string;
+  rationale: string;
+  overrides: Record<string, unknown>;
 };
 
 export type ScreenerResult = {

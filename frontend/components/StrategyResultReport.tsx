@@ -14,6 +14,7 @@ import {
 } from "recharts";
 
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { DeployVaultButton } from "@/components/DeployVaultButton";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ChartContainer, ChartTooltipContent } from "@/components/ui/chart";
@@ -22,11 +23,16 @@ import type {
   StrategyDrawdownPoint,
   StrategyEquityPoint,
   StrategyResult,
+  SuggestedRerun,
 } from "@/lib/types";
 
 type StrategyResultReportProps = {
   result: StrategyResult;
   runId?: string;
+  // Relaunches the pipeline anchored to this run with the suggestion's
+  // overrides. Omitted (e.g. in read-only views) hides the iterate buttons.
+  onRerun?: (suggestion: SuggestedRerun) => void;
+  rerunDisabled?: boolean;
 };
 
 const KPI_ITEMS: Array<{
@@ -371,7 +377,10 @@ function TextList({ items }: { items: string[] }) {
 export function StrategyResultReport({
   result,
   runId,
+  onRerun,
+  rerunDisabled = false,
 }: StrategyResultReportProps) {
+  const suggestedReruns = result.suggested_reruns ?? [];
   const allocation = result.allocation ?? [];
   const backtest = result.backtest ?? {};
   const charts = result.charts ?? {};
@@ -542,6 +551,30 @@ export function StrategyResultReport({
         {(result.constraint_violations ?? []).length > 0 ? (
           <ReportSection title="Constraint Violations">
             <TextList items={result.constraint_violations ?? []} />
+          </ReportSection>
+        ) : null}
+
+        {onRerun && suggestedReruns.length > 0 ? (
+          <ReportSection title="Iterate on this strategy">
+            <p className="mb-3 text-sm text-subtle-foreground">
+              Re-run the backtest with one change. Each option keeps the
+              original brief and reshapes only what it names.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {suggestedReruns.map((suggestion) => (
+                <Button
+                  key={suggestion.label}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={rerunDisabled}
+                  title={suggestion.rationale}
+                  onClick={() => onRerun(suggestion)}
+                >
+                  {suggestion.label}
+                </Button>
+              ))}
+            </div>
           </ReportSection>
         ) : null}
 
