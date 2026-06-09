@@ -7,7 +7,6 @@
     "dev": "pnpm --filter @pond3r-portfolio/agent dev",
     "build": "pnpm -r --if-present build",
     "db:migrate": "pnpm --filter @pond3r-portfolio/agent db:migrate",
-    "eval:all": "pnpm --filter @pond3r-portfolio/agent eval:all",
     "ingest:gmx": "pnpm --filter @pond3r-portfolio/agent ingest:gmx",
     "ingest:gmx:history": "pnpm --filter @pond3r-portfolio/agent ingest:gmx:history",
     "ingest:gmx:markets": "pnpm --filter @pond3r-portfolio/agent ingest:gmx:markets",
