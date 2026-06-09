@@ -7,6 +7,7 @@ import { ChatView } from "@/components/ChatView";
 import { ScreenerResultCard } from "@/components/ScreenerResultCard";
 import { StrategySidebar } from "@/components/StrategySidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { VaultManagerPane } from "@/components/VaultManagerPane";
 import { WalletPositionsPane } from "@/components/WalletPositionsPane";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,6 +20,7 @@ import {
   getPinnedScreeners,
   getStrategyId,
   removeKnownStrategy,
+  type DeployedStrategy,
   type PinnedScreener,
   setStrategyId as persistStrategyId,
 } from "@/lib/local-store";
@@ -159,6 +161,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   const [activeScreener, setActiveScreener] = useState<ScreenerResult | null>(
     null,
   );
+  const [selectedVault, setSelectedVault] = useState<DeployedStrategy | null>(null);
   const [isWalletPositionsActive, setIsWalletPositionsActive] = useState(false);
   const [walletPositionCount, setWalletPositionCount] = useState<number | null>(null);
   const [walletPositionStatus, setWalletPositionStatus] = useState<
@@ -310,6 +313,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
 
     setStrategyError(null);
     setIsWalletPositionsActive(false);
+    setSelectedVault(null);
     setIsCreatingStrategy(true);
 
     try {
@@ -339,6 +343,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
 
     setStrategyError(null);
     setIsWalletPositionsActive(false);
+    setSelectedVault(null);
     setActiveScreenerId(null);
     setActiveScreener(null);
     persistStrategyId(nextStrategyId);
@@ -362,6 +367,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     const nextStrategyId = remainingStrategies[0]?.strategy_id;
     setStrategyError(null);
     setIsWalletPositionsActive(false);
+    setSelectedVault(null);
     setActiveScreenerId(null);
     setActiveScreener(null);
 
@@ -404,6 +410,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     setStrategyError(null);
     setScreenerError(null);
     setIsWalletPositionsActive(false);
+    setSelectedVault(null);
     setActiveScreenerId(screener.id);
     setActiveScreener(null);
     setIsLoadingScreener(true);
@@ -443,7 +450,18 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     setScreenerError(null);
     setActiveScreenerId(null);
     setActiveScreener(null);
+    setSelectedVault(null);
     setIsWalletPositionsActive(true);
+  }
+
+  function handleSelectDeployedStrategy(strategy: DeployedStrategy) {
+    if (isCreatingStrategy || isChatBusy) return;
+    setStrategyError(null);
+    setScreenerError(null);
+    setActiveScreenerId(null);
+    setActiveScreener(null);
+    setIsWalletPositionsActive(false);
+    setSelectedVault(strategy);
   }
 
   if (bootstrapError) {
@@ -494,11 +512,13 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
         isWalletPositionsActive={isWalletPositionsActive}
         walletPositionCount={walletPositionCount}
         walletPositionStatus={walletPositionStatus}
+        activeVaultMandateId={selectedVault?.mandate_id ?? null}
         disabled={isCreatingStrategy || isChatBusy}
         onSelectStrategy={handleSelectStrategy}
         onDeleteStrategy={handleDeleteStrategy}
         onSelectScreener={handleSelectScreener}
         onSelectWalletPositions={handleSelectWalletPositions}
+        onSelectDeployedStrategy={handleSelectDeployedStrategy}
         onNewStrategy={handleNewStrategy}
       />
 
@@ -531,7 +551,9 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
             </>
           )}
         </div>
-        {isWalletPositionsActive ? (
+        {selectedVault ? (
+          <VaultManagerPane vault={selectedVault} onBack={() => setSelectedVault(null)} />
+        ) : isWalletPositionsActive ? (
           <WalletPositionsPane
             walletAddress={walletAddress}
             onBack={() => setIsWalletPositionsActive(false)}

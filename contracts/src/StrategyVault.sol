@@ -98,10 +98,13 @@ contract StrategyVault is
                      USER-FACING STATE-CHANGING FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    function deposit(uint256 amount) external onlyOwner nonReentrant {
+    /// @notice Deposit USDC collateral, optionally topping up the native gas tank in the same tx.
+    /// @dev `payable`: any attached ETH funds the GMX execution-fee gas tank (see {depositNative}).
+    function deposit(uint256 amount) external payable onlyOwner nonReentrant {
         if (amount == 0) revert StrategyVault__ZeroAmount();
         _strategyVaultStorage().asset.safeTransferFrom(msg.sender, address(this), amount);
         emit Deposited(msg.sender, amount);
+        if (msg.value > 0) emit NativeDeposited(msg.sender, msg.value);
     }
 
     function withdraw(uint256 amount, address to) external onlyOwner nonReentrant {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
 
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,10 @@ import {
   executeVaultAllocationOnChain,
   fundVaultGasOnChain,
   fundVaultOnChain,
+  getExistingVaultBinding,
   readAllocationReadiness,
+  readVaultBalances,
+  readVaultNativeBalance,
   saveVaultBinding,
   withdrawVaultNativeOnChain,
   type VaultAllocationReadiness,
@@ -39,6 +42,44 @@ export function DeployVaultButton({ runId }: { runId: string }) {
   const { authenticated, login, getAccessToken } = usePrivy();
   const { wallets } = useWallets();
   const [state, setState] = useState<DeployState>({ status: "idle" });
+
+  // If this run already has a vault bound (e.g. after a reload), restore the manage panel instead
+  // of showing "Deploy on-chain" again — which would deploy a duplicate vault.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const binding = await getExistingVaultBinding(runId);
+        if (cancelled || !binding) return;
+        upsertDeployedStrategy({
+          mandate_id: binding.mandate_id,
+          chain_id: binding.chain_id,
+          vault_address: binding.vault_address,
+          asset_address: binding.asset_address,
+          status: binding.status,
+          run_id: runId,
+        });
+        window.dispatchEvent(new Event("agent-invest:deployed-strategies"));
+        const balances = await readVaultBalances(binding.vault_address).catch(() => undefined);
+        if (cancelled) return;
+        setState((current) =>
+          current.status === "idle"
+            ? {
+                status: "deployed",
+                binding,
+                idleBalance: balances?.idle,
+                gasBalance: balances?.gas,
+              }
+            : current,
+        );
+      } catch {
+        // best-effort restore; ignore failures and keep the deploy button
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [runId]);
 
   async function handleDeploy() {
     if (!authenticated) {
@@ -70,6 +111,7 @@ export function DeployVaultButton({ runId }: { runId: string }) {
         vault_address: binding.vault_address,
         asset_address: binding.asset_address,
         status: binding.status,
+        run_id: runId,
       });
       window.dispatchEvent(new Event("agent-invest:deployed-strategies"));
       setState({ status: "deployed", binding });
@@ -81,7 +123,7 @@ export function DeployVaultButton({ runId }: { runId: string }) {
     }
   }
 
-  async function handleFund(binding: VaultBindingResponse, amount: string) {
+  async function handleFund(binding: VaultBindingResponse, amount: string, ethGas?: string) {
     const wallet = wallets[0];
     if (!wallet) {
       setState({ status: "error", message: "Connect a wallet to fund" });
@@ -91,12 +133,11 @@ export function DeployVaultButton({ runId }: { runId: string }) {
     setState({ status: "funding", binding, amount });
     try {
       const provider = await wallet.getEthereumProvider();
-      const idleBalance = await fundVaultOnChain(
-        provider,
-        binding.vault_address,
-        amount,
+      const idleBalance = await fundVaultOnChain(provider, binding.vault_address, amount, ethGas);
+      const gasBalance = await readVaultNativeBalance(provider, binding.vault_address).catch(
+        () => undefined,
       );
-      setState({ status: "deployed", binding, idleBalance });
+      setState({ status: "deployed", binding, idleBalance, gasBalance });
     } catch (error) {
       setState({
         status: "deployed",
@@ -176,6 +217,19 @@ export function DeployVaultButton({ runId }: { runId: string }) {
     }
     try {
       const provider = await wallet.getEthereumProvider();
+      const gas = await readVaultNativeBalance(provider, allocation.vault_address);
+      if (Number(gas) <= 0) {
+        setState((current) =>
+          current.status === "deployed"
+            ? {
+                ...current,
+                allocationError:
+                  "Fund the gas tank first — GMX execution fees are paid from the vault's ETH. Use “Fund gas” (or add ETH when funding USDC).",
+              }
+            : current,
+        );
+        return;
+      }
       await executeVaultAllocationOnChain(provider, allocation, idleBalance, {
         payFromTank: true,
         maxLegs,
@@ -289,7 +343,7 @@ function FundVaultPanel({
   allocation?: VaultAllocationReadiness;
   allocationError?: string;
   funding: boolean;
-  onFund: (binding: VaultBindingResponse, amount: string) => void;
+  onFund: (binding: VaultBindingResponse, amount: string, ethGas?: string) => void;
   onFundGas: (binding: VaultBindingResponse, ethAmount: string) => void;
   onSweepGas: (binding: VaultBindingResponse) => void;
   onAllocate: (binding: VaultBindingResponse, idleBalance?: string) => void;
@@ -297,6 +351,7 @@ function FundVaultPanel({
   onClose: (allocation: VaultAllocationReadiness, notionalUsd: string, maxLegs?: number) => void;
 }) {
   const [amount, setAmount] = useState("");
+  const [fundGasAmount, setFundGasAmount] = useState("");
   const [gasAmount, setGasAmount] = useState("");
   const [closeNotional, setCloseNotional] = useState("");
   const [maxLegsInput, setMaxLegsInput] = useState("");
@@ -316,8 +371,17 @@ function FundVaultPanel({
           onChange={(event) => setAmount(event.target.value)}
           disabled={funding}
         />
+        <input
+          className="w-24 rounded-md border bg-background px-2 py-2"
+          inputMode="decimal"
+          placeholder="+ETH gas"
+          value={fundGasAmount}
+          onChange={(event) => setFundGasAmount(event.target.value)}
+          disabled={funding}
+          title="ETH for the gas tank, funded in the same deposit tx"
+        />
         <Button
-          onClick={() => onFund(binding, amount)}
+          onClick={() => onFund(binding, amount, fundGasAmount)}
           disabled={funding || amount.trim().length === 0}
         >
           {funding ? "Funding…" : "Fund vault"}
@@ -326,7 +390,7 @@ function FundVaultPanel({
       <p className="text-xs text-muted-foreground">
         {idleBalance
           ? `Idle collateral: ${idleBalance} USDC`
-          : "Approve USDC, then deposit collateral into the vault."}
+          : "Deposits USDC + tops up the ETH gas tank in one tx (after approve)."}
       </p>
       {fundError ? <p className="text-xs text-destructive">{fundError}</p> : null}
       <div className="flex gap-2 border-t pt-2">

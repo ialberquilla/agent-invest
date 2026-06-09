@@ -26,11 +26,13 @@ type StrategySidebarProps = {
   isWalletPositionsActive?: boolean;
   walletPositionCount?: number | null;
   walletPositionStatus?: "idle" | "loading" | "error";
+  activeVaultMandateId?: string | null;
   disabled?: boolean;
   onSelectStrategy: (strategyId: string) => void;
   onDeleteStrategy: (strategyId: string) => void;
   onSelectScreener: (screener: PinnedScreener) => void;
   onSelectWalletPositions: () => void;
+  onSelectDeployedStrategy: (strategy: DeployedStrategy) => void;
   onNewStrategy: () => void | Promise<void>;
 };
 
@@ -43,11 +45,13 @@ export function StrategySidebar({
   isWalletPositionsActive = false,
   walletPositionCount = null,
   walletPositionStatus = "idle",
+  activeVaultMandateId = null,
   disabled = false,
   onSelectStrategy,
   onDeleteStrategy,
   onSelectScreener,
   onSelectWalletPositions,
+  onSelectDeployedStrategy,
   onNewStrategy,
 }: StrategySidebarProps) {
   const [openSection, setOpenSection] = useState<"screeners" | "deployed" | null>(
@@ -259,19 +263,30 @@ export function StrategySidebar({
               </p>
             ) : null}
 
-            {deployedStrategies.map((strategy) => (
-              <div
-                key={strategy.mandate_id}
-                title={strategy.vault_address}
-                className="flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-medium text-sidebar-foreground"
-              >
-                <Wallet className="size-4 shrink-0 text-sidebar-foreground/75" />
-                <span className="min-w-0 flex-1 truncate">{strategy.label}</span>
-                <span className="rounded-full bg-sidebar-accent px-1.5 py-0.5 text-[10px] uppercase text-sidebar-foreground/75">
-                  {strategy.status}
-                </span>
-              </div>
-            ))}
+            {deployedStrategies.map((strategy) => {
+              const isActive = strategy.mandate_id === activeVaultMandateId;
+              return (
+                <button
+                  key={strategy.mandate_id}
+                  type="button"
+                  onClick={() => onSelectDeployedStrategy(strategy)}
+                  disabled={disabled}
+                  title={strategy.vault_address}
+                  className={cn(
+                    "flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm font-medium transition-colors disabled:pointer-events-none disabled:opacity-50",
+                    isActive
+                      ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                      : "text-sidebar-foreground hover:bg-sidebar-accent/60",
+                  )}
+                >
+                  <Wallet className="size-4 shrink-0 text-sidebar-foreground/75" />
+                  <span className="min-w-0 flex-1 truncate">{strategy.label}</span>
+                  <span className="rounded-full bg-sidebar-accent px-1.5 py-0.5 text-[10px] uppercase text-sidebar-foreground/75">
+                    {strategy.status}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         ) : null}
       </nav>
