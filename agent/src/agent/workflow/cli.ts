@@ -7,8 +7,8 @@ import {
   spawn,
   type ExecFileException,
 } from "node:child_process";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+
+import { scriptEnv, scriptsDirectory, uvCommand } from "../../scripts-runtime.ts";
 
 type ExecFileCallback = (
   error: ExecFileException | null,
@@ -64,10 +64,7 @@ export type RankUniverseRow = {
   [key: string]: unknown;
 };
 
-const scriptsDir = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  "../../../scripts",
-);
+const scriptsDir = scriptsDirectory(import.meta.url, "../../../scripts");
 
 export type RecommendWindowRequest = {
   coin_ids: string[];
@@ -332,7 +329,7 @@ async function runScript(
 ): Promise<string> {
   return new Promise((resolveOutput, reject) => {
     execFileImpl(
-      "uv",
+      uvCommand(),
       [
         "run",
         "--project",
@@ -344,7 +341,7 @@ async function runScript(
       ],
       {
         cwd: scriptsDir,
-        env: { ...process.env, PYTHONPATH: scriptsDir },
+        env: scriptEnv(scriptsDir),
         maxBuffer: SCRIPT_STDOUT_BUFFER_BYTES,
       },
       (error, stdoutValue, stderrValue) => {
@@ -377,7 +374,7 @@ export async function runScriptStdin(
 ): Promise<string> {
   return new Promise((resolveOutput, reject) => {
     const child = spawn(
-      "uv",
+      uvCommand(),
       [
         "run",
         "--project",
@@ -389,7 +386,7 @@ export async function runScriptStdin(
       ],
       {
         cwd: scriptsDir,
-        env: { ...process.env, PYTHONPATH: scriptsDir },
+        env: scriptEnv(scriptsDir),
       },
     );
 
