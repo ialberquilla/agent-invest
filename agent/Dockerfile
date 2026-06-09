@@ -11,6 +11,7 @@ ARG OPENCODE_VERSION=1.14.25
 ARG UV_VERSION=0.11.18
 
 ENV PNPM_HOME=/pnpm
+ENV UV_BIN=/usr/local/bin/uv
 ENV PATH=/pnpm:/usr/local/bin:${PATH}
 
 RUN apt-get update \
@@ -31,7 +32,9 @@ RUN arch="$(dpkg --print-architecture)" \
   && corepack enable \
   && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 
-RUN pip install --no-cache-dir "uv==${UV_VERSION}"
+RUN pip install --no-cache-dir "uv==${UV_VERSION}" \
+  && command -v uv \
+  && uv --version
 RUN pnpm add --global "opencode-ai@${OPENCODE_VERSION}"
 
 FROM base AS deps
