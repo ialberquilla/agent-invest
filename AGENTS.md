@@ -23,8 +23,8 @@ repos. **Default to the smallest thing that works — no speculative abstraction
   - `src/api/server.ts` — Fastify HTTP API (runs, strategies, messages, events/SSE,
     artifacts, ingestion, eval inspection).
   - `src/agent/` — the agent layer driven by the **opencode SDK** (not the Anthropic
-    SDK, not a CLI subprocess). `chat.ts` is the conversational agent; it exposes a
-    single `run_strategy_pipeline` tool that kicks off the workflow.
+    SDK, not a CLI subprocess). `chat.ts` is the conversational agent; it exposes
+    `run_strategy_pipeline`, `screen_markets`, and gated `run_research_code` tools.
   - `src/agent/workflow/` — the core. A deterministic **step-based controller**
     (`controller.ts`) that loops over discrete steps in `steps/`
     (`interpret_brief → select_templates → select_universe → select_window →
@@ -61,6 +61,12 @@ datasets live under `STORAGE_ROOT` (default `<repo>/.data/storage`, Docker
 `/app/.data/storage`). See `README.md` for the layout. Postgres runs in Docker.
 
 **Postgres is exposed on host port `5434`** (not 5432) to coexist with pond3r-postgres.
+
+`run_research_code` is an opt-in research sandbox for open-ended quantitative
+analysis. It requires `RESEARCH_MODE=true` and `AGENT_READONLY_DATABASE_URL`, and the
+database role should be `agent_readonly` from the migrations: SELECT-only on market
+data views/tables, statement timeout, and default read-only transactions. The tool
+must remain a first-class MCP/API tool; do not give chat access to opencode `bash`.
 
 ## Common commands
 

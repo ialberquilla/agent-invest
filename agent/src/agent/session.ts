@@ -40,6 +40,7 @@ export const OPENCODE_BUILTIN_TOOLS = [
 export const AGENT_INVEST_MCP_NAME = "agent_invest";
 export const RUN_STRATEGY_PIPELINE_TOOL = `${AGENT_INVEST_MCP_NAME}_run_strategy_pipeline`;
 export const SCREEN_MARKETS_TOOL = `${AGENT_INVEST_MCP_NAME}_screen_markets`;
+export const RUN_RESEARCH_CODE_TOOL = `${AGENT_INVEST_MCP_NAME}_run_research_code`;
 
 export function disabledOpencodeBuiltinsTools(
   options: { except?: readonly string[] } = {},
