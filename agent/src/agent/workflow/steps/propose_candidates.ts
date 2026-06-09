@@ -10,6 +10,8 @@ import {
   ProposalValidationError,
   REBALANCE_TRIGGER_FAMILIES,
   REBALANCE_TRIGGERS,
+  resolveStrategyMode,
+  SINGLE_ASSET_FAMILY,
   WEIGHTING_SCHEMES,
   validateProposal,
   type AllocationTemplate,
@@ -120,7 +122,22 @@ export async function proposeCandidates(
     horizon_days: input.thesis.horizon_days,
     prior_attempts: input.attempts?.length ?? 0,
     has_refinement_hint: lastHint(input.attempts) !== undefined,
+    strategy_mode: resolveStrategyMode(input.thesis),
   });
+
+  // single_asset is a fixed one-position shape with no select_top/weighting
+  // space to explore -- only the trend signal window. Build the candidates
+  // deterministically (an SMA-lookback sweep on the target coin) and skip
+  // the LLM entirely.
+  if (resolveStrategyMode(input.thesis) === "single_asset") {
+    const proposal = buildSingleAssetProposal(input);
+    logger.exit(NEXT_STEP, {
+      candidate_count: proposal.candidates.length,
+      template_mix: summariseTemplates(proposal.candidates),
+      single_asset: true,
+    });
+    return { delta: { proposal }, next: NEXT_STEP };
+  }
 
   const userMessage = buildUserMessage(input);
   let lastError: Error | undefined;
@@ -165,6 +182,43 @@ export async function proposeCandidates(
   }
 
   throw lastError ?? new Error("propose_candidates failed without an error");
+}
+
+// Deterministic single_asset proposal: long/flat on one coin, sweeping the
+// SMA trend-signal window. The coin is the thesis target_coin_id when set,
+// else the top-ranked coin in the resolved universe (pinned so the run is
+// reproducible). select_top is always 1 (one position is the whole book).
+const SINGLE_ASSET_SMA_LOOKBACKS = [20, 50, 100] as const;
+
+export function buildSingleAssetProposal(
+  input: ProposeCandidatesInput,
+): Proposal {
+  const target = input.thesis.target_coin_id ?? input.universe.coin_ids[0];
+  if (!target) {
+    throw new ProposalValidationError(
+      "single_asset proposal requires a target coin (thesis.target_coin_id or a non-empty universe)",
+    );
+  }
+  const candidates: ProposedCandidate[] = SINGLE_ASSET_SMA_LOOKBACKS.map(
+    (sma_lookback, index) => ({
+      candidate_id: `sa${index + 1}`,
+      template_id: SINGLE_ASSET_FAMILY,
+      select_top: 1,
+      weighting: "equal",
+      sma_lookback,
+      target_coin_id: target,
+      rationale: `Single-asset long/flat on ${target} with a ${sma_lookback}-day SMA trend filter.`,
+    }),
+  );
+  const proposal: Proposal = {
+    iteration_hypothesis: `Single-asset trend setup on ${target}; sweep the SMA trend-signal window.`,
+    candidates,
+  };
+  validateProposal(proposal, {
+    thesis: input.thesis,
+    universe: input.universe,
+  });
+  return proposal;
 }
 
 export function expandProposalWithSweep(

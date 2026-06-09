@@ -8,7 +8,9 @@ import type { LLMClient } from "../llm.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
 import {
   resolveAllowedSides,
+  resolveStrategyMode,
   SHORT_REQUIRING_FAMILIES,
+  SINGLE_ASSET_FAMILY,
   STRATEGY_FAMILIES,
   TemplateSelectionValidationError,
   validateTemplateSelection,
@@ -73,6 +75,7 @@ Rules:
 - family ids must come from the catalog and be unique within the shortlist.
 - ranks must be the contiguous set 1..n with no gaps or duplicates.
 - SHORTS GATE: only shortlist a family marked "REQUIRES SHORTS" when the thesis allowed_sides is "long_short". For "long_only" or "long_flat", shortlist long-only families only. (The workflow also enforces this deterministically, so a short family picked under a non-short thesis will be dropped.)
+- NEVER shortlist "single_asset_trend_setup": it is selected automatically for single_asset theses and is dropped from any other shortlist.
 - Map thesis signals to families:
   - objective preserve_capital / income, low max_drawdown -> prefer core_satellite, threshold_rebalanced, periodic_rebalanced, volatility_targeted. When max_drawdown is TIGHT (<= 0.20), rank a drawdown-aware family (volatility_targeted, or threshold_rebalanced for low turnover) FIRST -- plain calendar rebalancing (periodic_rebalanced) does not control drawdown, so it should not be the rank-1 pick for a tight-drawdown mandate.
   - objective balanced_growth -> core_satellite, periodic_rebalanced, synthetic_long.
@@ -94,7 +97,31 @@ export async function selectTemplates(
     objective: input.thesis.objective,
     horizon_days: input.thesis.horizon_days,
     rebalance_frequency: input.thesis.rebalance_frequency,
+    strategy_mode: resolveStrategyMode(input.thesis),
   });
+
+  // single_asset is a fixed one-family shape: skip the LLM entirely and
+  // force the single-asset trend recipe. Nothing else fits the mode, so
+  // there is no selection to reason about.
+  if (resolveStrategyMode(input.thesis) === "single_asset") {
+    const selection: TemplateSelection = {
+      rationale:
+        "single_asset strategy_mode maps to the one-market long/flat trend setup.",
+      selected: [
+        {
+          family: SINGLE_ASSET_FAMILY,
+          rank: 1,
+          rationale: "single_asset mode: one market, long/flat on a trend signal.",
+        },
+      ],
+    };
+    logger.exit(NEXT_STEP, {
+      families: [SINGLE_ASSET_FAMILY],
+      top_family: SINGLE_ASSET_FAMILY,
+      forced_single_asset: true,
+    });
+    return { delta: { template_selection: selection }, next: NEXT_STEP };
+  }
 
   const userMessage = buildUserMessage(input);
 
@@ -114,11 +141,14 @@ export async function selectTemplates(
     try {
       const parsed = parseJson(response.text);
       validateTemplateSelection(parsed);
-      // Deterministic SHORTS gate: regardless of what the LLM shortlisted,
-      // drop short-requiring families unless the thesis explicitly permits
-      // shorts (allowed_sides === "long_short"). This makes the gate a hard
-      // guarantee, not a prompt suggestion.
-      const gated = enforceShortsGate(parsed, resolveAllowedSides(input.thesis));
+      // Deterministic gates: drop the single-asset family (it belongs only
+      // to single_asset mode, handled above) and any short-requiring family
+      // unless the thesis permits shorts. Hard guarantees, not prompt hopes.
+      const modeGated = dropSingleAssetFamily(parsed);
+      const gated = enforceShortsGate(
+        modeGated,
+        resolveAllowedSides(input.thesis),
+      );
       logger.exit(NEXT_STEP, {
         families: gated.selected.map((s) => s.family),
         top_family: gated.selected[0]?.family,
@@ -140,6 +170,31 @@ export async function selectTemplates(
 
   // Unreachable: the loop either returns or throws.
   throw lastError ?? new Error("select_templates failed without an error");
+}
+
+// Drop the single-asset family from a non-single-asset shortlist (it is
+// forced in for single_asset mode and never valid elsewhere), re-ranking
+// the survivors. Falls back to a long-only default if it empties the list.
+function dropSingleAssetFamily(
+  selection: TemplateSelection,
+): TemplateSelection {
+  const kept = selection.selected.filter((s) => s.family !== SINGLE_ASSET_FAMILY);
+  if (kept.length === selection.selected.length) return selection;
+  const survivors =
+    kept.length > 0
+      ? kept
+      : [
+          {
+            family: "synthetic_long_allocation" as const,
+            rank: 1,
+            rationale:
+              "Long-only fallback: the single-asset family is not valid for this mode.",
+          },
+        ];
+  const reranked = [...survivors]
+    .sort((a, b) => a.rank - b.rank)
+    .map((s, index) => ({ ...s, rank: index + 1 }));
+  return { rationale: selection.rationale, selected: reranked };
 }
 
 // Remove short-requiring families when shorts are not permitted, then

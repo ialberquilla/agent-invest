@@ -137,6 +137,18 @@ function runStrategyPipelineToolDefinition() {
               type: "array",
               items: { type: "string" },
             },
+            strategy_mode: {
+              type: "string",
+              enum: [
+                "single_asset",
+                "pair_trade",
+                "hedge_overlay",
+                "basket_allocation",
+                "momentum_rotation",
+                "long_short_portfolio",
+              ],
+            },
+            target_coin_id: { type: "string" },
           },
           additionalProperties: false,
         },

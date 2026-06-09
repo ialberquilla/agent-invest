@@ -11,7 +11,7 @@
 // weight room to cover the non-cash portion, or it is filtered out.
 
 import { applyOverrides } from "./overrides.ts";
-import type { StrategyRunOverrides, Thesis } from "./state.ts";
+import { resolveStrategyMode, type StrategyRunOverrides, type Thesis } from "./state.ts";
 
 export type SuggestedRerun = {
   label: string;
@@ -93,6 +93,23 @@ export function buildSuggestedReruns(thesis: Thesis): SuggestedRerun[] {
         overrides: { rebalance_frequency: target },
       });
     }
+  }
+
+  // Pivot a basket result into a single-market long/flat trend setup. Only
+  // offered when the run isn't already single-asset. The overrides collapse
+  // the book to one position; the feasibility filter below keeps it only
+  // when the resulting thesis is valid.
+  if (resolveStrategyMode(thesis) !== "single_asset") {
+    candidates.push({
+      label: "Try as single-asset setup",
+      rationale:
+        "Backtest the strongest single market as a long/flat trend setup instead of a basket.",
+      overrides: {
+        strategy_mode: "single_asset",
+        asset_count_min: 1,
+        asset_count_max: 1,
+      },
+    });
   }
 
   // Keep only suggestions that remain feasible against this thesis.
