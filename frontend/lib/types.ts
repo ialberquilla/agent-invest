@@ -19,6 +19,21 @@ export type StrategyResult = {
   // Present (and false) for short-bearing books: GMX perp funding/borrow is
   // not modelled by the backtester, so returns are understated.
   costs?: { funding_modeled: boolean };
+  // "Why these assets?": considered vs selected, with reasons for rejection.
+  // Present only when the universe came from a ranked screen.
+  asset_exploration?: AssetExploration;
+};
+
+export type AssetExploration = {
+  considered_count: number;
+  selected_count: number;
+  selected: string[];
+  rejected: Array<{
+    coin_id: string;
+    symbol?: string;
+    market_cap_rank?: number;
+    reason: string;
+  }>;
 };
 
 // One-click follow-up emitted by the backend (buildSuggestedReruns). Each
