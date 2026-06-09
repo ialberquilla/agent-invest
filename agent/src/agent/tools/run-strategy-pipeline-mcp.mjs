@@ -148,7 +148,13 @@ function runStrategyPipelineToolDefinition() {
                 "long_short_portfolio",
               ],
             },
+            allowed_sides: {
+              type: "string",
+              enum: ["long_only", "long_flat", "long_short"],
+            },
             target_coin_id: { type: "string" },
+            long_coin_ids: { type: "array", items: { type: "string" } },
+            short_coin_ids: { type: "array", items: { type: "string" } },
           },
           additionalProperties: false,
         },

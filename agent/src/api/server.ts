@@ -307,6 +307,28 @@ function parseStrategyRunOverrides(
     out.target_coin_id = raw.target_coin_id.trim();
   }
 
+  if (raw.allowed_sides !== undefined) {
+    const allowed = ["long_only", "long_flat", "long_short"];
+    if (!allowed.includes(raw.allowed_sides as string)) {
+      throw httpError(
+        400,
+        `overrides.allowed_sides must be one of ${allowed.join(", ")}`,
+      );
+    }
+    out.allowed_sides = raw.allowed_sides;
+  }
+
+  for (const key of ["long_coin_ids", "short_coin_ids"] as const) {
+    if (raw[key] === undefined) continue;
+    if (
+      !Array.isArray(raw[key]) ||
+      !(raw[key] as unknown[]).every((id) => typeof id === "string")
+    ) {
+      throw httpError(400, `overrides.${key} must be an array of strings`);
+    }
+    out[key] = raw[key];
+  }
+
   return Object.keys(out).length > 0
     ? (out as StrategyRunOverrides)
     : undefined;
