@@ -137,6 +137,30 @@ jobs:
               PORT=8000 \
               NODE_ENV=production
 
+      - name: Route traffic to ready agent revision
+        run: |
+          MODE=$(az containerapp show \
+            --name "${{ env.AGENT_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query properties.configuration.activeRevisionsMode \
+            -o tsv)
+          if [ "$MODE" != "Multiple" ]; then
+            exit 0
+          fi
+          LATEST_READY=$(az containerapp show \
+            --name "${{ env.AGENT_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --query properties.latestReadyRevisionName \
+            -o tsv)
+          if [ -z "$LATEST_READY" ]; then
+            echo "No ready agent revision found" >&2
+            exit 1
+          fi
+          az containerapp ingress traffic set \
+            --name "${{ env.AGENT_APP_NAME }}" \
+            --resource-group "${{ env.RESOURCE_GROUP }}" \
+            --revision-weight "$LATEST_READY=100"
+
       - name: Check if GMX ingestion job exists
         id: check-gmx-ingestion-job
         run: |
