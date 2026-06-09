@@ -313,9 +313,9 @@ jobs:
             ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:latest
             ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
           build-args: |
-            NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID }}
-            NEXT_PUBLIC_PRIVY_APP_ID=${{ vars.NEXT_PUBLIC_PRIVY_APP_ID }}
-            NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE=${{ vars.NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE }}
+            NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ secrets.NEXT_PUBLIC_GA_MEASUREMENT_ID }}
+            NEXT_PUBLIC_PRIVY_APP_ID=${{ secrets.NEXT_PUBLIC_PRIVY_APP_ID }}
+            NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE=${{ secrets.NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -349,10 +349,10 @@ jobs:
             --env-vars \
               AGENT_URL=${{ needs.deploy-agent.outputs.agent_url }} \
               AGENT_API_KEY=secretref:agent-api-key \
-              NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID }} \
-              NEXT_PUBLIC_PRIVY_APP_ID=${{ vars.NEXT_PUBLIC_PRIVY_APP_ID }} \
-              NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE=${{ vars.NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE }} \
-              PRIVY_APP_ID=${{ vars.NEXT_PUBLIC_PRIVY_APP_ID }} \
+              NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ secrets.NEXT_PUBLIC_GA_MEASUREMENT_ID }} \
+              NEXT_PUBLIC_PRIVY_APP_ID=${{ secrets.NEXT_PUBLIC_PRIVY_APP_ID }} \
+              NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE=${{ secrets.NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE }} \
+              PRIVY_APP_ID=${{ secrets.NEXT_PUBLIC_PRIVY_APP_ID }} \
               PRIVY_APP_SECRET=secretref:privy-app-secret \
               NODE_ENV=production
 
@@ -374,9 +374,9 @@ jobs:
             --set-env-vars \
               AGENT_URL=${{ needs.deploy-agent.outputs.agent_url }} \
               AGENT_API_KEY=secretref:agent-api-key \
-              NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID }} \
-              NEXT_PUBLIC_PRIVY_APP_ID=${{ vars.NEXT_PUBLIC_PRIVY_APP_ID }} \
-              NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE=${{ vars.NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE }} \
-              PRIVY_APP_ID=${{ vars.NEXT_PUBLIC_PRIVY_APP_ID }} \
+              NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ secrets.NEXT_PUBLIC_GA_MEASUREMENT_ID }} \
+              NEXT_PUBLIC_PRIVY_APP_ID=${{ secrets.NEXT_PUBLIC_PRIVY_APP_ID }} \
+              NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE=${{ secrets.NEXT_PUBLIC_STRATEGY_VAULT_BYTECODE }} \
+              PRIVY_APP_ID=${{ secrets.NEXT_PUBLIC_PRIVY_APP_ID }} \
               PRIVY_APP_SECRET=secretref:privy-app-secret \
               NODE_ENV=production
