@@ -10,6 +10,8 @@ import {
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { pythonEnv, pythonExecutable } from "../../python-runner.ts";
+
 type ExecFileCallback = (
   error: ExecFileException | null,
   stdout: string,
@@ -331,20 +333,17 @@ async function runScript(
   execFileImpl: ExecFileLike,
 ): Promise<string> {
   return new Promise((resolveOutput, reject) => {
+    const python = pythonExecutable(scriptsDir);
     execFileImpl(
-      "uv",
+      python,
       [
-        "run",
-        "--project",
-        ".",
-        "python",
         "-m",
         `agent_invest_scripts.${moduleName}`,
         ...args,
       ],
       {
         cwd: scriptsDir,
-        env: { ...process.env, PYTHONPATH: scriptsDir },
+        env: pythonEnv(scriptsDir),
         maxBuffer: SCRIPT_STDOUT_BUFFER_BYTES,
       },
       (error, stdoutValue, stderrValue) => {
@@ -376,20 +375,17 @@ export async function runScriptStdin(
   stdin: string,
 ): Promise<string> {
   return new Promise((resolveOutput, reject) => {
+    const python = pythonExecutable(scriptsDir);
     const child = spawn(
-      "uv",
+      python,
       [
-        "run",
-        "--project",
-        ".",
-        "python",
         "-m",
         `agent_invest_scripts.${moduleName}`,
         ...args,
       ],
       {
         cwd: scriptsDir,
-        env: { ...process.env, PYTHONPATH: scriptsDir },
+        env: pythonEnv(scriptsDir),
       },
     );
 

@@ -3,6 +3,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 
+import { pythonEnv, pythonExecutable } from "../python-runner.ts";
+
 const execFileAsync = promisify(execFile);
 
 export type RecommendWindowInput = {
@@ -46,10 +48,6 @@ export async function recommendBacktestWindow(
   }
 
   const args = [
-    "run",
-    "--project",
-    ".",
-    "python",
     "-m",
     "agent_invest_scripts.recommend_backtest_window",
     "--coin-ids",
@@ -62,8 +60,10 @@ export async function recommendBacktestWindow(
     args.push("--require-drawdown-pct", String(input.requireDrawdownPct));
   }
 
-  const { stdout } = await execFileAsync("uv", args, {
-    cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../scripts"),
+  const scriptsDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../scripts");
+  const { stdout } = await execFileAsync(pythonExecutable(scriptsDir), args, {
+    cwd: scriptsDir,
+    env: pythonEnv(scriptsDir),
   });
 
   return parseRecommendWindowOutput(stdout);

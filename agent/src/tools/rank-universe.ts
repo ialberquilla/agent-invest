@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { pythonEnv, pythonExecutable } from "../python-runner.ts";
+
 export type UniverseSelector = {
   id: string;
   params?: Record<string, unknown>;
@@ -107,9 +109,10 @@ function validateInput(input: RankUniverseInput) {
 
 function runScript(args: string[]) {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn("uv", ["run", "--project", ".", "python", ...args], {
-      cwd: scriptsDirectory(),
-      env: { ...process.env, PYTHONPATH: scriptsDirectory() },
+    const scriptsDir = scriptsDirectory();
+    const child = spawn(pythonExecutable(scriptsDir), args, {
+      cwd: scriptsDir,
+      env: pythonEnv(scriptsDir),
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];
