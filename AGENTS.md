@@ -47,8 +47,9 @@ repos. **Default to the smallest thing that works — no speculative abstraction
     subcommand: CLI flags in, JSON to stdout, errors as JSON. Crypto signal/backtest
     logic lives in `agent_invest_scripts/_lib/` (uses the `bt` backtesting library).
 - `contracts/` — `@pond3r-portfolio/contracts`. Foundry/Solidity. `StrategyVault.sol` is a
-  per-user ERC-4626 collateral vault that executes owner-approved GMX v2 perp orders
-  (increase/decrease/cancel). Strategy intelligence stays off-chain; the vault only
+  single-user (single-depositor, no shares/ERC-4626) upgradeable collateral vault that
+  executes owner-approved GMX v2 perp orders (increase/decrease/cancel). The owner is the
+  sole depositor and beneficiary; strategy intelligence stays off-chain and the vault only
   executes. Solc 0.8.26.
 - `frontend/` — Next.js app (chat + beginner wizard, run inspector, eval dev tools).
   Uses Privy for auth and deploys the StrategyVault on-chain via a "deploy" CTA.

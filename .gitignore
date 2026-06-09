@@ -17,3 +17,4 @@ contracts/lcov.info
 contracts/report/
 contracts/plan_optimize.md
 .opencode/plugins/emdash-notifications.js
+contracts/commands.md

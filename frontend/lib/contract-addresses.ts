@@ -3,9 +3,11 @@ import { arbitrum } from "viem/chains";
 export const STRATEGY_VAULT_CHAIN_ID = arbitrum.id;
 
 export const STRATEGY_VAULT_ADDRESSES = {
-  implementation: "0xF262e703644151cD30cc2cDaAA9e3cc12449619b",
-  factory: "0xA0884B15535A747739B7C4CD68808215053B0828",
-  initialVault: "0x54e96718166Ec862Bb62Bc8A0d49F8B890f8CA00",
+  // Model B (gas-tank) deployment — Arbitrum One.
+  implementation: "0x5379ED99B967B1371FB01533E6d64c1AaD0425F3",
+  factory: "0xd335d60DF2B199Cc3E7438A79a2725F64bD29F3b",
+  beacon: "0x637C3338D7FdE7092Aba28a6F98dc598D143CD78",
+  initialVault: "0x42E69E9b8e196c182c01C17219004CF7B10F2954",
   asset: "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
 } as const;
 

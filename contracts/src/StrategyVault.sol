@@ -68,6 +68,10 @@ contract StrategyVault is
         return _strategyVaultStorage().asset.balanceOf(address(this));
     }
 
+    function nativeBalance() public view returns (uint256) {
+        return address(this).balance;
+    }
+
     function gmxRouting() external view returns (address exchangeRouter, address router, address orderVault) {
         StrategyVaultStorage storage $ = _strategyVaultStorage();
         return ($.gmxExchangeRouter, $.gmxRouter, $.gmxOrderVault);
@@ -111,6 +115,28 @@ contract StrategyVault is
         emit Withdrawn(to, amount);
     }
 
+    /// @notice Fund the vault's native ETH "gas tank" used to pay GMX execution fees.
+    /// @dev Permissionless: anyone may top up the tank (it only adds ETH, which only the owner can withdraw).
+    ///      Plain transfers to `receive()` also work; this exists for an explicit entrypoint + event.
+    function depositNative() external payable {
+        if (msg.value == 0) revert StrategyVault__ZeroAmount();
+        emit NativeDeposited(msg.sender, msg.value);
+    }
+
+    /// @notice Sweep native ETH out of the vault (e.g. GMX execution-fee refunds accrued via `receive()`).
+    /// @dev GMX returns unspent execution fees and cancellation refunds as native ETH to this vault, which
+    ///      would otherwise be stranded since `withdraw` only moves the ERC20 asset.
+    function withdrawNative(uint256 amount, address to) external onlyOwner nonReentrant {
+        if (amount == 0) revert StrategyVault__ZeroAmount();
+        if (to == address(0)) revert StrategyVault__ZeroAddress();
+        if (amount > address(this).balance) revert StrategyVault__InsufficientNativeBalance();
+
+        (bool ok,) = to.call{value: amount}("");
+        if (!ok) revert StrategyVault__NativeTransferFailed();
+
+        emit NativeWithdrawn(to, amount);
+    }
+
     function pause() external onlyOwner {
         _pause();
     }
@@ -128,7 +154,7 @@ contract StrategyVault is
         returns (bytes32 orderKey)
     {
         _requireValidIncreaseOrderShape(order);
-        _requireExactExecutionFee(order.executionFee);
+        _requireSufficientExecutionGas(order.executionFee);
         _requireTrustedIncreaseOrder(order);
 
         orderKey = _createGmxMarketIncreaseOrder(order, order.executionFee);
@@ -148,7 +174,7 @@ contract StrategyVault is
         for (uint256 i; i < orders.length; ++i) {
             totalExecutionFee += orders[i].executionFee;
         }
-        _requireExactExecutionFee(totalExecutionFee);
+        _requireSufficientExecutionGas(totalExecutionFee);
 
         orderKeys = new bytes32[](orders.length);
         for (uint256 i; i < orders.length; ++i) {
@@ -168,7 +194,7 @@ contract StrategyVault is
         returns (bytes32 orderKey)
     {
         _requireValidDecreaseOrderShape(order);
-        _requireExactExecutionFee(order.executionFee);
+        _requireSufficientExecutionGas(order.executionFee);
         _requireTrustedDecreaseOrder(order);
 
         orderKey = _createGmxMarketDecreaseOrder(order, order.executionFee);
@@ -188,7 +214,7 @@ contract StrategyVault is
         for (uint256 i; i < orders.length; ++i) {
             totalExecutionFee += orders[i].executionFee;
         }
-        _requireExactExecutionFee(totalExecutionFee);
+        _requireSufficientExecutionGas(totalExecutionFee);
 
         orderKeys = new bytes32[](orders.length);
         for (uint256 i; i < orders.length; ++i) {
@@ -199,20 +225,16 @@ contract StrategyVault is
         }
     }
 
-    function cancelGmxOrder(address exchangeRouter, bytes32 orderKey, uint256 executionFee)
-        external
-        payable
-        onlyOwner
-        nonReentrant
-        whenNotPaused
-    {
+    /// @dev Not `whenNotPaused`: cancelling a pending order is a de-risking action the owner must be able to
+    ///      perform during an emergency pause. GMX `cancelOrder` charges no execution fee (it refunds the
+    ///      original), so no exact-fee check is imposed; any forwarded `msg.value` is normally zero.
+    function cancelGmxOrder(address exchangeRouter, bytes32 orderKey) external payable onlyOwner nonReentrant {
         if (exchangeRouter == address(0)) revert StrategyVault__ZeroAddress();
         if (exchangeRouter != _strategyVaultStorage().gmxExchangeRouter) revert StrategyVault__UntrustedRouting();
-        _requireExactExecutionFee(executionFee);
 
         IGmxV2ExchangeRouter(exchangeRouter).cancelOrder{value: msg.value}(orderKey);
 
-        emit GmxOrderCancelled(orderKey, exchangeRouter, executionFee);
+        emit GmxOrderCancelled(orderKey, exchangeRouter, msg.value);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -288,8 +310,11 @@ contract StrategyVault is
         ) revert StrategyVault__UntrustedRouting();
     }
 
-    function _requireExactExecutionFee(uint256 executionFee) internal view {
-        if (msg.value != executionFee) revert StrategyVault__InvalidExecutionFee();
+    /// @dev The execution fee is paid out of the vault's native balance (the "gas tank"). Any `msg.value`
+    ///      attached to this call is already part of `address(this).balance`, so a caller can either pre-fund
+    ///      the tank (keeper flow) or attach the fee inline (owner flow) — both satisfy this check.
+    function _requireSufficientExecutionGas(uint256 executionFee) internal view {
+        if (address(this).balance < executionFee) revert StrategyVault__InsufficientExecutionGas();
     }
 
     function _requireValidIncreaseOrderShape(GmxMarketIncreaseOrder calldata order) internal pure {

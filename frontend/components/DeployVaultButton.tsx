@@ -9,9 +9,11 @@ import {
   closeVaultPositionsAndWithdrawIdleOnChain,
   deployVaultOnChain,
   executeVaultAllocationOnChain,
+  fundVaultGasOnChain,
   fundVaultOnChain,
   readAllocationReadiness,
   saveVaultBinding,
+  withdrawVaultNativeOnChain,
   type VaultAllocationReadiness,
   type VaultBindingResponse,
 } from "@/lib/deploy-vault";
@@ -25,6 +27,8 @@ type DeployState =
       binding: VaultBindingResponse;
       idleBalance?: string;
       fundError?: string;
+      gasBalance?: string;
+      gasError?: string;
       allocation?: VaultAllocationReadiness;
       allocationError?: string;
     }
@@ -103,6 +107,48 @@ export function DeployVaultButton({ runId }: { runId: string }) {
     }
   }
 
+  async function handleFundGas(binding: VaultBindingResponse, ethAmount: string) {
+    const wallet = wallets[0];
+    if (!wallet) {
+      setState({ status: "error", message: "Connect a wallet to fund gas" });
+      return;
+    }
+    try {
+      const provider = await wallet.getEthereumProvider();
+      const gasBalance = await fundVaultGasOnChain(provider, binding.vault_address, ethAmount);
+      setState((current) =>
+        current.status === "deployed" ? { ...current, gasBalance, gasError: undefined } : current,
+      );
+    } catch (error) {
+      setState((current) =>
+        current.status === "deployed"
+          ? { ...current, gasError: error instanceof Error ? error.message : "Gas funding failed" }
+          : current,
+      );
+    }
+  }
+
+  async function handleSweepGas(binding: VaultBindingResponse) {
+    const wallet = wallets[0];
+    if (!wallet) {
+      setState({ status: "error", message: "Connect a wallet to sweep gas" });
+      return;
+    }
+    try {
+      const provider = await wallet.getEthereumProvider();
+      const gasBalance = await withdrawVaultNativeOnChain(provider, binding.vault_address);
+      setState((current) =>
+        current.status === "deployed" ? { ...current, gasBalance, gasError: undefined } : current,
+      );
+    } catch (error) {
+      setState((current) =>
+        current.status === "deployed"
+          ? { ...current, gasError: error instanceof Error ? error.message : "Gas sweep failed" }
+          : current,
+      );
+    }
+  }
+
   async function handleAllocate(binding: VaultBindingResponse, idleBalance?: string) {
     try {
       const allocation = await readAllocationReadiness(runId);
@@ -118,7 +164,11 @@ export function DeployVaultButton({ runId }: { runId: string }) {
     }
   }
 
-  async function handleExecute(allocation: VaultAllocationReadiness, idleBalance: string) {
+  async function handleExecute(
+    allocation: VaultAllocationReadiness,
+    idleBalance: string,
+    maxLegs?: number,
+  ) {
     const wallet = wallets[0];
     if (!wallet) {
       setState({ status: "error", message: "Connect a wallet to execute" });
@@ -126,7 +176,10 @@ export function DeployVaultButton({ runId }: { runId: string }) {
     }
     try {
       const provider = await wallet.getEthereumProvider();
-      await executeVaultAllocationOnChain(provider, allocation, idleBalance);
+      await executeVaultAllocationOnChain(provider, allocation, idleBalance, {
+        payFromTank: true,
+        maxLegs,
+      });
       setState((current) =>
         current.status === "deployed"
           ? { ...current, allocation: { ...allocation, reason: "GMX increase orders submitted." } }
@@ -141,7 +194,11 @@ export function DeployVaultButton({ runId }: { runId: string }) {
     }
   }
 
-  async function handleClose(allocation: VaultAllocationReadiness, notionalUsd: string) {
+  async function handleClose(
+    allocation: VaultAllocationReadiness,
+    notionalUsd: string,
+    maxLegs?: number,
+  ) {
     const wallet = wallets[0];
     if (!wallet) {
       setState({ status: "error", message: "Connect a wallet to close" });
@@ -149,7 +206,10 @@ export function DeployVaultButton({ runId }: { runId: string }) {
     }
     try {
       const provider = await wallet.getEthereumProvider();
-      await closeVaultPositionsAndWithdrawIdleOnChain(provider, allocation, notionalUsd);
+      await closeVaultPositionsAndWithdrawIdleOnChain(provider, allocation, notionalUsd, {
+        payFromTank: true,
+        maxLegs,
+      });
       setState((current) =>
         current.status === "deployed"
           ? { ...current, allocation: { ...allocation, reason: "Close orders submitted and idle collateral withdrawn." } }
@@ -172,12 +232,16 @@ export function DeployVaultButton({ runId }: { runId: string }) {
         binding={binding}
         idleBalance={state.status === "deployed" ? state.idleBalance : undefined}
         fundError={state.status === "deployed" ? state.fundError : undefined}
+        gasBalance={state.status === "deployed" ? state.gasBalance : undefined}
+        gasError={state.status === "deployed" ? state.gasError : undefined}
         allocation={state.status === "deployed" ? state.allocation : undefined}
         allocationError={
           state.status === "deployed" ? state.allocationError : undefined
         }
         funding={isFunding}
         onFund={handleFund}
+        onFundGas={handleFundGas}
+        onSweepGas={handleSweepGas}
         onAllocate={handleAllocate}
         onExecute={handleExecute}
         onClose={handleClose}
@@ -205,10 +269,14 @@ function FundVaultPanel({
   binding,
   idleBalance,
   fundError,
+  gasBalance,
+  gasError,
   allocation,
   allocationError,
   funding,
   onFund,
+  onFundGas,
+  onSweepGas,
   onAllocate,
   onExecute,
   onClose,
@@ -216,16 +284,23 @@ function FundVaultPanel({
   binding: VaultBindingResponse;
   idleBalance?: string;
   fundError?: string;
+  gasBalance?: string;
+  gasError?: string;
   allocation?: VaultAllocationReadiness;
   allocationError?: string;
   funding: boolean;
   onFund: (binding: VaultBindingResponse, amount: string) => void;
+  onFundGas: (binding: VaultBindingResponse, ethAmount: string) => void;
+  onSweepGas: (binding: VaultBindingResponse) => void;
   onAllocate: (binding: VaultBindingResponse, idleBalance?: string) => void;
-  onExecute: (allocation: VaultAllocationReadiness, idleBalance: string) => void;
-  onClose: (allocation: VaultAllocationReadiness, notionalUsd: string) => void;
+  onExecute: (allocation: VaultAllocationReadiness, idleBalance: string, maxLegs?: number) => void;
+  onClose: (allocation: VaultAllocationReadiness, notionalUsd: string, maxLegs?: number) => void;
 }) {
   const [amount, setAmount] = useState("");
+  const [gasAmount, setGasAmount] = useState("");
   const [closeNotional, setCloseNotional] = useState("");
+  const [maxLegsInput, setMaxLegsInput] = useState("");
+  const maxLegs = maxLegsInput.trim().length > 0 ? Number(maxLegsInput) : undefined;
 
   return (
     <div className="min-w-72 space-y-2 rounded-lg border bg-background p-3 text-sm">
@@ -254,6 +329,31 @@ function FundVaultPanel({
           : "Approve USDC, then deposit collateral into the vault."}
       </p>
       {fundError ? <p className="text-xs text-destructive">{fundError}</p> : null}
+      <div className="flex gap-2 border-t pt-2">
+        <input
+          className="min-w-0 flex-1 rounded-md border bg-background px-3 py-2"
+          inputMode="decimal"
+          placeholder="ETH gas amount"
+          value={gasAmount}
+          onChange={(event) => setGasAmount(event.target.value)}
+        />
+        <Button
+          variant="secondary"
+          onClick={() => onFundGas(binding, gasAmount)}
+          disabled={gasAmount.trim().length === 0}
+        >
+          Fund gas
+        </Button>
+      </div>
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <span>
+          {gasBalance ? `Gas tank: ${gasBalance} ETH` : "Pre-fund ETH to pay GMX execution fees."}
+        </span>
+        <Button size="sm" variant="ghost" onClick={() => onSweepGas(binding)}>
+          Sweep gas
+        </Button>
+      </div>
+      {gasError ? <p className="text-xs text-destructive">{gasError}</p> : null}
       <Button
         variant="secondary"
         onClick={() => onAllocate(binding, idleBalance)}
@@ -271,10 +371,22 @@ function FundVaultPanel({
                 .join(", ")}
             </p>
           ) : null}
-          <div className="flex flex-wrap gap-2 pt-2">
+          <div className="flex items-center gap-2 pt-2">
+            <input
+              className="w-28 rounded-md border bg-background px-2 py-1"
+              inputMode="numeric"
+              placeholder="Max legs (test)"
+              value={maxLegsInput}
+              onChange={(event) => setMaxLegsInput(event.target.value)}
+            />
+            <span className="text-[11px] text-muted-foreground">
+              Caps + renormalizes legs so each clears GMX&apos;s $1 min. Blank = full allocation.
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2 pt-1">
             <Button
               size="sm"
-              onClick={() => idleBalance ? onExecute(allocation, idleBalance) : undefined}
+              onClick={() => (idleBalance ? onExecute(allocation, idleBalance, maxLegs) : undefined)}
               disabled={!idleBalance}
             >
               Execute strategy
@@ -289,7 +401,7 @@ function FundVaultPanel({
             <Button
               size="sm"
               variant="destructive"
-              onClick={() => onClose(allocation, closeNotional)}
+              onClick={() => onClose(allocation, closeNotional, maxLegs)}
               disabled={closeNotional.trim().length === 0}
             >
               Close + withdraw
