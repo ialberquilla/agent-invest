@@ -10,9 +10,15 @@ retry_delay="${MIGRATION_RETRY_DELAY_SECONDS:-2}"
 attempt=1
 
 while true; do
-  if pnpm --filter @pond3r-portfolio/agent db:migrate; then
+  migration_log="$(mktemp)"
+  if pnpm --filter @pond3r-portfolio/agent db:migrate >"${migration_log}" 2>&1; then
+    cat "${migration_log}"
+    rm -f "${migration_log}"
     break
   fi
+
+  cat "${migration_log}" >&2
+  rm -f "${migration_log}"
 
   if [ "${attempt}" -ge "${max_attempts}" ]; then
     echo "Migrations failed after ${attempt} attempt(s)." >&2
