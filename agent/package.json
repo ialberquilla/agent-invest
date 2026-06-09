@@ -19,6 +19,7 @@
     "eval:decide": "tsx src/agent/workflow/steps/decide.eval.ts",
     "eval:finalize": "tsx src/agent/workflow/steps/finalize.eval.ts",
     "eval:workflow": "tsx src/agent/workflow/controller.eval.ts",
+    "eval:all": "pnpm eval:interpret-brief && pnpm eval:select-templates && pnpm eval:select-universe && pnpm eval:select-window && pnpm eval:propose-candidates && pnpm eval:run-and-validate && pnpm eval:decide && pnpm eval:finalize && pnpm eval:workflow",
     "ingest:gmx": "pnpm ingest:gmx:markets && pnpm ingest:gmx:history",
     "ingest:gmx:history": "tsx src/ingestion/gmx-history.ts",
     "ingest:gmx:markets": "tsx src/ingestion/gmx-markets.ts",
