@@ -16,6 +16,7 @@ export type VaultBinding = {
   mandateId: string;
   // ERC-4626 underlying (USDC).
   assetAddress: string;
+  displayName: string;
 };
 
 // Persist a deployed vault row. Idempotent on (chainId, vaultAddress) so a
@@ -29,6 +30,7 @@ export async function insertVault(
     vaultAddress: binding.vaultAddress,
     mandateId: binding.mandateId,
     assetAddress: binding.assetAddress,
+    displayName: binding.displayName,
     status: "active",
   };
 

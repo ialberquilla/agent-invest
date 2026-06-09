@@ -14,13 +14,21 @@ import {
 } from "lucide-react";
 
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { DeployedStrategy, KnownStrategy, PinnedScreener } from "@/lib/local-store";
+import type {
+  DeployedStrategy,
+  KnownStrategy,
+  PinnedScreener,
+} from "@/lib/local-store";
 import { cn } from "@/lib/utils";
 
 type StrategySidebarProps = {
   strategies: KnownStrategy[];
   screeners: PinnedScreener[];
   deployedStrategies: DeployedStrategy[];
+  deployedStrategyStatuses?: Record<
+    string,
+    { label: string; tone: "idle" | "pending" | "live" | "error" }
+  >;
   activeStrategyId: string;
   activeScreenerId?: string | null;
   isWalletPositionsActive?: boolean;
@@ -40,6 +48,7 @@ export function StrategySidebar({
   strategies = [],
   screeners = [],
   deployedStrategies = [],
+  deployedStrategyStatuses = {},
   activeStrategyId,
   activeScreenerId = null,
   isWalletPositionsActive = false,
@@ -54,9 +63,9 @@ export function StrategySidebar({
   onSelectDeployedStrategy,
   onNewStrategy,
 }: StrategySidebarProps) {
-  const [openSection, setOpenSection] = useState<"screeners" | "deployed" | null>(
-    null,
-  );
+  const [openSection, setOpenSection] = useState<
+    "screeners" | "deployed" | null
+  >(null);
   const [isCollapsed, setIsCollapsed] = useState(false);
 
   function toggleSection(section: "screeners" | "deployed") {
@@ -244,7 +253,9 @@ export function StrategySidebar({
           <Wallet className="size-4 shrink-0" />
           {isCollapsed ? null : (
             <>
-              <span className="min-w-0 flex-1 truncate">Deployed strategies</span>
+              <span className="min-w-0 flex-1 truncate">
+                Deployed strategies
+              </span>
               <ChevronDown
                 className={cn(
                   "size-3.5 shrink-0 text-sidebar-foreground/70 transition-transform",
@@ -265,6 +276,7 @@ export function StrategySidebar({
 
             {deployedStrategies.map((strategy) => {
               const isActive = strategy.mandate_id === activeVaultMandateId;
+              const liveStatus = deployedStrategyStatuses[strategy.mandate_id];
               return (
                 <button
                   key={strategy.mandate_id}
@@ -280,9 +292,22 @@ export function StrategySidebar({
                   )}
                 >
                   <Wallet className="size-4 shrink-0 text-sidebar-foreground/75" />
-                  <span className="min-w-0 flex-1 truncate">{strategy.label}</span>
-                  <span className="rounded-full bg-sidebar-accent px-1.5 py-0.5 text-[10px] uppercase text-sidebar-foreground/75">
-                    {strategy.status}
+                  <span className="min-w-0 flex-1 truncate">
+                    {strategy.label}
+                  </span>
+                  <span
+                    className={cn(
+                      "rounded-full px-1.5 py-0.5 text-[10px] uppercase",
+                      liveStatus?.tone === "live"
+                        ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300"
+                        : liveStatus?.tone === "pending"
+                          ? "bg-amber-500/15 text-amber-600 dark:text-amber-300"
+                          : liveStatus?.tone === "error"
+                            ? "bg-destructive/15 text-destructive"
+                            : "bg-sidebar-accent text-sidebar-foreground/75",
+                    )}
+                  >
+                    {liveStatus?.label ?? strategy.status}
                   </span>
                 </button>
               );

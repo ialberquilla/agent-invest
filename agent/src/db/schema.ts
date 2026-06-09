@@ -204,6 +204,7 @@ export const vaults = pgTable(
       .references(() => strategyMandates.mandateId, { onDelete: "restrict" }),
     // ERC-4626 underlying (USDC). Stored so the engine never has to re-read it.
     assetAddress: text("asset_address").notNull(),
+    displayName: text("display_name").notNull().default("Unnamed strategy"),
     status: text("status").notNull().default("active"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

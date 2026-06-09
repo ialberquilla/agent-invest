@@ -439,6 +439,7 @@ test("insertVault writes a deployed vault row with conflict ignored", async () =
       vaultAddress: "0xVault",
       mandateId: "mandate-1",
       assetAddress: "0xUSDC",
+      displayName: "Momentum vault",
     },
     db,
   );
@@ -450,6 +451,7 @@ test("insertVault writes a deployed vault row with conflict ignored", async () =
     vaultAddress: "0xVault",
     mandateId: "mandate-1",
     assetAddress: "0xUSDC",
+    displayName: "Momentum vault",
     status: "active",
   });
 });
@@ -463,6 +465,7 @@ test("bindVaultToMandate inserts the vault and promotes the mandate to active", 
       vaultAddress: "0xVault",
       mandateId: "mandate-1",
       assetAddress: "0xUSDC",
+      displayName: "Momentum vault",
     },
     db,
   );

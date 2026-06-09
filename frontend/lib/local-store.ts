@@ -362,11 +362,14 @@ export function upsertDeployedStrategy(strategy: {
   if (!canUseLocalStorage()) return;
   const current = getDeployedStrategies();
   const existing = current.find((entry) => entry.mandate_id === strategy.mandate_id);
+  const fallbackLabel = `Vault ${strategy.vault_address.slice(0, 6)}...${strategy.vault_address.slice(-4)}`;
+  const label =
+    strategy.label !== undefined
+      ? normalizeText(strategy.label) || existing?.label || fallbackLabel
+      : existing?.label || fallbackLabel;
   const next: DeployedStrategy = {
     ...strategy,
-    label:
-      normalizeKnownStrategyLabel(strategy.label) ||
-      `Vault ${strategy.vault_address.slice(0, 6)}...${strategy.vault_address.slice(-4)}`,
+    label,
     // Preserve a previously-stored run_id if this update doesn't carry one.
     run_id: strategy.run_id ?? existing?.run_id,
     updated_at: new Date().toISOString(),
