@@ -50,7 +50,15 @@ SINGLE_ASSET_FAMILIES = [
     "single_asset_trend_setup",
 ]
 
-ALL_FAMILIES = LONG_ONLY_FAMILIES + SHORT_FAMILIES + SINGLE_ASSET_FAMILIES
+# Explicit pair trade (pair_trade strategy_mode): named long/short legs, no
+# select_top / weighting slots.
+PAIR_FAMILIES = [
+    "explicit_pair_trade",
+]
+
+ALL_FAMILIES = (
+    LONG_ONLY_FAMILIES + SHORT_FAMILIES + SINGLE_ASSET_FAMILIES + PAIR_FAMILIES
+)
 
 _CONTRACT_KEYS = {
     "candidate_id",
@@ -97,6 +105,9 @@ def _config(template_id: str, *, weighting: str = "equal") -> dict:
     # tests can call _config uniformly.
     if template_id == "single_asset_trend_setup":
         return {"sma_lookback": 50}
+    if template_id == "explicit_pair_trade":
+        # ethereum/bitcoin are both in the synthetic + live universes.
+        return {"long_coin_id": "ethereum", "short_coin_id": "bitcoin"}
     config: dict = {"select_top": 6, "weighting": weighting}
     if template_id in ("core_satellite_allocation", "barbell_allocation"):
         config["core_weight"] = 0.7
@@ -262,6 +273,54 @@ def test_single_asset_long_flat_sits_out_a_downtrend() -> None:
     trend = _run("single_asset_trend_setup", prices)
     hold = _run("synthetic_long_allocation", prices, weighting="equal")
     assert trend["metrics"]["max_drawdown"] >= hold["metrics"]["max_drawdown"]
+
+
+def test_explicit_pair_trade_longs_and_shorts_named_legs() -> None:
+    prices = _wide_prices()
+    coins = ["bitcoin", "ethereum", "solana", "avalanche-2", "chainlink", "uniswap"]
+    window = (prices.index[0].date(), prices.index[-1].date())
+    candidate = {
+        "candidate_id": "c1",
+        "thesis": {"objective": "balanced", "primary_factors": []},
+    }
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        payload = to_dict(
+            run_recipe(
+                TEMPLATES["explicit_pair_trade"],
+                _universe(coins),
+                prices,
+                {"long_coin_id": "solana", "short_coin_id": "bitcoin", "hedge_ratio": 0.8},
+                window,
+                candidate=candidate,
+            )
+        )
+    weights = payload["allocation_metrics"]["rebalances"][0]["weights"]
+    assert weights.get("solana", 0.0) > 0.0
+    assert weights.get("bitcoin", 0.0) < 0.0
+    # No third leg.
+    held = {coin for coin, w in weights.items() if abs(w) > 1e-9}
+    assert held == {"solana", "bitcoin"}
+
+
+def test_explicit_pair_trade_rejects_bad_legs() -> None:
+    recipe = TEMPLATES["explicit_pair_trade"]
+    with pytest.raises(ValueError, match="Missing required config key"):
+        recipe.validate_config({"long_coin_id": "ethereum"})
+    with pytest.raises(ValueError, match="must differ"):
+        recipe.build(
+            _universe(["bitcoin", "ethereum"]),
+            _wide_prices(),
+            {"long_coin_id": "bitcoin", "short_coin_id": "bitcoin"},
+            (date(2022, 1, 1), date(2023, 1, 1)),
+        )
+    with pytest.raises(ValueError, match="not in the resolved universe"):
+        recipe.build(
+            _universe(["bitcoin", "ethereum"]),
+            _wide_prices(),
+            {"long_coin_id": "dogecoin", "short_coin_id": "bitcoin"},
+            (date(2022, 1, 1), date(2023, 1, 1)),
+        )
 
 
 @pytest.mark.skipif(

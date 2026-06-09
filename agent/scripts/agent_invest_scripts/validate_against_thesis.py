@@ -133,6 +133,29 @@ def _validate_result(
             allocation.get("max_single_weight"),
             constraints["max_weight_per_asset"],
         )
+    # Exposure constraints for short-bearing books (pair/hedge/long-short).
+    # max_weight_per_asset is a long-book concept; these measure the gross and
+    # net leverage and the per-leg cap from the actual signed target weights.
+    if any(
+        key in constraints
+        for key in ("max_gross_exposure", "max_net_exposure", "max_leg_weight")
+    ):
+        max_gross, max_net = _exposure_from_allocation(allocation)
+        if "max_gross_exposure" in constraints:
+            _check_maximum_ceiling(
+                violations, "max_gross_exposure", max_gross, constraints["max_gross_exposure"]
+            )
+        if "max_net_exposure" in constraints:
+            _check_maximum_ceiling(
+                violations, "max_net_exposure", max_net, constraints["max_net_exposure"]
+            )
+        if "max_leg_weight" in constraints:
+            _check_maximum_ceiling(
+                violations,
+                "max_leg_weight",
+                allocation.get("max_single_weight"),
+                constraints["max_leg_weight"],
+            )
     # horizon_days is the forward-looking holding period, NOT a backtest
     # length floor. The window recommender already targets enough history
     # automatically (max(2 * horizon_days, 1460) days), and select_window
@@ -147,6 +170,34 @@ def _validate_result(
         "passed": len(violations) == 0,
         "violations": violations,
     }
+
+
+def _exposure_from_allocation(
+    allocation: Mapping[str, Any],
+) -> tuple[float, float]:
+    """Peak gross and peak |net| exposure across the rebalance target weights.
+
+    gross = sum(|w|) (1.0 for a fully-invested long book; ~2.0 for a balanced
+    long/short). net = sum(signed w) (1.0 long-only; ~0.0 market-neutral). We
+    take the worst (max) over all rebalance dates so a constraint is a true
+    ceiling, never an average that hides a spike."""
+    rebalances = allocation.get("rebalances")
+    if not isinstance(rebalances, list):
+        return 0.0, 0.0
+    max_gross = 0.0
+    max_net = 0.0
+    for rebalance in rebalances:
+        if not isinstance(rebalance, dict):
+            continue
+        weights = rebalance.get("weights")
+        if not isinstance(weights, dict):
+            continue
+        values = [float(w) for w in weights.values() if isinstance(w, int | float)]
+        if not values:
+            continue
+        max_gross = max(max_gross, sum(abs(w) for w in values))
+        max_net = max(max_net, abs(sum(values)))
+    return max_gross, max_net
 
 
 def _check_minimum_floor(

@@ -37,6 +37,9 @@ _HEDGE_WEIGHT = {"type": "float", "min": 0.0, "max": 2.0}
 _DRAWDOWN_THRESHOLD = {"type": "float", "min": 0.0, "max": 1.0}
 _SMA_LOOKBACK = {"type": "int", "min": 2, "max": 400}
 _TARGET_COIN_ID = {"type": "string"}
+_LONG_COIN_ID = {"type": "string", "required": True}
+_SHORT_COIN_ID = {"type": "string", "required": True}
+_HEDGE_RATIO = {"type": "float", "min": 0.0, "max": 2.0}
 
 
 # --- shared algo helpers -----------------------------------------------------
@@ -390,6 +393,37 @@ def _beta_hedged_alt_exposure(universe, prices, config, window) -> bt.Strategy:
     )
 
 
+def _explicit_pair_trade(universe, prices, config, window) -> bt.Strategy:
+    """Long an explicit coin, short another, with an optional hedge ratio sizing
+    the short leg. Unlike relative_value_pair_trade (which longs the top-ranked
+    name and shorts the runner-up), the two legs are named by the thesis."""
+    long_coin = config.get("long_coin_id")
+    short_coin = config.get("short_coin_id")
+    if not long_coin or not short_coin:
+        raise ValueError(
+            "explicit_pair_trade requires long_coin_id and short_coin_id"
+        )
+    if str(long_coin) == str(short_coin):
+        raise ValueError("long_coin_id and short_coin_id must differ")
+    if "coin_id" not in universe.columns:
+        raise ValueError("universe frame must include a coin_id column")
+    available = {str(c) for c in universe["coin_id"].tolist()}
+    for coin in (long_coin, short_coin):
+        if str(coin) not in available:
+            raise ValueError(f"{coin!r} is not in the resolved universe")
+    hedge_ratio = float(config.get("hedge_ratio", 1.0))
+    weights = {str(long_coin): 1.0, str(short_coin): -hedge_ratio}
+    return bt.Strategy(
+        "explicit_pair_trade",
+        [
+            bt.algos.RunMonthly(),
+            bt.algos.SelectThese(list(weights)),
+            bt.algos.WeighSpecified(**weights),
+            bt.algos.Rebalance(),
+        ],
+    )
+
+
 def _relative_value_pair_trade(universe, prices, config, window) -> bt.Strategy:
     coins = _coins(universe, config)
     if len(coins) < 2:
@@ -650,6 +684,19 @@ RECIPES: dict[str, Recipe] = {
             "drawdown_threshold": _DRAWDOWN_THRESHOLD,
         },
         preferred_factors=["recovery_rate", "max_drawdown_365d"],
+    ),
+    # --- explicit pair trade (pair_trade strategy_mode, REQUIRES SHORTS) -----
+    "explicit_pair_trade": _recipe(
+        "explicit_pair_trade",
+        _explicit_pair_trade,
+        composite_formula="trade_count_aware_sharpe",
+        min_history_days=0,
+        slot_schema={
+            "long_coin_id": _LONG_COIN_ID,
+            "short_coin_id": _SHORT_COIN_ID,
+            "hedge_ratio": _HEDGE_RATIO,
+        },
+        preferred_factors=["rs_vs_btc"],
     ),
     # --- single-asset family (single_asset strategy_mode) --------------------
     # One market, long/flat on an SMA trend signal. No select_top/weighting
