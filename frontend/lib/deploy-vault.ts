@@ -106,7 +106,7 @@ const STRATEGY_VAULT_USER_ABI = [
     name: "deposit",
     inputs: [{ name: "amount", type: "uint256" }],
     outputs: [],
-    stateMutability: "nonpayable",
+    stateMutability: "payable",
   },
   {
     type: "function",
@@ -302,6 +302,26 @@ export async function assertVaultDeployable(
   return payload;
 }
 
+// Non-throwing read of an already-deployed vault for this run, so the UI can resume the manage
+// flow on reload instead of offering a duplicate deploy. Returns null if nothing is bound yet.
+export async function getExistingVaultBinding(
+  runId: string,
+): Promise<VaultBindingResponse | null> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/vault`);
+  const payload = (await response.json().catch(() => null)) as
+    | (VaultDeployabilityResponse & Partial<VaultBindingResponse>)
+    | null;
+  if (!response.ok || !payload || payload.deployable !== false) return null;
+  if (!payload.vault_address || !payload.mandate_id) return null;
+  return {
+    mandate_id: payload.mandate_id,
+    chain_id: payload.chain_id ?? STRATEGY_VAULT_CHAIN_ID,
+    vault_address: payload.vault_address,
+    asset_address: payload.asset_address ?? STRATEGY_VAULT_ASSET,
+    status: payload.status ?? "active",
+  };
+}
+
 export async function saveVaultBinding(
   runId: string,
   deployment: VaultDeployment,
@@ -334,10 +354,13 @@ export async function saveVaultBinding(
   return payload as VaultBindingResponse;
 }
 
+// Deposit USDC collateral and, optionally, top up the native gas tank in the SAME deposit tx
+// (`deposit` is payable). Still needs a separate ERC20 approve tx first.
 export async function fundVaultOnChain(
   provider: EthereumProvider,
   vaultAddress: string,
   amount: string,
+  ethGas?: string,
 ) {
   const chain = strategyVaultChain();
   const walletClient = createWalletClient({
@@ -357,6 +380,7 @@ export async function fundVaultOnChain(
   if (amountUnits <= BigInt(0)) {
     throw new Error("Enter an amount greater than zero");
   }
+  const gasValue = ethGas && ethGas.trim().length > 0 ? parseEther(ethGas) : BigInt(0);
 
   const approveHash = await walletClient.writeContract({
     address: STRATEGY_VAULT_ASSET as `0x${string}`,
@@ -373,6 +397,7 @@ export async function fundVaultOnChain(
     abi: STRATEGY_VAULT_USER_ABI,
     functionName: "deposit",
     args: [amountUnits],
+    value: gasValue,
     account,
     chain,
   });
@@ -515,6 +540,26 @@ export async function fundVaultGasOnChain(
   return readVaultNativeBalance(provider, vaultAddress);
 }
 
+// Read idle USDC + native gas balances over a public RPC (no wallet needed) — used to hydrate the
+// manage panel when resuming an already-deployed vault.
+export async function readVaultBalances(vaultAddress: string) {
+  const chain = strategyVaultChain();
+  const publicClient = createPublicClient({ chain, transport: http() });
+  const [idle, gas] = await Promise.all([
+    publicClient.readContract({
+      address: vaultAddress as `0x${string}`,
+      abi: STRATEGY_VAULT_USER_ABI,
+      functionName: "idleBalance",
+    }),
+    publicClient.readContract({
+      address: vaultAddress as `0x${string}`,
+      abi: STRATEGY_VAULT_USER_ABI,
+      functionName: "nativeBalance",
+    }),
+  ]);
+  return { idle: formatUnits(idle, ASSET_DECIMALS), gas: formatEther(gas) };
+}
+
 export async function readVaultNativeBalance(provider: EthereumProvider, vaultAddress: string) {
   const chain = strategyVaultChain();
   const publicClient = createPublicClient({ chain, transport: custom(provider) });
@@ -524,6 +569,38 @@ export async function readVaultNativeBalance(provider: EthereumProvider, vaultAd
     functionName: "nativeBalance",
   });
   return formatEther(balance);
+}
+
+// Withdraw all idle USDC collateral back to the owner (recovery / finish).
+export async function withdrawVaultIdleOnChain(provider: EthereumProvider, vaultAddress: string) {
+  const chain = strategyVaultChain();
+  const walletClient = createWalletClient({ chain, transport: custom(provider) });
+  const publicClient = createPublicClient({ chain, transport: http() });
+  const [account] = await walletClient.getAddresses();
+  if (!account) throw new Error("Connect a wallet before withdrawing");
+
+  const currentChainId = await walletClient.getChainId();
+  if (currentChainId !== STRATEGY_VAULT_CHAIN_ID) {
+    await walletClient.switchChain({ id: STRATEGY_VAULT_CHAIN_ID });
+  }
+
+  const idle = await publicClient.readContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "idleBalance",
+  });
+  if (idle <= BigInt(0)) return formatUnits(BigInt(0), ASSET_DECIMALS);
+
+  const hash = await walletClient.writeContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "withdraw",
+    args: [idle, account],
+    account,
+    chain,
+  });
+  await publicClient.waitForTransactionReceipt({ hash });
+  return readVaultIdleBalance(provider, vaultAddress);
 }
 
 // Sweep native ETH (GMX fee refunds + leftover gas tank) back to the owner.
