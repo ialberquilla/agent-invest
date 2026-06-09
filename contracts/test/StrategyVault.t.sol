@@ -116,6 +116,10 @@ contract StrategyVaultV2 is StrategyVault {
     }
 }
 
+/// @dev Has no payable receive/fallback, so any native transfer to it fails — used to exercise the
+///      `withdrawNative` failure path.
+contract RejectEther {}
+
 contract DeployStrategyVaultHarness is DeployStrategyVault {
     function validateProductionConfig(
         bool ownerWasExplicit,
@@ -311,6 +315,76 @@ contract StrategyVaultTest is Test {
     }
 
     /*//////////////////////////////////////////////////////////////
+                            WITHDRAW NATIVE
+    //////////////////////////////////////////////////////////////*/
+
+    function test_WithdrawNativeSweepsRefundedEth() external {
+        // Simulate GMX execution-fee refunds landing in the vault via receive().
+        vm.deal(address(vault), 1 ether);
+        assertEq(vault.nativeBalance(), 1 ether);
+
+        address recipient = address(0xD00D);
+        vm.prank(owner);
+        vault.withdrawNative(0.4 ether, recipient);
+
+        assertEq(recipient.balance, 0.4 ether);
+        assertEq(vault.nativeBalance(), 0.6 ether);
+    }
+
+    function test_WithdrawNativeWorksWhilePaused() external {
+        vm.deal(address(vault), 1 ether);
+
+        vm.startPrank(owner);
+        vault.pause();
+        vault.withdrawNative(1 ether, owner);
+        vm.stopPrank();
+
+        assertEq(owner.balance, 1 ether);
+        assertEq(vault.nativeBalance(), 0);
+    }
+
+    function test_OnlyOwnerCanWithdrawNative() external {
+        vm.deal(address(vault), 1 ether);
+
+        vm.expectRevert();
+        vault.withdrawNative(1 ether, address(this));
+    }
+
+    function test_WithdrawNativeRevertsOnZeroAmount() external {
+        vm.deal(address(vault), 1 ether);
+
+        vm.prank(owner);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__ZeroAmount.selector);
+        vault.withdrawNative(0, owner);
+    }
+
+    function test_WithdrawNativeRevertsOnZeroAddress() external {
+        vm.deal(address(vault), 1 ether);
+
+        vm.prank(owner);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__ZeroAddress.selector);
+        vault.withdrawNative(1 ether, address(0));
+    }
+
+    function test_WithdrawNativeRevertsWhenExceedsBalance() external {
+        vm.deal(address(vault), 1 ether);
+
+        vm.prank(owner);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__InsufficientNativeBalance.selector);
+        vault.withdrawNative(1 ether + 1, owner);
+    }
+
+    function test_WithdrawNativeRevertsWhenRecipientReverts() external {
+        vm.deal(address(vault), 1 ether);
+
+        // RejectEther has no payable receive/fallback, so the low-level call fails.
+        RejectEther recipient = new RejectEther();
+        vm.prank(owner);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__NativeTransferFailed.selector);
+        vault.withdrawNative(1 ether, address(recipient));
+    }
+
+    /*//////////////////////////////////////////////////////////////
                                   CONFIG
     //////////////////////////////////////////////////////////////*/
 
@@ -394,16 +468,17 @@ contract StrategyVaultTest is Test {
         assertEq(lastOrder.numbers.initialCollateralDeltaAmount, orders[1].collateralAmount);
     }
 
-    function test_CreateGmxMarketIncreaseOrdersRevertsOnBadTotalExecutionFee() external {
+    function test_CreateGmxMarketIncreaseOrdersRevertsOnInsufficientGas() external {
         (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) = _gmx();
         StrategyVaultBase.GmxMarketIncreaseOrder[] memory orders = new StrategyVaultBase.GmxMarketIncreaseOrder[](2);
         orders[0] = _increaseOrder(address(exchangeRouter), router, orderVault);
         orders[1] = _increaseOrder(address(exchangeRouter), router, orderVault);
 
+        // Vault holds no gas tank and the attached value is short of the total fee.
         uint256 totalExecutionFee = orders[0].executionFee + orders[1].executionFee;
         vm.deal(owner, totalExecutionFee - 1);
         vm.prank(owner);
-        vm.expectRevert(StrategyVaultBase.StrategyVault__InvalidExecutionFee.selector);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__InsufficientExecutionGas.selector);
         vault.createGmxMarketIncreaseOrders{value: totalExecutionFee - 1}(orders);
     }
 
@@ -460,7 +535,7 @@ contract StrategyVaultTest is Test {
         assertEq(lastOrder.numbers.initialCollateralDeltaAmount, orders[1].collateralWithdrawalAmount);
     }
 
-    function test_CreateGmxMarketDecreaseOrdersRevertsOnBadTotalExecutionFee() external {
+    function test_CreateGmxMarketDecreaseOrdersRevertsOnInsufficientGas() external {
         (MockGmxExchangeRouter exchangeRouter,, address orderVault) = _gmx();
         StrategyVaultBase.GmxMarketDecreaseOrder[] memory orders = new StrategyVaultBase.GmxMarketDecreaseOrder[](2);
         orders[0] = _decreaseOrder(address(exchangeRouter), orderVault);
@@ -469,7 +544,7 @@ contract StrategyVaultTest is Test {
         uint256 totalExecutionFee = orders[0].executionFee + orders[1].executionFee;
         vm.deal(owner, totalExecutionFee - 1);
         vm.prank(owner);
-        vm.expectRevert(StrategyVaultBase.StrategyVault__InvalidExecutionFee.selector);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__InsufficientExecutionGas.selector);
         vault.createGmxMarketDecreaseOrders{value: totalExecutionFee - 1}(orders);
     }
 
@@ -485,12 +560,31 @@ contract StrategyVaultTest is Test {
         (MockGmxExchangeRouter exchangeRouter,,) = _gmx();
         bytes32 orderKey = keccak256("k");
 
-        vm.deal(owner, 0.01 ether);
         vm.prank(owner);
-        vault.cancelGmxOrder{value: 0.01 ether}(address(exchangeRouter), orderKey, 0.01 ether);
+        vault.cancelGmxOrder(address(exchangeRouter), orderKey);
 
         assertEq(exchangeRouter.lastCancelledOrderKey(), orderKey);
-        assertEq(exchangeRouter.lastCancelMsgValue(), 0.01 ether);
+        assertEq(exchangeRouter.lastCancelMsgValue(), 0);
+    }
+
+    function test_CancelGmxOrderWorksWhilePaused() external {
+        (MockGmxExchangeRouter exchangeRouter,,) = _gmx();
+        bytes32 orderKey = keccak256("k");
+
+        vm.startPrank(owner);
+        vault.pause();
+        vault.cancelGmxOrder(address(exchangeRouter), orderKey);
+        vm.stopPrank();
+
+        assertEq(exchangeRouter.lastCancelledOrderKey(), orderKey);
+    }
+
+    function test_CancelGmxOrderRevertsOnUntrustedRouting() external {
+        bytes32 orderKey = keccak256("k");
+
+        vm.prank(owner);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__UntrustedRouting.selector);
+        vault.cancelGmxOrder(address(0xBAD), orderKey);
     }
 
     function test_OnlyOwnerCanCreateGmxOrder() external {
@@ -514,15 +608,51 @@ contract StrategyVaultTest is Test {
         vault.createGmxMarketIncreaseOrder{value: order.executionFee}(order);
     }
 
-    function test_GmxOrderRevertsOnBadExecutionFee() external {
+    function test_GmxOrderRevertsOnInsufficientGas() external {
         (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) = _gmx();
+        _fundVault(1_000e18);
         StrategyVaultBase.GmxMarketIncreaseOrder memory order =
             _increaseOrder(address(exchangeRouter), router, orderVault);
 
-        vm.deal(owner, order.executionFee + 1);
+        // No gas tank and the attached value is short of the execution fee.
+        vm.deal(owner, order.executionFee - 1);
         vm.prank(owner);
-        vm.expectRevert(StrategyVaultBase.StrategyVault__InvalidExecutionFee.selector);
-        vault.createGmxMarketIncreaseOrder{value: order.executionFee + 1}(order);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__InsufficientExecutionGas.selector);
+        vault.createGmxMarketIncreaseOrder{value: order.executionFee - 1}(order);
+    }
+
+    function test_GmxOrderPaidFromPrefundedGasTank() external {
+        (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) = _gmx();
+        _fundVault(1_000e18);
+        StrategyVaultBase.GmxMarketIncreaseOrder memory order =
+            _increaseOrder(address(exchangeRouter), router, orderVault);
+
+        // Pre-fund the gas tank, then submit the order with NO attached value (keeper flow).
+        vm.deal(owner, order.executionFee);
+        vm.prank(owner);
+        vault.depositNative{value: order.executionFee}();
+        assertEq(vault.nativeBalance(), order.executionFee);
+
+        vm.prank(owner);
+        bytes32 orderKey = vault.createGmxMarketIncreaseOrder(order);
+
+        assertEq(orderKey, keccak256("order-key"));
+        assertEq(exchangeRouter.lastMsgValue(), order.executionFee);
+        // The fee was drawn from the tank, leaving it empty.
+        assertEq(vault.nativeBalance(), 0);
+    }
+
+    function test_DepositNativeFundsGasTank() external {
+        vm.deal(owner, 1 ether);
+        vm.prank(owner);
+        vault.depositNative{value: 1 ether}();
+        assertEq(vault.nativeBalance(), 1 ether);
+    }
+
+    function test_DepositNativeRevertsOnZero() external {
+        vm.prank(owner);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__ZeroAmount.selector);
+        vault.depositNative();
     }
 
     function test_GmxOrderRevertsWhenPaused() external {
