@@ -66,6 +66,8 @@ jobs:
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --environment "${{ env.CONTAINER_APP_ENV }}" \
             --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:${{ env.IMAGE_TAG }}" \
+            --command "./agent/docker/entrypoint.sh" \
+            --args "node" "agent/dist/server.js" \
             --target-port 8000 \
             --ingress external \
             --registry-server "${{ env.REGISTRY_NAME }}.azurecr.io" \
@@ -114,8 +116,8 @@ jobs:
             --name "${{ env.AGENT_APP_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:${{ env.IMAGE_TAG }}" \
-            --command "" \
-            --args "" \
+            --command "./agent/docker/entrypoint.sh" \
+            --args "node" "agent/dist/server.js" \
             --cpu 2.0 \
             --memory 4Gi \
             --set-env-vars \
