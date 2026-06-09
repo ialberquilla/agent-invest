@@ -11,6 +11,7 @@ import {
   REBALANCE_TRIGGER_FAMILIES,
   REBALANCE_TRIGGERS,
   resolveStrategyMode,
+  PAIR_TRADE_FAMILY,
   SINGLE_ASSET_FAMILY,
   WEIGHTING_SCHEMES,
   validateProposal,
@@ -129,12 +130,22 @@ export async function proposeCandidates(
   // space to explore -- only the trend signal window. Build the candidates
   // deterministically (an SMA-lookback sweep on the target coin) and skip
   // the LLM entirely.
-  if (resolveStrategyMode(input.thesis) === "single_asset") {
+  const mode = resolveStrategyMode(input.thesis);
+  if (mode === "single_asset") {
     const proposal = buildSingleAssetProposal(input);
     logger.exit(NEXT_STEP, {
       candidate_count: proposal.candidates.length,
       template_mix: summariseTemplates(proposal.candidates),
       single_asset: true,
+    });
+    return { delta: { proposal }, next: NEXT_STEP };
+  }
+  if (mode === "pair_trade") {
+    const proposal = buildPairTradeProposal(input);
+    logger.exit(NEXT_STEP, {
+      candidate_count: proposal.candidates.length,
+      template_mix: summariseTemplates(proposal.candidates),
+      pair_trade: true,
     });
     return { delta: { proposal }, next: NEXT_STEP };
   }
@@ -212,6 +223,50 @@ export function buildSingleAssetProposal(
   );
   const proposal: Proposal = {
     iteration_hypothesis: `Single-asset trend setup on ${target}; sweep the SMA trend-signal window.`,
+    candidates,
+  };
+  validateProposal(proposal, {
+    thesis: input.thesis,
+    universe: input.universe,
+  });
+  return proposal;
+}
+
+// Deterministic pair_trade proposal: long one named coin, short another,
+// sweeping the hedge ratio that sizes the short leg. Legs come from the
+// thesis (long_coin_ids[0]/short_coin_ids[0]) or the first two coins of the
+// resolved universe. select_top is always 2.
+const PAIR_TRADE_HEDGE_RATIOS = [0.5, 1.0, 1.5] as const;
+
+export function buildPairTradeProposal(
+  input: ProposeCandidatesInput,
+): Proposal {
+  const long = input.thesis.long_coin_ids?.[0] ?? input.universe.coin_ids[0];
+  const short = input.thesis.short_coin_ids?.[0] ?? input.universe.coin_ids[1];
+  if (!long || !short) {
+    throw new ProposalValidationError(
+      "pair_trade proposal requires two coins (thesis legs or a 2-coin universe)",
+    );
+  }
+  if (long === short) {
+    throw new ProposalValidationError(
+      "pair_trade proposal requires distinct long and short coins",
+    );
+  }
+  const candidates: ProposedCandidate[] = PAIR_TRADE_HEDGE_RATIOS.map(
+    (hedge_ratio, index) => ({
+      candidate_id: `pt${index + 1}`,
+      template_id: PAIR_TRADE_FAMILY,
+      select_top: 2,
+      weighting: "equal",
+      long_coin_id: long,
+      short_coin_id: short,
+      hedge_ratio,
+      rationale: `Long ${long} / short ${short} at a ${hedge_ratio}x hedge ratio.`,
+    }),
+  );
+  const proposal: Proposal = {
+    iteration_hypothesis: `Pair trade: long ${long}, short ${short}; sweep the hedge ratio.`,
     candidates,
   };
   validateProposal(proposal, {

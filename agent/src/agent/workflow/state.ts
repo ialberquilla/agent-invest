@@ -106,6 +106,12 @@ export type ThesisConstraints = {
   max_drawdown: number;
   asset_count_min: number;
   asset_count_max: number;
+  // Exposure limits for short-bearing books (pair/hedge/long-short). Long
+  // modes ignore them; short-bearing modes validate against these instead
+  // of the long-only max_weight_per_asset rule. See validate_against_thesis.
+  max_gross_exposure?: number;
+  max_net_exposure?: number;
+  max_leg_weight?: number;
 };
 
 export type Thesis = {
@@ -175,7 +181,10 @@ export type StrategyRunOverrides = {
   // Shape overrides: pivot a finished run into a different strategy mode
   // (e.g. a basket result into a single-asset trend setup) on a rerun.
   strategy_mode?: StrategyMode;
+  allowed_sides?: AllowedSides;
   target_coin_id?: string;
+  long_coin_ids?: string[];
+  short_coin_ids?: string[];
 };
 
 // The strategy-family catalog mirrors spec.md section 9. select_templates
@@ -201,6 +210,8 @@ export const STRATEGY_FAMILIES = [
   // single_asset strategy_mode only. select_templates forces this family
   // for single-asset theses and drops it from every other shortlist.
   "single_asset_trend_setup",
+  // pair_trade strategy_mode only (REQUIRES SHORTS). Explicit long/short legs.
+  "explicit_pair_trade",
 ] as const;
 export type StrategyFamily = (typeof STRATEGY_FAMILIES)[number];
 
@@ -208,16 +219,17 @@ export type StrategyFamily = (typeof STRATEGY_FAMILIES)[number];
 // gates these the same way the SHORTS gate handles short families: a
 // mode-only family is forced in for its mode and dropped everywhere else.
 export const SINGLE_ASSET_FAMILY = "single_asset_trend_setup";
+export const PAIR_TRADE_FAMILY = "explicit_pair_trade";
 
-// Families that require short exposure. Until the Thesis carries an
-// explicit allowed_sides field, select_templates only shortlists these
-// when the brief/interpretation_notes opt into shorts or hedging.
+// Families that require short exposure. select_templates only shortlists
+// these when the thesis permits shorts (allowed_sides === "long_short").
 export const SHORT_REQUIRING_FAMILIES: ReadonlySet<StrategyFamily> = new Set([
   "partial_hedge_overlay",
   "trend_following_long_short",
   "relative_value_pair_trade",
   "beta_hedged_alt_exposure",
   "drawdown_based_hedge",
+  "explicit_pair_trade",
 ]);
 
 export type SelectedFamily = {
@@ -358,6 +370,7 @@ export const ALLOCATION_TEMPLATES = [
   "trend_following_long_short",
   "drawdown_based_hedge",
   "single_asset_trend_setup",
+  "explicit_pair_trade",
 ] as const;
 export type AllocationTemplate = (typeof ALLOCATION_TEMPLATES)[number];
 
@@ -422,6 +435,11 @@ export type ProposedCandidate = {
   // the top-ranked coin). Forbidden on every other family.
   sma_lookback?: number;
   target_coin_id?: string;
+  // explicit_pair_trade slots: the named long/short legs and the optional
+  // hedge ratio sizing the short. Forbidden on every other family.
+  long_coin_id?: string;
+  short_coin_id?: string;
+  hedge_ratio?: number;
   rationale: string;
 };
 
@@ -1246,6 +1264,53 @@ function validateCandidate(
       `candidates[${index}]: ${SINGLE_ASSET_FAMILY} requires select_top = 1 (got ${selectTop})`,
     );
   }
+
+  // explicit_pair_trade slots: named long/short legs and an optional hedge
+  // ratio. The two legs span exactly two markets, so select_top must be 2.
+  for (const legField of ["long_coin_id", "short_coin_id"] as const) {
+    if (candidate[legField] !== undefined) {
+      if (family !== PAIR_TRADE_FAMILY) {
+        throw new ProposalValidationError(
+          `candidates[${index}]: ${legField} is only allowed on ${PAIR_TRADE_FAMILY}`,
+        );
+      }
+      requireString(candidate[legField], `candidates[${index}].${legField}`);
+    }
+  }
+  if (candidate.hedge_ratio !== undefined) {
+    if (family !== PAIR_TRADE_FAMILY) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: hedge_ratio is only allowed on ${PAIR_TRADE_FAMILY}`,
+      );
+    }
+    requireFiniteNumber(candidate.hedge_ratio, `candidates[${index}].hedge_ratio`);
+    const ratio = candidate.hedge_ratio as number;
+    if (ratio < 0 || ratio > 2) {
+      throw new ProposalValidationError(
+        `candidates[${index}].hedge_ratio must be in [0, 2]`,
+      );
+    }
+  }
+  if (family === PAIR_TRADE_FAMILY) {
+    if (selectTop !== 2) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: ${PAIR_TRADE_FAMILY} requires select_top = 2 (got ${selectTop})`,
+      );
+    }
+    if (
+      candidate.long_coin_id === undefined ||
+      candidate.short_coin_id === undefined
+    ) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: ${PAIR_TRADE_FAMILY} requires long_coin_id and short_coin_id`,
+      );
+    }
+    if (candidate.long_coin_id === candidate.short_coin_id) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: long_coin_id and short_coin_id must differ`,
+      );
+    }
+  }
 }
 
 // Wizard brief stays loosely typed until we re-wire it in the controller.
@@ -1401,6 +1466,24 @@ function validateConstraints(
       throw new ThesisValidationError(`constraints.${field} must be >= 1`);
     }
   }
+  // Optional exposure ceilings for short-bearing books. Allow up to 5x
+  // gross/net leverage and a 2x per-leg cap -- generous bounds; the real
+  // limits come from the thesis values, this just rejects nonsense.
+  for (const [field, max] of [
+    ["max_gross_exposure", 5],
+    ["max_net_exposure", 5],
+    ["max_leg_weight", 2],
+  ] as const) {
+    if (value[field] !== undefined) {
+      requireFiniteNumber(value[field], `constraints.${field}`);
+      const v = value[field] as number;
+      if (v < 0 || v > max) {
+        throw new ThesisValidationError(
+          `constraints.${field} must be between 0 and ${max}`,
+        );
+      }
+    }
+  }
 }
 
 function validateFeasibility(
@@ -1424,6 +1507,18 @@ function validateFeasibility(
     ) {
       throw new ThesisValidationError(
         "single_asset strategy_mode requires asset_count_min == asset_count_max == 1",
+      );
+    }
+  } else if (mode === "pair_trade") {
+    // A pair is exactly two legs (+1 long / -hedge short). The long-book
+    // coverage inequality does not apply; gross/net exposure is validated
+    // against the backtest at run time, not here.
+    if (
+      constraints.asset_count_min !== 2 ||
+      constraints.asset_count_max !== 2
+    ) {
+      throw new ThesisValidationError(
+        "pair_trade strategy_mode requires asset_count_min == asset_count_max == 2",
       );
     }
   } else {

@@ -44,8 +44,15 @@ export function applyOverrides(
     rebalance_frequency:
       overrides.rebalance_frequency ?? thesis.rebalance_frequency,
     strategy_mode: overrides.strategy_mode ?? thesis.strategy_mode,
+    allowed_sides: overrides.allowed_sides ?? thesis.allowed_sides,
     ...(overrides.target_coin_id !== undefined
       ? { target_coin_id: overrides.target_coin_id }
+      : {}),
+    ...(overrides.long_coin_ids !== undefined
+      ? { long_coin_ids: overrides.long_coin_ids }
+      : {}),
+    ...(overrides.short_coin_ids !== undefined
+      ? { short_coin_ids: overrides.short_coin_ids }
       : {}),
     constraints: {
       ...thesis.constraints,

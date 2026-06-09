@@ -66,14 +66,13 @@ async function resolveUniverse(
   input: SelectUniverseInput,
   rankUniverse: typeof runRankUniverse,
 ): Promise<Universe> {
+  const mode = resolveStrategyMode(input.thesis);
+
   // single_asset with an explicit target: the universe IS that coin. The
   // recipe pins it via config.target_coin_id; a one-coin hand_picked set
   // keeps the window/backtest scoped to it. With no target we fall through
   // to ranking and propose_candidates takes the top-ranked coin.
-  if (
-    resolveStrategyMode(input.thesis) === "single_asset" &&
-    input.thesis.target_coin_id
-  ) {
+  if (mode === "single_asset" && input.thesis.target_coin_id) {
     const target = input.thesis.target_coin_id;
     return {
       coin_ids: [target],
@@ -84,6 +83,23 @@ async function resolveUniverse(
         exclude_wrapped: input.thesis.universe_hints.exclude_wrapped,
       },
     };
+  }
+
+  // pair_trade with explicit legs: the universe is exactly [long, short].
+  if (mode === "pair_trade") {
+    const long = input.thesis.long_coin_ids?.[0];
+    const short = input.thesis.short_coin_ids?.[0];
+    if (long && short && long !== short) {
+      return {
+        coin_ids: [long, short],
+        source: "hand_picked",
+        effective_filters: {
+          top_n: 2,
+          exclude_stablecoins: input.thesis.universe_hints.exclude_stablecoins,
+          exclude_wrapped: input.thesis.universe_hints.exclude_wrapped,
+        },
+      };
+    }
   }
 
   const handPicked = input.thesis.universe_hints.hand_picked_coin_ids ?? [];

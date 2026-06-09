@@ -13,6 +13,7 @@ import {
   type ValidateAgainstThesisResponse,
 } from "../cli.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
+import { resolveAllowedSides, resolveStrategyMode } from "../state.ts";
 import type {
   AllocationWeight,
   Attempt,
@@ -151,6 +152,18 @@ function candidateToBatchEntry(
     if (target !== undefined) {
       config.target_coin_id = target;
     }
+  } else if (candidate.template_id === "explicit_pair_trade") {
+    // The pair recipe takes named legs and an optional hedge ratio; no
+    // weighting/select_top slot.
+    if (candidate.long_coin_id !== undefined) {
+      config.long_coin_id = candidate.long_coin_id;
+    }
+    if (candidate.short_coin_id !== undefined) {
+      config.short_coin_id = candidate.short_coin_id;
+    }
+    if (candidate.hedge_ratio !== undefined) {
+      config.hedge_ratio = candidate.hedge_ratio;
+    }
   } else {
     config.weighting = candidate.weighting;
     if (candidate.rebalance_trigger !== undefined) {
@@ -205,14 +218,43 @@ export function scriptObjectiveFromWorkflow(
 // The workflow stores max_drawdown as positive (user-facing
 // convention); we negate it here so the floor check matches semantics.
 export function thesisForValidate(thesis: Thesis): Record<string, unknown> {
+  const dd = -Math.abs(thesis.constraints.max_drawdown);
+  // Short-bearing books (pair/hedge/long-short) are not long baskets, so the
+  // long-only rules (max_weight_per_asset, asset_count) don't apply. Validate
+  // drawdown plus any explicit exposure ceilings the thesis carries.
+  if (resolveAllowedSides(thesis) === "long_short" || usesShorts(thesis)) {
+    const constraints: Record<string, unknown> = { max_drawdown: dd };
+    for (const key of [
+      "max_gross_exposure",
+      "max_net_exposure",
+      "max_leg_weight",
+    ] as const) {
+      const value = thesis.constraints[key];
+      if (typeof value === "number") constraints[key] = value;
+    }
+    return {
+      objective: thesis.objective,
+      horizon_days: thesis.horizon_days,
+      constraints,
+    };
+  }
   return {
     objective: thesis.objective,
     horizon_days: thesis.horizon_days,
     constraints: {
       ...thesis.constraints,
-      max_drawdown: -Math.abs(thesis.constraints.max_drawdown),
+      max_drawdown: dd,
     },
   };
+}
+
+function usesShorts(thesis: Thesis): boolean {
+  const mode = resolveStrategyMode(thesis);
+  return (
+    mode === "pair_trade" ||
+    mode === "hedge_overlay" ||
+    mode === "long_short_portfolio"
+  );
 }
 
 export function normalizeValidationSummary(

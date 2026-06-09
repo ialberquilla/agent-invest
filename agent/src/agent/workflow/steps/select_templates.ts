@@ -7,6 +7,7 @@
 import type { LLMClient } from "../llm.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
 import {
+  PAIR_TRADE_FAMILY,
   resolveAllowedSides,
   resolveStrategyMode,
   SHORT_REQUIRING_FAMILIES,
@@ -17,6 +18,7 @@ import {
   type AllowedSides,
   type SelectTemplatesInput,
   type StepName,
+  type StrategyMode,
   type TemplateSelection,
   type Thesis,
 } from "../state.ts";
@@ -75,7 +77,7 @@ Rules:
 - family ids must come from the catalog and be unique within the shortlist.
 - ranks must be the contiguous set 1..n with no gaps or duplicates.
 - SHORTS GATE: only shortlist a family marked "REQUIRES SHORTS" when the thesis allowed_sides is "long_short". For "long_only" or "long_flat", shortlist long-only families only. (The workflow also enforces this deterministically, so a short family picked under a non-short thesis will be dropped.)
-- NEVER shortlist "single_asset_trend_setup": it is selected automatically for single_asset theses and is dropped from any other shortlist.
+- NEVER shortlist "single_asset_trend_setup" or "explicit_pair_trade": they are selected automatically for single_asset / pair_trade theses and dropped from any other shortlist.
 - Map thesis signals to families:
   - objective preserve_capital / income, low max_drawdown -> prefer core_satellite, threshold_rebalanced, periodic_rebalanced, volatility_targeted. When max_drawdown is TIGHT (<= 0.20), rank a drawdown-aware family (volatility_targeted, or threshold_rebalanced for low turnover) FIRST -- plain calendar rebalancing (periodic_rebalanced) does not control drawdown, so it should not be the rank-1 pick for a tight-drawdown mandate.
   - objective balanced_growth -> core_satellite, periodic_rebalanced, synthetic_long.
@@ -100,25 +102,18 @@ export async function selectTemplates(
     strategy_mode: resolveStrategyMode(input.thesis),
   });
 
-  // single_asset is a fixed one-family shape: skip the LLM entirely and
-  // force the single-asset trend recipe. Nothing else fits the mode, so
-  // there is no selection to reason about.
-  if (resolveStrategyMode(input.thesis) === "single_asset") {
+  // Fixed one-family shapes skip the LLM entirely: nothing else fits the
+  // mode, so there is no selection to reason about.
+  const forced = forcedFamilyForMode(resolveStrategyMode(input.thesis));
+  if (forced) {
     const selection: TemplateSelection = {
-      rationale:
-        "single_asset strategy_mode maps to the one-market long/flat trend setup.",
-      selected: [
-        {
-          family: SINGLE_ASSET_FAMILY,
-          rank: 1,
-          rationale: "single_asset mode: one market, long/flat on a trend signal.",
-        },
-      ],
+      rationale: forced.rationale,
+      selected: [{ family: forced.family, rank: 1, rationale: forced.rationale }],
     };
     logger.exit(NEXT_STEP, {
-      families: [SINGLE_ASSET_FAMILY],
-      top_family: SINGLE_ASSET_FAMILY,
-      forced_single_asset: true,
+      families: [forced.family],
+      top_family: forced.family,
+      forced_mode: resolveStrategyMode(input.thesis),
     });
     return { delta: { template_selection: selection }, next: NEXT_STEP };
   }
@@ -141,10 +136,11 @@ export async function selectTemplates(
     try {
       const parsed = parseJson(response.text);
       validateTemplateSelection(parsed);
-      // Deterministic gates: drop the single-asset family (it belongs only
-      // to single_asset mode, handled above) and any short-requiring family
-      // unless the thesis permits shorts. Hard guarantees, not prompt hopes.
-      const modeGated = dropSingleAssetFamily(parsed);
+      // Deterministic gates: drop mode-only families (single-asset / pair,
+      // each forced in only for its own mode, handled above) and any
+      // short-requiring family unless the thesis permits shorts. Hard
+      // guarantees, not prompt hopes.
+      const modeGated = dropModeOnlyFamilies(parsed);
       const gated = enforceShortsGate(
         modeGated,
         resolveAllowedSides(input.thesis),
@@ -172,13 +168,36 @@ export async function selectTemplates(
   throw lastError ?? new Error("select_templates failed without an error");
 }
 
-// Drop the single-asset family from a non-single-asset shortlist (it is
-// forced in for single_asset mode and never valid elsewhere), re-ranking
-// the survivors. Falls back to a long-only default if it empties the list.
-function dropSingleAssetFamily(
+// The fixed one-family shape for a mode, or undefined for modes that pick
+// a family via the LLM. These short-circuit select_templates entirely.
+function forcedFamilyForMode(
+  mode: StrategyMode,
+): { family: typeof SINGLE_ASSET_FAMILY | typeof PAIR_TRADE_FAMILY; rationale: string } | undefined {
+  switch (mode) {
+    case "single_asset":
+      return {
+        family: SINGLE_ASSET_FAMILY,
+        rationale: "single_asset mode: one market, long/flat on a trend signal.",
+      };
+    case "pair_trade":
+      return {
+        family: PAIR_TRADE_FAMILY,
+        rationale: "pair_trade mode: long one named market, short another.",
+      };
+    default:
+      return undefined;
+  }
+}
+
+// Drop mode-only families (single-asset, pair) from a shortlist for any
+// other mode -- they are forced in for their own mode and never valid
+// elsewhere -- re-ranking the survivors. Falls back to a long-only default
+// if it empties the list.
+function dropModeOnlyFamilies(
   selection: TemplateSelection,
 ): TemplateSelection {
-  const kept = selection.selected.filter((s) => s.family !== SINGLE_ASSET_FAMILY);
+  const modeOnly = new Set<string>([SINGLE_ASSET_FAMILY, PAIR_TRADE_FAMILY]);
+  const kept = selection.selected.filter((s) => !modeOnly.has(s.family));
   if (kept.length === selection.selected.length) return selection;
   const survivors =
     kept.length > 0
@@ -188,7 +207,7 @@ function dropSingleAssetFamily(
             family: "synthetic_long_allocation" as const,
             rank: 1,
             rationale:
-              "Long-only fallback: the single-asset family is not valid for this mode.",
+              "Long-only fallback: a mode-only family is not valid for this mode.",
           },
         ];
   const reranked = [...survivors]
