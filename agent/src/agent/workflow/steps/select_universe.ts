@@ -6,13 +6,14 @@
 
 import { runRankUniverse, type RankUniverseRequest } from "../cli.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
-import type {
-  Objective,
-  SelectUniverseInput,
-  StepName,
-  Thesis,
-  Universe,
-  UniverseHint,
+import {
+  resolveStrategyMode,
+  type Objective,
+  type SelectUniverseInput,
+  type StepName,
+  type Thesis,
+  type Universe,
+  type UniverseHint,
 } from "../state.ts";
 
 export type SelectUniverseDeps = {
@@ -65,6 +66,26 @@ async function resolveUniverse(
   input: SelectUniverseInput,
   rankUniverse: typeof runRankUniverse,
 ): Promise<Universe> {
+  // single_asset with an explicit target: the universe IS that coin. The
+  // recipe pins it via config.target_coin_id; a one-coin hand_picked set
+  // keeps the window/backtest scoped to it. With no target we fall through
+  // to ranking and propose_candidates takes the top-ranked coin.
+  if (
+    resolveStrategyMode(input.thesis) === "single_asset" &&
+    input.thesis.target_coin_id
+  ) {
+    const target = input.thesis.target_coin_id;
+    return {
+      coin_ids: [target],
+      source: "hand_picked",
+      effective_filters: {
+        top_n: 1,
+        exclude_stablecoins: input.thesis.universe_hints.exclude_stablecoins,
+        exclude_wrapped: input.thesis.universe_hints.exclude_wrapped,
+      },
+    };
+  }
+
   const handPicked = input.thesis.universe_hints.hand_picked_coin_ids ?? [];
   if (handPicked.length > 0) {
     return {

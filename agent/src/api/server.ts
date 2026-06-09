@@ -282,6 +282,31 @@ function parseStrategyRunOverrides(
     out.hand_picked_coin_ids = raw.hand_picked_coin_ids;
   }
 
+  if (raw.strategy_mode !== undefined) {
+    const allowed = [
+      "single_asset",
+      "pair_trade",
+      "hedge_overlay",
+      "basket_allocation",
+      "momentum_rotation",
+      "long_short_portfolio",
+    ];
+    if (!allowed.includes(raw.strategy_mode as string)) {
+      throw httpError(
+        400,
+        `overrides.strategy_mode must be one of ${allowed.join(", ")}`,
+      );
+    }
+    out.strategy_mode = raw.strategy_mode;
+  }
+
+  if (raw.target_coin_id !== undefined) {
+    if (typeof raw.target_coin_id !== "string" || !raw.target_coin_id.trim()) {
+      throw httpError(400, "overrides.target_coin_id must be a non-empty string");
+    }
+    out.target_coin_id = raw.target_coin_id.trim();
+  }
+
   return Object.keys(out).length > 0
     ? (out as StrategyRunOverrides)
     : undefined;

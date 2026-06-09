@@ -43,6 +43,10 @@ export function applyOverrides(
     horizon_days: overrides.horizon_days ?? thesis.horizon_days,
     rebalance_frequency:
       overrides.rebalance_frequency ?? thesis.rebalance_frequency,
+    strategy_mode: overrides.strategy_mode ?? thesis.strategy_mode,
+    ...(overrides.target_coin_id !== undefined
+      ? { target_coin_id: overrides.target_coin_id }
+      : {}),
     constraints: {
       ...thesis.constraints,
       asset_count_min:

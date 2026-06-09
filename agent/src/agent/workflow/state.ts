@@ -172,6 +172,10 @@ export type StrategyRunOverrides = {
   exclude_stablecoins?: boolean;
   exclude_wrapped?: boolean;
   hand_picked_coin_ids?: string[];
+  // Shape overrides: pivot a finished run into a different strategy mode
+  // (e.g. a basket result into a single-asset trend setup) on a rerun.
+  strategy_mode?: StrategyMode;
+  target_coin_id?: string;
 };
 
 // The strategy-family catalog mirrors spec.md section 9. select_templates
@@ -194,8 +198,16 @@ export const STRATEGY_FAMILIES = [
   "beta_hedged_alt_exposure", // 9.11
   "drawdown_based_hedge", // 9.12
   "volatility_targeted_exposure", // 9.13
+  // single_asset strategy_mode only. select_templates forces this family
+  // for single-asset theses and drops it from every other shortlist.
+  "single_asset_trend_setup",
 ] as const;
 export type StrategyFamily = (typeof STRATEGY_FAMILIES)[number];
+
+// Families usable only under a specific strategy_mode. select_templates
+// gates these the same way the SHORTS gate handles short families: a
+// mode-only family is forced in for its mode and dropped everywhere else.
+export const SINGLE_ASSET_FAMILY = "single_asset_trend_setup";
 
 // Families that require short exposure. Until the Thesis carries an
 // explicit allowed_sides field, select_templates only shortlists these
@@ -345,6 +357,7 @@ export const ALLOCATION_TEMPLATES = [
   "relative_value_pair_trade",
   "trend_following_long_short",
   "drawdown_based_hedge",
+  "single_asset_trend_setup",
 ] as const;
 export type AllocationTemplate = (typeof ALLOCATION_TEMPLATES)[number];
 
@@ -404,6 +417,11 @@ export type ProposedCandidate = {
   // Structural slots for CORE_WEIGHT_FAMILIES. sleeve_cap is barbell-only.
   core_weight?: number;
   sleeve_cap?: number;
+  // single_asset_trend_setup slots. sma_lookback is the trend-signal
+  // window; target_coin_id pins the single market (else the recipe uses
+  // the top-ranked coin). Forbidden on every other family.
+  sma_lookback?: number;
+  target_coin_id?: string;
   rationale: string;
 };
 
@@ -1196,6 +1214,37 @@ function validateCandidate(
         `candidates[${index}].sleeve_cap must be in (0, 1)`,
       );
     }
+  }
+
+  // single_asset_trend_setup slots. sma_lookback / target_coin_id only
+  // make sense for the single-asset family; for it, select_top must be 1
+  // (one position is the whole book).
+  if (candidate.sma_lookback !== undefined) {
+    if (family !== SINGLE_ASSET_FAMILY) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: sma_lookback is only allowed on ${SINGLE_ASSET_FAMILY}`,
+      );
+    }
+    requireFiniteInteger(candidate.sma_lookback, `candidates[${index}].sma_lookback`);
+    const lookback = candidate.sma_lookback as number;
+    if (lookback < 2 || lookback > 400) {
+      throw new ProposalValidationError(
+        `candidates[${index}].sma_lookback must be in [2, 400]`,
+      );
+    }
+  }
+  if (candidate.target_coin_id !== undefined) {
+    if (family !== SINGLE_ASSET_FAMILY) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: target_coin_id is only allowed on ${SINGLE_ASSET_FAMILY}`,
+      );
+    }
+    requireString(candidate.target_coin_id, `candidates[${index}].target_coin_id`);
+  }
+  if (family === SINGLE_ASSET_FAMILY && selectTop !== 1) {
+    throw new ProposalValidationError(
+      `candidates[${index}]: ${SINGLE_ASSET_FAMILY} requires select_top = 1 (got ${selectTop})`,
+    );
   }
 }
 

@@ -140,15 +140,28 @@ function candidateToBatchEntry(
   candidate: ProposedCandidate,
   thesis: Thesis,
 ) {
-  const config: Record<string, unknown> = { weighting: candidate.weighting };
-  if (candidate.rebalance_trigger !== undefined) {
-    config.rebalance_trigger = candidate.rebalance_trigger;
-  }
-  if (candidate.core_weight !== undefined) {
-    config.core_weight = candidate.core_weight;
-  }
-  if (candidate.sleeve_cap !== undefined) {
-    config.sleeve_cap = candidate.sleeve_cap;
+  const config: Record<string, unknown> = {};
+  if (candidate.template_id === "single_asset_trend_setup") {
+    // The single-asset recipe takes no weighting/select_top slot; its
+    // config is the trend window and (optionally) the pinned coin.
+    if (candidate.sma_lookback !== undefined) {
+      config.sma_lookback = candidate.sma_lookback;
+    }
+    const target = candidate.target_coin_id ?? thesis.target_coin_id;
+    if (target !== undefined) {
+      config.target_coin_id = target;
+    }
+  } else {
+    config.weighting = candidate.weighting;
+    if (candidate.rebalance_trigger !== undefined) {
+      config.rebalance_trigger = candidate.rebalance_trigger;
+    }
+    if (candidate.core_weight !== undefined) {
+      config.core_weight = candidate.core_weight;
+    }
+    if (candidate.sleeve_cap !== undefined) {
+      config.sleeve_cap = candidate.sleeve_cap;
+    }
   }
   return {
     candidate_id: candidate.candidate_id,
