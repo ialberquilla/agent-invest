@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
+
+import { scriptEnv, scriptsDirectory, uvCommand } from "../scripts-runtime.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -62,8 +62,10 @@ export async function recommendBacktestWindow(
     args.push("--require-drawdown-pct", String(input.requireDrawdownPct));
   }
 
-  const { stdout } = await execFileAsync("uv", args, {
-    cwd: resolve(dirname(fileURLToPath(import.meta.url)), "../../scripts"),
+  const scriptsDir = scriptsDirectory(import.meta.url, "../../scripts");
+  const { stdout } = await execFileAsync(uvCommand(), args, {
+    cwd: scriptsDir,
+    env: scriptEnv(scriptsDir),
   });
 
   return parseRecommendWindowOutput(stdout);

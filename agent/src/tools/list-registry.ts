@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+
+import { scriptEnv, scriptsDirectory, uvCommand } from "../scripts-runtime.ts";
 
 export const LIST_REGISTRY_NAMES = [
   "ranking_factors",
@@ -71,9 +71,10 @@ function assertRegistryName(value: string): asserts value is RegistryName {
 
 function runScript(args: string[]) {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn("uv", ["run", "--project", ".", "python", ...args], {
-      cwd: scriptsDirectory(),
-      env: { ...process.env, PYTHONPATH: scriptsDirectory() },
+    const scriptsDir = scriptsDirectory(import.meta.url, "../../scripts");
+    const child = spawn(uvCommand(), ["run", "--project", ".", "python", ...args], {
+      cwd: scriptsDir,
+      env: scriptEnv(scriptsDir),
       stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];
@@ -93,12 +94,6 @@ function runScript(args: string[]) {
       resolve(out);
     });
   });
-}
-
-function scriptsDirectory() {
-  const currentFile = fileURLToPath(import.meta.url);
-
-  return path.resolve(path.dirname(currentFile), "../../scripts");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
