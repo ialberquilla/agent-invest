@@ -545,17 +545,6 @@ export function StrategyResultReport({
           </ReportSection>
         ) : null}
 
-        <div className="grid gap-5 lg:grid-cols-3">
-          <ReportSection title="Assumptions">
-            <TextList items={result.assumptions ?? []} />
-          </ReportSection>
-          <ReportSection title="Risks">
-            <TextList items={result.risks ?? []} />
-          </ReportSection>
-          <ReportSection title="Next steps">
-            <TextList items={result.next_steps ?? []} />
-          </ReportSection>
-        </div>
       </CardContent>
     </Card>
   );
