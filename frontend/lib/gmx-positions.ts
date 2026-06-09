@@ -165,6 +165,7 @@ export type GmxOpenPosition = {
   accountLabel?: string;
   marketAddress: string;
   marketName: string;
+  collateralTokenAddress: string;
   side: "Long" | "Short";
   sizeUsd: number;
   sizeUsdRaw: string;
@@ -306,6 +307,7 @@ export async function readGmxAccountActivity(
             accountLabel: account.label,
             marketAddress: position.addresses.market,
             marketName: marketNameFor(marketNames, position.addresses.market),
+            collateralTokenAddress: position.addresses.collateralToken,
             side: position.flags.isLong ? "Long" : "Short",
             sizeUsd: usdNumber(position.numbers.sizeInUsd),
             sizeUsdRaw: position.numbers.sizeInUsd.toString(),
