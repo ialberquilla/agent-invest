@@ -36,6 +36,7 @@ _SLEEVE_CAP = {"type": "float", "min": 0.0, "max": 1.0}
 _HEDGE_WEIGHT = {"type": "float", "min": 0.0, "max": 2.0}
 _DRAWDOWN_THRESHOLD = {"type": "float", "min": 0.0, "max": 1.0}
 _SMA_LOOKBACK = {"type": "int", "min": 2, "max": 400}
+_MOMENTUM_LOOKBACK = {"type": "int", "min": 2, "max": 400}
 _TARGET_COIN_ID = {"type": "string"}
 _LONG_COIN_ID = {"type": "string", "required": True}
 _SHORT_COIN_ID = {"type": "string", "required": True}
@@ -506,6 +507,110 @@ def _drawdown_hedge_weights(
     return weights
 
 
+# --- momentum rotation (long/short and long/flat) ----------------------------
+#
+# Rank the candidate pool by trailing momentum each day. long_short holds an
+# equal-weight long book of the strongest names and an equal-weight short book
+# of the weakest (gross ~2.0, net ~0.0 -- market-neutral). long_flat holds only
+# the strongest positive-momentum names, and only while a market-regime trend
+# filter is on, otherwise sits in cash (gross <= 1.0, no shorts).
+
+
+def _rotation_counts(select_top: int) -> int:
+    """Per-side count: a third of the pool, at least one."""
+    return max(1, int(select_top) // 3)
+
+
+def _long_short_momentum_weights(
+    prices: pd.DataFrame, coins: list[str], *, lookback_days: int, side_n: int
+) -> pd.DataFrame:
+    """+1/side_n on the top side_n by trailing return, -1/side_n on the bottom
+    side_n. Long and short books each sum to 1.0 gross (gross 2.0, net 0.0).
+    Days without enough valid names sit flat (all zero)."""
+    frame = _float_prices(prices, coins)
+    frame.index = pd.to_datetime(frame.index)
+    momentum = frame.pct_change(lookback_days)
+    weights = pd.DataFrame(0.0, index=frame.index, columns=coins)
+    for dt, row in momentum.iterrows():
+        valid = row.dropna()
+        if len(valid) < 2 * side_n:
+            continue
+        ranked = valid.sort_values(ascending=False)
+        for coin in ranked.index[:side_n]:
+            weights.at[dt, coin] = 1.0 / side_n
+        for coin in ranked.index[-side_n:]:
+            weights.at[dt, coin] = -1.0 / side_n
+    return weights
+
+
+def _long_short_momentum_rotation(universe, prices, config, window) -> bt.Strategy:
+    coins = _coins(universe, config)
+    weights = _long_short_momentum_weights(
+        prices,
+        coins,
+        lookback_days=int(config.get("momentum_lookback", 90)),
+        side_n=_rotation_counts(int(config["select_top"])),
+    )
+    return bt.Strategy(
+        "long_short_momentum_rotation",
+        [
+            _run_algo(config.get("rebalance_trigger", "periodic_30d")),
+            bt.algos.SelectThese(coins),
+            bt.algos.WeighTarget(weights),
+            bt.algos.Rebalance(),
+        ],
+    )
+
+
+def _long_flat_momentum_weights(
+    prices: pd.DataFrame,
+    coins: list[str],
+    *,
+    lookback_days: int,
+    long_n: int,
+    regime_lookback: int = 50,
+) -> pd.DataFrame:
+    """Equal-weight the top long_n positive-momentum names, but only while the
+    equal-weight basket is above its own SMA (regime on); otherwise flat. No
+    shorts. The regime filter uses only past prices (no look-ahead)."""
+    frame = _float_prices(prices, coins)
+    frame.index = pd.to_datetime(frame.index)
+    momentum = frame.pct_change(lookback_days)
+    basket = (frame / frame.iloc[0]).mean(axis=1)
+    regime_on = basket > basket.rolling(regime_lookback, min_periods=regime_lookback).mean()
+    weights = pd.DataFrame(0.0, index=frame.index, columns=coins)
+    for dt, row in momentum.iterrows():
+        if not bool(regime_on.get(dt, False)):
+            continue
+        positive = row.dropna()
+        positive = positive[positive > 0]
+        if positive.empty:
+            continue
+        longs = positive.sort_values(ascending=False).index[:long_n]
+        for coin in longs:
+            weights.at[dt, coin] = 1.0 / len(longs)
+    return weights
+
+
+def _long_flat_momentum_rotation(universe, prices, config, window) -> bt.Strategy:
+    coins = _coins(universe, config)
+    weights = _long_flat_momentum_weights(
+        prices,
+        coins,
+        lookback_days=int(config.get("momentum_lookback", 90)),
+        long_n=_rotation_counts(int(config["select_top"])),
+    )
+    return bt.Strategy(
+        "long_flat_momentum_rotation",
+        [
+            _run_algo(config.get("rebalance_trigger", "periodic_30d")),
+            bt.algos.SelectThese(coins),
+            bt.algos.WeighTarget(weights),
+            bt.algos.Rebalance(),
+        ],
+    )
+
+
 # --- registry ----------------------------------------------------------------
 
 
@@ -712,5 +817,32 @@ RECIPES: dict[str, Recipe] = {
             "sma_lookback": _SMA_LOOKBACK,
         },
         preferred_factors=["pct_above_sma_200d", "roc_90d"],
+    ),
+    # --- momentum rotation (momentum_rotation / long_short_portfolio modes) ---
+    # long_flat is long-only (long_flat sides); long_short opens shorts and is
+    # gated behind allowed_sides=long_short.
+    "long_flat_momentum_rotation": _recipe(
+        "long_flat_momentum_rotation",
+        _long_flat_momentum_rotation,
+        composite_formula="trade_count_aware_sharpe",
+        min_history_days=120,
+        slot_schema={
+            "select_top": _SELECT_TOP,
+            "momentum_lookback": _MOMENTUM_LOOKBACK,
+            "rebalance_trigger": _REBALANCE,
+        },
+        preferred_factors=["roc_90d", "pct_above_sma_200d"],
+    ),
+    "long_short_momentum_rotation": _recipe(
+        "long_short_momentum_rotation",
+        _long_short_momentum_rotation,
+        composite_formula="trade_count_aware_sharpe",
+        min_history_days=120,
+        slot_schema={
+            "select_top": _SELECT_TOP,
+            "momentum_lookback": _MOMENTUM_LOOKBACK,
+            "rebalance_trigger": _REBALANCE,
+        },
+        preferred_factors=["roc_90d", "rs_vs_btc"],
     ),
 }
