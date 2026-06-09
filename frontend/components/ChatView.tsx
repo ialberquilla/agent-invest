@@ -25,7 +25,7 @@ import {
   upsertKnownStrategy,
 } from "@/lib/local-store";
 import { readSse } from "@/lib/sse";
-import type { Run, StructuredChatResult } from "@/lib/types";
+import type { Run, StructuredChatResult, SuggestedRerun } from "@/lib/types";
 import type { AllocationWizardState } from "@/lib/wizard-prompt";
 
 type ChatViewProps = {
@@ -124,7 +124,7 @@ function sleep(ms: number) {
 }
 
 type RunSubmission =
-  | { text: string }
+  | { text: string; displayText?: string }
   | { wizard_params: AllocationWizardState; displayText: string };
 
 function wizardSubmissionText() {
@@ -191,7 +191,9 @@ export function ChatView({
     }
 
     const userText =
-      "text" in submission ? submission.text : submission.displayText;
+      "text" in submission
+        ? (submission.displayText ?? submission.text)
+        : submission.displayText;
 
     setMessages((current) => [...current, { role: "user", text: userText }]);
     setIsSending(true);
@@ -420,6 +422,25 @@ export function ChatView({
     await submitRun({ text });
   }
 
+  // Relaunch the pipeline from a finished run with one structured change.
+  // The chat agent forwards based_on_run_id + the exact overrides to
+  // run_strategy_pipeline (overrides are applied deterministically there),
+  // so the instruction is explicit and leaves nothing to infer.
+  async function handleRerun(
+    suggestion: SuggestedRerun,
+    basedOnRunId: string,
+  ) {
+    const instruction = [
+      "Re-run the previous strategy as a new pipeline run.",
+      `Call ${"run_strategy_pipeline"} with based_on_run_id="${basedOnRunId}"`,
+      `and these exact overrides (do not modify them): ${JSON.stringify(
+        suggestion.overrides,
+      )}.`,
+      "Reuse the original brief.",
+    ].join(" ");
+    await submitRun({ text: instruction, displayText: `Rerun: ${suggestion.label}` });
+  }
+
   async function handleWizardSubmit(wizardParams: AllocationWizardState) {
     setIsWizardOpen(false);
     await submitRun({
@@ -490,6 +511,8 @@ export function ChatView({
             onSelectPrompt={handleSend}
             onOpenWizard={() => setIsWizardOpen(true)}
             onPinnedScreenersChange={onPinnedScreenersChange}
+            onRerun={handleRerun}
+            rerunDisabled={isDisabled}
           />
         </div>
 
