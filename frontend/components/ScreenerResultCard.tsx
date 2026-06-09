@@ -2,7 +2,17 @@
 
 import { useEffect, useState } from "react";
 import { usePrivy, useWallets } from "@privy-io/react-auth";
-import { ArrowUpDown, Pin, RefreshCw, TrendingDown, TrendingUp } from "lucide-react";
+import {
+  ArrowUpDown,
+  CheckCircle2,
+  Circle,
+  ExternalLink,
+  LoaderCircle,
+  Pin,
+  RefreshCw,
+  TrendingDown,
+  TrendingUp,
+} from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,7 +33,10 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
-import { createDirectGmxMarketIncreaseOrder } from "@/lib/gmx-direct-trade";
+import {
+  createDirectGmxMarketIncreaseOrder,
+  type DirectGmxTradeProgress,
+} from "@/lib/gmx-direct-trade";
 import {
   getAnonymousUserId,
   isScreenerPinned,
@@ -37,6 +50,24 @@ import { cn } from "@/lib/utils";
 type OrderTicket = {
   side: "Long" | "Short";
   row: ScreenerRow;
+};
+
+type OrderStatus =
+  | "idle"
+  | "checking"
+  | "approving"
+  | "ordering"
+  | "confirming"
+  | "submitted"
+  | "unknown";
+
+type TradeStepState = "pending" | "active" | "complete" | "warning" | "error";
+
+type TradeStep = {
+  title: string;
+  description: string;
+  state: TradeStepState;
+  hash?: string;
 };
 
 type SortKey = "rank" | "market" | "gmx" | `metric:${string}`;
@@ -64,9 +95,14 @@ export function ScreenerResultCard({
   const [ticket, setTicket] = useState<OrderTicket | null>(null);
   const [isPinDialogOpen, setIsPinDialogOpen] = useState(false);
   const [pinLabel, setPinLabel] = useState(result.title);
-  const [sort, setSort] = useState<SortState>({ key: "rank", direction: "asc" });
+  const [sort, setSort] = useState<SortState>({
+    key: "rank",
+    direction: "asc",
+  });
   const metricColumns = metricColumnsFor(current.rows);
-  const sortedRows = [...current.rows].sort((left, right) => compareRows(left, right, sort));
+  const sortedRows = [...current.rows].sort((left, right) =>
+    compareRows(left, right, sort),
+  );
 
   useEffect(() => {
     let isActive = true;
@@ -268,14 +304,19 @@ export function ScreenerResultCard({
                       </div>
                     </td>
                     {metricColumns.map((column) => {
-                      const metric = row.metrics.find((item) => item.id === column.id);
+                      const metric = row.metrics.find(
+                        (item) => item.id === column.id,
+                      );
 
                       return (
                         <td
                           key={column.id}
                           className="px-3 py-3 text-right font-mono text-sm font-medium tabular-nums"
                         >
-                          {formatMetric(metric?.value ?? null, metric?.format ?? column.format)}
+                          {formatMetric(
+                            metric?.value ?? null,
+                            metric?.format ?? column.format,
+                          )}
                         </td>
                       );
                     })}
@@ -323,7 +364,10 @@ export function ScreenerResultCard({
         </CardContent>
       </Card>
 
-      <Sheet open={Boolean(ticket)} onOpenChange={(open) => !open && setTicket(null)}>
+      <Sheet
+        open={Boolean(ticket)}
+        onOpenChange={(open) => !open && setTicket(null)}
+      >
         <SheetContent className="w-full sm:max-w-md">
           {ticket ? <OrderTicketPreview ticket={ticket} /> : null}
         </SheetContent>
@@ -343,7 +387,8 @@ export function ScreenerResultCard({
             <SheetHeader className="border-b pr-14">
               <SheetTitle>Name this screener</SheetTitle>
               <SheetDescription>
-                This name appears in the pinned screeners section of the sidebar.
+                This name appears in the pinned screeners section of the
+                sidebar.
               </SheetDescription>
             </SheetHeader>
             <div className="space-y-3 px-4 py-4">
@@ -357,8 +402,8 @@ export function ScreenerResultCard({
                 />
               </label>
               <p className="text-xs leading-5 text-muted-foreground">
-                You can still refresh the screener and use the Long/Short actions
-                after pinning it.
+                You can still refresh the screener and use the Long/Short
+                actions after pinning it.
               </p>
             </div>
             <SheetFooter className="border-t sm:flex-row sm:justify-end">
@@ -385,9 +430,18 @@ function OrderTicketPreview({ ticket }: { ticket: OrderTicket }) {
   const [collateralUsd, setCollateralUsd] = useState("100");
   const [leverage, setLeverage] = useState("1");
   const [slippagePercent, setSlippagePercent] = useState("1");
-  const [status, setStatus] = useState<"idle" | "approving" | "submitted">("idle");
+  const [status, setStatus] = useState<OrderStatus>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [hasStarted, setHasStarted] = useState(false);
+  const [approvalHash, setApprovalHash] = useState<string | null>(null);
   const [orderHash, setOrderHash] = useState<string | null>(null);
+  const tradeSteps = buildTradeSteps({
+    status,
+    hasStarted,
+    approvalHash,
+    orderHash,
+    error,
+  });
 
   async function submitOrder() {
     if (!authenticated) {
@@ -399,23 +453,41 @@ function OrderTicketPreview({ ticket }: { ticket: OrderTicket }) {
       setError("Connect a wallet before trading");
       return;
     }
-    setStatus("approving");
+    setStatus("checking");
     setError(null);
+    setHasStarted(true);
+    setApprovalHash(null);
     setOrderHash(null);
+    let submittedOrderHash: string | null = null;
     try {
       const provider = await wallet.getEthereumProvider();
-      const result = await createDirectGmxMarketIncreaseOrder(provider, {
-        row: ticket.row,
-        side: ticket.side,
-        collateralUsd,
-        leverage,
-        slippageBps: Math.round(Number(slippagePercent) * 100),
-      });
+      const result = await createDirectGmxMarketIncreaseOrder(
+        provider,
+        {
+          row: ticket.row,
+          side: ticket.side,
+          collateralUsd,
+          leverage,
+          slippageBps: Math.round(Number(slippagePercent) * 100),
+        },
+        {
+          onProgress: (progress) => {
+            setStatus(orderStatusForProgress(progress));
+            if (progress.phase === "approval_submitted") {
+              setApprovalHash(progress.hash);
+            }
+            if (progress.phase === "order_submitted") {
+              submittedOrderHash = progress.hash;
+              setOrderHash(progress.hash);
+            }
+          },
+        },
+      );
       setOrderHash(result.orderHash);
       setStatus("submitted");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "GMX order failed");
-      setStatus("idle");
+      setStatus(submittedOrderHash ? "unknown" : "idle");
     }
   }
 
@@ -433,39 +505,46 @@ function OrderTicketPreview({ ticket }: { ticket: OrderTicket }) {
       <div className="space-y-4 px-4">
         <div className="grid gap-2 rounded-xl border bg-muted/25 p-3 text-sm">
           <TicketLine label="Side" value={ticket.side} />
-          <TicketLine label="Market" value={ticket.row.market_name ?? ticket.row.symbol} />
+          <TicketLine
+            label="Market"
+            value={ticket.row.market_name ?? ticket.row.symbol}
+          />
           <TicketLine label="Collateral" value="USDC on Arbitrum" />
           <TicketLine label="Execution" value="GMX market increase" />
         </div>
-        <div className="grid gap-3 rounded-xl border p-3 text-sm">
-          <label className="space-y-1.5 font-medium">
-            <span>Collateral amount (USDC)</span>
-            <Input
-              inputMode="decimal"
-              value={collateralUsd}
-              onChange={(event) => setCollateralUsd(event.target.value)}
-              placeholder="100"
-            />
-          </label>
-          <label className="space-y-1.5 font-medium">
-            <span>Leverage</span>
-            <Input
-              inputMode="decimal"
-              value={leverage}
-              onChange={(event) => setLeverage(event.target.value)}
-              placeholder="1"
-            />
-          </label>
-          <label className="space-y-1.5 font-medium">
-            <span>Slippage tolerance (%)</span>
-            <Input
-              inputMode="decimal"
-              value={slippagePercent}
-              onChange={(event) => setSlippagePercent(event.target.value)}
-              placeholder="1"
-            />
-          </label>
-        </div>
+        {hasStarted && status !== "idle" ? (
+          <TradeProgress steps={tradeSteps} />
+        ) : (
+          <div className="grid gap-3 rounded-xl border p-3 text-sm">
+            <label className="space-y-1.5 font-medium">
+              <span>Collateral amount (USDC)</span>
+              <Input
+                inputMode="decimal"
+                value={collateralUsd}
+                onChange={(event) => setCollateralUsd(event.target.value)}
+                placeholder="100"
+              />
+            </label>
+            <label className="space-y-1.5 font-medium">
+              <span>Leverage</span>
+              <Input
+                inputMode="decimal"
+                value={leverage}
+                onChange={(event) => setLeverage(event.target.value)}
+                placeholder="1"
+              />
+            </label>
+            <label className="space-y-1.5 font-medium">
+              <span>Slippage tolerance (%)</span>
+              <Input
+                inputMode="decimal"
+                value={slippagePercent}
+                onChange={(event) => setSlippagePercent(event.target.value)}
+                placeholder="1"
+              />
+            </label>
+          </div>
+        )}
         <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm leading-6 text-amber-900 dark:text-amber-100">
           {isShort
             ? "Shorts require explicit confirmation because losses can grow as the market rises."
@@ -478,25 +557,11 @@ function OrderTicketPreview({ ticket }: { ticket: OrderTicket }) {
           computed from live GMX ticker prices and your slippage tolerance.
         </p>
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
-        {orderHash ? (
-          <p className="break-all text-xs text-muted-foreground">
-            Submitted: {orderHash}
-          </p>
-        ) : null}
       </div>
       <SheetFooter>
         {ticket.row.gmx_market ? (
-          <Button
-            onClick={submitOrder}
-            disabled={status === "approving" || status === "submitted"}
-          >
-            {status === "approving"
-              ? "Signing GMX order..."
-              : status === "submitted"
-                ? "GMX order submitted"
-                : authenticated
-                  ? `Trade ${ticket.side} on GMX`
-                  : "Log in to trade"}
+          <Button onClick={submitOrder} disabled={status !== "idle"}>
+            {orderButtonLabel(status, authenticated, ticket.side)}
           </Button>
         ) : (
           <Button disabled>GMX market unavailable</Button>
@@ -504,6 +569,234 @@ function OrderTicketPreview({ ticket }: { ticket: OrderTicket }) {
       </SheetFooter>
     </>
   );
+}
+
+function TradeProgress({ steps }: { steps: TradeStep[] }) {
+  return (
+    <div className="rounded-xl border bg-background/70 p-3 text-sm">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div>
+          <p className="font-medium">Opening GMX position</p>
+          <p className="text-xs text-muted-foreground">
+            Keep your wallet open until the order transaction confirms.
+          </p>
+        </div>
+        <Badge variant="outline">Live</Badge>
+      </div>
+      <ol className="space-y-3">
+        {steps.map((step) => (
+          <li key={step.title} className="flex gap-3">
+            <TradeStepIcon state={step.state} />
+            <div className="min-w-0 flex-1 space-y-1">
+              <div className="flex items-center justify-between gap-3">
+                <p className="font-medium">{step.title}</p>
+                <span
+                  className={cn(
+                    "rounded-full px-2 py-0.5 text-[11px] font-medium capitalize",
+                    step.state === "complete" &&
+                      "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+                    step.state === "active" && "bg-primary/10 text-primary",
+                    step.state === "warning" &&
+                      "bg-amber-500/10 text-amber-700 dark:text-amber-300",
+                    step.state === "error" &&
+                      "bg-destructive/10 text-destructive",
+                    step.state === "pending" &&
+                      "bg-muted text-muted-foreground",
+                  )}
+                >
+                  {stepStateLabel(step.state)}
+                </span>
+              </div>
+              <p className="text-xs leading-5 text-muted-foreground">
+                {step.description}
+              </p>
+              {step.hash ? (
+                <a
+                  href={arbiscanTxUrl(step.hash)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex max-w-full items-center gap-1 break-all text-xs font-medium text-primary underline underline-offset-2"
+                >
+                  View {shortHash(step.hash)} on Arbiscan
+                  <ExternalLink className="size-3 shrink-0" />
+                </a>
+              ) : null}
+            </div>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function TradeStepIcon({ state }: { state: TradeStepState }) {
+  if (state === "complete") {
+    return <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-emerald-500" />;
+  }
+  if (state === "active") {
+    return (
+      <LoaderCircle className="mt-0.5 size-5 shrink-0 animate-spin text-primary" />
+    );
+  }
+  if (state === "warning") {
+    return (
+      <Circle className="mt-0.5 size-5 shrink-0 fill-amber-500/20 text-amber-500" />
+    );
+  }
+  if (state === "error") {
+    return (
+      <Circle className="mt-0.5 size-5 shrink-0 fill-destructive/20 text-destructive" />
+    );
+  }
+  return <Circle className="mt-0.5 size-5 shrink-0 text-muted-foreground/50" />;
+}
+
+function buildTradeSteps({
+  status,
+  hasStarted,
+  approvalHash,
+  orderHash,
+  error,
+}: {
+  status: OrderStatus;
+  hasStarted: boolean;
+  approvalHash: string | null;
+  orderHash: string | null;
+  error: string | null;
+}): TradeStep[] {
+  const hasError = Boolean(error);
+  const afterChecking = [
+    "approving",
+    "ordering",
+    "confirming",
+    "submitted",
+    "unknown",
+  ].includes(status);
+  const afterApproval = [
+    "ordering",
+    "confirming",
+    "submitted",
+    "unknown",
+  ].includes(status);
+  const afterOrder = ["confirming", "submitted", "unknown"].includes(status);
+
+  return [
+    {
+      title: "Check wallet",
+      description:
+        status === "checking"
+          ? "Checking Arbitrum network, USDC balance, allowance, and ETH for GMX fees."
+          : "Wallet, balance, allowance, and fee checks passed.",
+      state: stepState({
+        active: status === "checking",
+        complete: afterChecking,
+        error: hasStarted && status === "idle" && hasError,
+      }),
+    },
+    {
+      title: "Approve USDC",
+      description: approvalHash
+        ? "USDC approval submitted for the GMX router."
+        : afterApproval
+          ? "Existing allowance was enough, so no approval transaction was needed."
+          : "Approve only if your current GMX router allowance is too low.",
+      state: stepState({
+        active: status === "approving",
+        complete: Boolean(approvalHash) || afterApproval,
+      }),
+      ...(approvalHash ? { hash: approvalHash } : {}),
+    },
+    {
+      title: "Submit GMX order",
+      description: orderHash
+        ? "GMX market increase order transaction submitted."
+        : "Sign the GMX ExchangeRouter transaction to create the market order.",
+      state: stepState({
+        active: status === "ordering",
+        complete: Boolean(orderHash) || afterOrder,
+      }),
+      ...(orderHash ? { hash: orderHash } : {}),
+    },
+    {
+      title: "Confirm transaction",
+      description:
+        status === "submitted"
+          ? "Transaction confirmed. GMX keepers will execute the market order shortly."
+          : status === "unknown"
+            ? "A transaction hash was returned, but confirmation timed out. Check the explorer before retrying."
+            : "Waiting for Arbitrum confirmation after the wallet returns the transaction hash.",
+      state:
+        status === "unknown"
+          ? "warning"
+          : stepState({
+              active: status === "confirming",
+              complete: status === "submitted",
+            }),
+      ...(orderHash ? { hash: orderHash } : {}),
+    },
+  ];
+}
+
+function stepState({
+  active,
+  complete,
+  error,
+}: {
+  active?: boolean;
+  complete?: boolean;
+  error?: boolean;
+}): TradeStepState {
+  if (error) return "error";
+  if (complete) return "complete";
+  if (active) return "active";
+  return "pending";
+}
+
+function stepStateLabel(state: TradeStepState) {
+  if (state === "active") return "working";
+  if (state === "complete") return "done";
+  if (state === "warning") return "check";
+  return state;
+}
+
+function orderStatusForProgress(progress: DirectGmxTradeProgress): OrderStatus {
+  switch (progress.phase) {
+    case "checking_wallet":
+    case "checking_balances":
+      return "checking";
+    case "requesting_approval":
+    case "approval_submitted":
+      return "approving";
+    case "approval_confirmed":
+    case "requesting_order":
+      return "ordering";
+    case "order_submitted":
+      return "confirming";
+    case "order_confirmed":
+      return "submitted";
+  }
+}
+
+function orderButtonLabel(
+  status: OrderStatus,
+  authenticated: boolean,
+  side: "Long" | "Short",
+) {
+  if (status === "checking") return "Checking wallet...";
+  if (status === "approving") return "Approving USDC...";
+  if (status === "ordering") return "Signing GMX order...";
+  if (status === "confirming") return "Waiting for confirmation...";
+  if (status === "submitted") return "GMX order submitted";
+  if (status === "unknown") return "Order status unknown";
+  return authenticated ? `Trade ${side} on GMX` : "Log in to trade";
+}
+
+function shortHash(hash: string) {
+  return hash.length > 14 ? `${hash.slice(0, 8)}...${hash.slice(-6)}` : hash;
+}
+
+function arbiscanTxUrl(hash: string) {
+  return `https://arbiscan.io/tx/${hash}`;
 }
 
 function TicketLine({ label, value }: { label: string; value: string }) {
@@ -533,10 +826,7 @@ function SortableHeader({
 
   return (
     <th
-      className={cn(
-        "px-3 py-2 font-medium",
-        align === "right" && "text-right",
-      )}
+      className={cn("px-3 py-2 font-medium", align === "right" && "text-right")}
       aria-sort={isActive ? directionLabel : "none"}
     >
       <button
@@ -557,7 +847,8 @@ function SortableHeader({
 }
 
 function metricColumnsFor(rows: ScreenerRow[]) {
-  const columns: { id: string; label: string; format: "percent" | "number" }[] = [];
+  const columns: { id: string; label: string; format: "percent" | "number" }[] =
+    [];
   const seen = new Set<string>();
 
   for (const row of rows) {
@@ -577,7 +868,10 @@ function metricColumnsFor(rows: ScreenerRow[]) {
 
 function compareRows(left: ScreenerRow, right: ScreenerRow, sort: SortState) {
   const multiplier = sort.direction === "asc" ? 1 : -1;
-  return compareSortValues(sortValue(left, sort.key), sortValue(right, sort.key)) * multiplier;
+  return (
+    compareSortValues(sortValue(left, sort.key), sortValue(right, sort.key)) *
+    multiplier
+  );
 }
 
 function sortValue(row: ScreenerRow, key: SortKey) {
@@ -589,7 +883,10 @@ function sortValue(row: ScreenerRow, key: SortKey) {
   return row.metrics.find((metric) => metric.id === metricId)?.value ?? null;
 }
 
-function compareSortValues(left: string | number | null, right: string | number | null) {
+function compareSortValues(
+  left: string | number | null,
+  right: string | number | null,
+) {
   if (left === null && right === null) return 0;
   if (left === null) return 1;
   if (right === null) return -1;
