@@ -236,6 +236,11 @@ export function workflowStateToStructuredResult(
       ...(usesShorts(final.thesis)
         ? { costs: { funding_modeled: false } }
         : {}),
+      // "Why these assets?": the considered/selected/rejected breakdown from
+      // the universe step (present only on the rank_universe path).
+      ...(final.universe.exploration
+        ? { asset_exploration: final.universe.exploration }
+        : {}),
       artifacts: [],
     };
   }

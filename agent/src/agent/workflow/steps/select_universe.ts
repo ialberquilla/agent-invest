@@ -4,10 +4,16 @@
 // with filters derived from the thesis (and any UniverseHint that came
 // back from `decide` via the broaden_universe backward edge).
 
-import { runRankUniverse, type RankUniverseRequest } from "../cli.ts";
+import {
+  runRankUniverse,
+  type RankUniverseRequest,
+  type RankUniverseRow,
+} from "../cli.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
 import {
   resolveStrategyMode,
+  type AssetExploration,
+  type ExploredAsset,
   type Objective,
   type SelectUniverseInput,
   type StepName,
@@ -15,6 +21,10 @@ import {
   type Universe,
   type UniverseHint,
 } from "../state.ts";
+
+// Cap the rejected list so a large ranked pool can't bloat the persisted
+// result. The earliest-ranked rejections are the most informative.
+const MAX_REJECTED = 30;
 
 export type SelectUniverseDeps = {
   rankUniverse?: typeof runRankUniverse;
@@ -163,6 +173,55 @@ async function resolveUniverse(
       risk_profile: request.risk_profile,
       dropped_filters: droppedFilters.length > 0 ? droppedFilters : undefined,
     },
+    exploration: buildExploration(ranked, coinIds, skip, targetTopN),
+  };
+}
+
+// Explain the rank_universe selection: which ranked names were dropped by
+// top_skip (excluded mega-caps) vs by the top-N cutoff (ranked too low).
+// Coins filtered out upstream by rank_universe (stablecoins, short history)
+// never come back as rows, so we can only name the rank-stage rejections.
+function buildExploration(
+  ranked: RankUniverseRow[],
+  selected: string[],
+  skip: number,
+  targetTopN: number,
+): AssetExploration {
+  const selectedSet = new Set(selected);
+  const rejected: ExploredAsset[] = [];
+
+  for (const row of ranked) {
+    if (typeof row.coin_id !== "string" || !row.coin_id) continue;
+    if (selectedSet.has(row.coin_id)) continue;
+
+    const mcr =
+      typeof row.market_cap_rank === "number" ? row.market_cap_rank : undefined;
+    if (skip > 0 && mcr !== undefined && mcr <= skip) {
+      rejected.push(asset(row, `excluded by top_skip (market-cap rank ${mcr} <= ${skip})`));
+      continue;
+    }
+    // Survived top_skip but didn't make the top-N cut.
+    rejected.push(
+      asset(row, `ranked below the top ${targetTopN} after filters`),
+    );
+  }
+
+  return {
+    considered_count: ranked.length,
+    selected_count: selected.length,
+    selected,
+    rejected: rejected.slice(0, MAX_REJECTED),
+  };
+}
+
+function asset(row: RankUniverseRow, reason: string): ExploredAsset {
+  return {
+    coin_id: row.coin_id,
+    ...(typeof row.symbol === "string" ? { symbol: row.symbol } : {}),
+    ...(typeof row.market_cap_rank === "number"
+      ? { market_cap_rank: row.market_cap_rank }
+      : {}),
+    reason,
   };
 }
 

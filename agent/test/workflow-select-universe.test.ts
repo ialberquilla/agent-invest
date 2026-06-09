@@ -318,3 +318,77 @@ test("top_skip filters by market_cap_rank, not by return list order", async () =
     "echo",
   ]);
 });
+
+test("selectUniverse records an exploration of considered vs rejected assets", async () => {
+  // top_n 3, no skip: ranks 1-3 selected, 4-5 rejected as below the cutoff.
+  const thesis: Thesis = {
+    ...BASE_THESIS,
+    universe_hints: { ...BASE_THESIS.universe_hints, top_n: 3 },
+    constraints: { ...BASE_THESIS.constraints, asset_count_min: 3, asset_count_max: 3 },
+  };
+  const rankUniverse = fakeRank([
+    row("a", 1),
+    row("b", 2),
+    row("c", 3),
+    row("d", 4),
+    row("e", 5),
+  ]);
+
+  const result = await selectUniverse(
+    { run_id: "explore", thesis },
+    deps(rankUniverse),
+  );
+
+  const exploration = result.delta.universe.exploration;
+  assert.ok(exploration, "exploration should be populated on the rank path");
+  assert.equal(exploration.considered_count, 5);
+  assert.equal(exploration.selected_count, 3);
+  assert.deepEqual(exploration.selected, ["a", "b", "c"]);
+  assert.deepEqual(
+    exploration.rejected.map((r) => r.coin_id),
+    ["d", "e"],
+  );
+  assert.match(exploration.rejected[0]!.reason, /below the top 3/);
+});
+
+test("selectUniverse explains top_skip exclusions distinctly", async () => {
+  const thesis: Thesis = {
+    ...BASE_THESIS,
+    universe_hints: { ...BASE_THESIS.universe_hints, top_n: 2, top_skip: 1 },
+    constraints: { ...BASE_THESIS.constraints, asset_count_min: 2, asset_count_max: 2 },
+  };
+  const rankUniverse = fakeRank([row("a", 1), row("b", 2), row("c", 3)]);
+
+  const result = await selectUniverse(
+    { run_id: "skip", thesis },
+    deps(rankUniverse),
+  );
+
+  // a (rank 1) is excluded by top_skip; b,c selected.
+  assert.deepEqual(result.delta.universe.coin_ids, ["b", "c"]);
+  const rejected = result.delta.universe.exploration?.rejected ?? [];
+  const a = rejected.find((r) => r.coin_id === "a");
+  assert.ok(a);
+  assert.match(a.reason, /top_skip/);
+});
+
+test("selectUniverse omits exploration for a hand-picked universe", async () => {
+  const thesis: Thesis = {
+    ...BASE_THESIS,
+    universe_hints: {
+      ...BASE_THESIS.universe_hints,
+      hand_picked_coin_ids: ["bitcoin", "ethereum"],
+    },
+    constraints: {
+      ...BASE_THESIS.constraints,
+      asset_count_min: 2,
+      asset_count_max: 2,
+      max_weight_per_asset: 0.5,
+    },
+  };
+  const result = await selectUniverse(
+    { run_id: "hp", thesis },
+    deps(fakeRank([])),
+  );
+  assert.equal(result.delta.universe.exploration, undefined);
+});

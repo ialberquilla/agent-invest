@@ -321,6 +321,25 @@ export type Universe = {
     risk_profile?: string;
     dropped_filters?: Array<"exclude_stablecoins" | "exclude_wrapped">;
   };
+  // Explainability: what was considered vs selected and why names were
+  // rejected. Populated only on the rank_universe path (a hand-picked /
+  // single-asset / pair universe is explicit, so there is nothing to
+  // explain). Surfaced in the structured result for "why these assets?".
+  exploration?: AssetExploration;
+};
+
+export type AssetExploration = {
+  considered_count: number;
+  selected_count: number;
+  selected: string[];
+  rejected: ExploredAsset[];
+};
+
+export type ExploredAsset = {
+  coin_id: string;
+  symbol?: string;
+  market_cap_rank?: number;
+  reason: string;
 };
 
 export type SelectUniverseInput = {
