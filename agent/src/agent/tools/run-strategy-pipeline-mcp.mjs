@@ -3,6 +3,7 @@
 const PROTOCOL_VERSION = "2024-11-05";
 const RUN_STRATEGY_PIPELINE_TOOL_NAME = "run_strategy_pipeline";
 const SCREEN_MARKETS_TOOL_NAME = "screen_markets";
+const RUN_RESEARCH_CODE_TOOL_NAME = "run_research_code";
 
 let framing = "line";
 let buffer = Buffer.alloc(0);
@@ -81,7 +82,7 @@ async function handleRequest(message) {
     case "ping":
       return {};
     case "tools/list":
-      return { tools: [runStrategyPipelineToolDefinition(), screenMarketsToolDefinition()] };
+      return { tools: [runStrategyPipelineToolDefinition(), screenMarketsToolDefinition(), runResearchCodeToolDefinition()] };
     case "tools/call":
       return callTool(message.params);
     default:
@@ -150,6 +151,30 @@ function screenMarketsToolDefinition() {
   };
 }
 
+function runResearchCodeToolDefinition() {
+  return {
+    name: RUN_RESEARCH_CODE_TOOL_NAME,
+    description:
+      "Run short Python research code against read-only market-data views. Use for bespoke historical/statistical analysis, event studies, regime splits, and return distributions that are not market screeners or full strategy workflows.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        code: {
+          type: "string",
+          description:
+            "Python code to execute. Must use query(sql) for data access and put the final JSON-serializable answer in result.",
+        },
+        purpose: {
+          type: "string",
+          description: "One-line description of the research question.",
+        },
+      },
+      required: ["code", "purpose"],
+      additionalProperties: false,
+    },
+  };
+}
+
 async function callTool(params) {
   if (params?.name === RUN_STRATEGY_PIPELINE_TOOL_NAME) {
     return callRunStrategyPipeline(params.arguments ?? {});
@@ -157,10 +182,37 @@ async function callTool(params) {
   if (params?.name === SCREEN_MARKETS_TOOL_NAME) {
     return callScreenMarkets(params.arguments ?? {});
   }
+  if (params?.name === RUN_RESEARCH_CODE_TOOL_NAME) {
+    return callRunResearchCode(params.arguments ?? {});
+  }
 
   throw Object.assign(new Error(`Unknown tool: ${params?.name}`), {
     code: -32602,
   });
+}
+
+async function callRunResearchCode(args) {
+  const code = typeof args.code === "string" ? args.code.trim() : "";
+  const purpose = typeof args.purpose === "string" ? args.purpose.trim() : "";
+  if (!code) throw Object.assign(new Error("code is required"), { code: -32602 });
+  if (!purpose) throw Object.assign(new Error("purpose is required"), { code: -32602 });
+
+  const url = new URL("/internal/tools/run-research-code", agentToolUrl());
+  const headers = { "content-type": "application/json" };
+  if (process.env.AGENT_API_KEY) {
+    headers["x-api-key"] = process.env.AGENT_API_KEY;
+  }
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ code, purpose }),
+  });
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(text || `Agent API returned ${response.status}`);
+  }
+  const payload = text ? JSON.parse(text) : {};
+  return { content: [{ type: "text", text: JSON.stringify(payload) }] };
 }
 
 async function callRunStrategyPipeline(args) {

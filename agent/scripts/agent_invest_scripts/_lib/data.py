@@ -21,6 +21,25 @@ def daily_prices() -> pd.DataFrame:
     )
 
 
+def daily_ohlc() -> pd.DataFrame:
+    """Return daily OHLCV prices from Postgres."""
+    return read_sql_frame(
+        """
+        SELECT
+          "date",
+          "asset_id",
+          "coin_id",
+          "open",
+          "high",
+          "low",
+          "close",
+          "volume"
+        FROM "agent_daily_ohlc"
+        ORDER BY "date", "coin_id"
+        """
+    )
+
+
 def asset_universe() -> pd.DataFrame:
     """Return the current asset universe from Postgres."""
     return read_sql_frame(
@@ -72,5 +91,6 @@ def asset_universe_features() -> pd.DataFrame:
 __all__ = [
     "asset_universe",
     "asset_universe_features",
+    "daily_ohlc",
     "daily_prices",
 ]

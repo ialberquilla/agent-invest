@@ -22,6 +22,7 @@ COMMANDS: dict[str, str] = {
     "list_universe": "List the top-N asset universe entries by market cap.",
     "rank_universe": "Screen the materialized asset feature universe by sort/filter rules.",
     "recommend_backtest_window": "Pick a deterministic backtest window for the given universe.",
+    "run_research_code": "Run guarded Python research code against read-only market data.",
     "run_candidate_batch": "Run a bounded batch of candidate template backtests.",
     "validate_against_thesis": "Validate candidate-batch results against a structured thesis.",
 }

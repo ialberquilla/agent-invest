@@ -28,6 +28,7 @@ import {
   screenMarkets as defaultScreenMarkets,
   type ScreenMarketsInput,
 } from "../tools/screen-markets";
+import { runResearchCode as defaultRunResearchCode } from "../tools/run-research-code";
 import {
   listStageEventsByRunId as defaultListStageEventsByRunId,
   subscribeAgentEvents as defaultSubscribeAgentEvents,
@@ -1407,6 +1408,18 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     }
 
     return executeScreenMarkets(parseScreenMarketsInput(body));
+  });
+
+  app.post("/internal/tools/run-research-code", async (request) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    if (!isRecord(body)) {
+      throw httpError(400, "Request body must be a JSON object");
+    }
+    return defaultRunResearchCode({
+      code: requiredText(body, "code"),
+      purpose: requiredText(body, "purpose"),
+      ...(typeof body.timeout_seconds === "number" ? { timeoutSeconds: body.timeout_seconds } : {}),
+    });
   });
 
   app.post("/screeners/markets", async (request) => {
