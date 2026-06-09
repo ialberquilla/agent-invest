@@ -31,6 +31,54 @@ export type RebalanceFrequency =
 
 export type WeightMode = "percentage" | "dollar";
 
+// The strategy SHAPE the thesis takes. Drives feasibility rules, eligible
+// templates, and universe sizing downstream. basket_allocation is the
+// default and the only fully-runnable shape today; the others land across
+// later phases (see plans/workflow_backtest_improvements.md). Optional on
+// the Thesis so existing long-basket runs are unchanged when it is unset.
+export type StrategyMode =
+  | "single_asset"
+  | "pair_trade"
+  | "hedge_overlay"
+  | "basket_allocation"
+  | "momentum_rotation"
+  | "long_short_portfolio";
+
+export const STRATEGY_MODES: readonly StrategyMode[] = [
+  "single_asset",
+  "pair_trade",
+  "hedge_overlay",
+  "basket_allocation",
+  "momentum_rotation",
+  "long_short_portfolio",
+];
+
+// The direction permission, kept as a separate axis from the mode so a
+// shape (e.g. momentum_rotation) can be long-only, long/flat, or
+// long/short without a combinatorial enum. Shorts require explicit user
+// intent: never inferred from "growth"/"momentum" language.
+export type AllowedSides = "long_only" | "long_flat" | "long_short";
+
+export const ALLOWED_SIDES: readonly AllowedSides[] = [
+  "long_only",
+  "long_flat",
+  "long_short",
+];
+
+export type ExecutionMode = "wallet_direct" | "strategy_vault";
+
+export const EXECUTION_MODES: readonly ExecutionMode[] = [
+  "wallet_direct",
+  "strategy_vault",
+];
+
+// Defaults applied when the thesis leaves a mode field unset. They
+// reproduce the pre-mode behavior (a long-only basket deployed to a
+// vault) so unset === unchanged.
+export const DEFAULT_STRATEGY_MODE: StrategyMode = "basket_allocation";
+export const DEFAULT_ALLOWED_SIDES: AllowedSides = "long_only";
+export const DEFAULT_EXECUTION_MODE: ExecutionMode = "strategy_vault";
+
 export type UniverseHints = {
   top_n: number;
   // Skip the first N market-cap ranks before applying top_n. Lets the
@@ -68,7 +116,40 @@ export type Thesis = {
   constraints: ThesisConstraints;
   rebalance_frequency: RebalanceFrequency;
   interpretation_notes: string;
+  // Strategy shape + direction permission (optional; default via the
+  // resolve* helpers). Gate feasibility and template selection.
+  strategy_mode?: StrategyMode;
+  allowed_sides?: AllowedSides;
+  execution_mode?: ExecutionMode;
+  // Explicit legs for single-asset / pair / hedge shapes. Unused by
+  // basket modes. Consumed by select_universe and the dedicated recipes
+  // in later phases; carried here so they survive an override + rerun.
+  target_coin_id?: string;
+  long_coin_ids?: string[];
+  short_coin_ids?: string[];
 };
+
+// Resolve a thesis mode field to its effective value, applying the
+// default when unset. Use these everywhere downstream instead of reading
+// the optional field directly, so an unset thesis behaves exactly like a
+// long-only basket.
+export function resolveStrategyMode(
+  thesis: Pick<Thesis, "strategy_mode">,
+): StrategyMode {
+  return thesis.strategy_mode ?? DEFAULT_STRATEGY_MODE;
+}
+
+export function resolveAllowedSides(
+  thesis: Pick<Thesis, "allowed_sides">,
+): AllowedSides {
+  return thesis.allowed_sides ?? DEFAULT_ALLOWED_SIDES;
+}
+
+export function resolveExecutionMode(
+  thesis: Pick<Thesis, "execution_mode">,
+): ExecutionMode {
+  return thesis.execution_mode ?? DEFAULT_EXECUTION_MODE;
+}
 
 // Deterministic overrides applied to the interpreted Thesis after
 // interpret_brief and before universe/template selection. They let a
@@ -1168,11 +1249,27 @@ export function validateThesis(value: unknown): asserts value is Thesis {
 
   requireString(value.interpretation_notes, "interpretation_notes");
 
+  if (value.strategy_mode !== undefined) {
+    requireEnum(value.strategy_mode, STRATEGY_MODES, "strategy_mode");
+  }
+  if (value.allowed_sides !== undefined) {
+    requireEnum(value.allowed_sides, ALLOWED_SIDES, "allowed_sides");
+  }
+  if (value.execution_mode !== undefined) {
+    requireEnum(value.execution_mode, EXECUTION_MODES, "execution_mode");
+  }
+  if (value.target_coin_id !== undefined) {
+    requireString(value.target_coin_id, "target_coin_id");
+  }
+  optionalStringArray(value.long_coin_ids, "long_coin_ids");
+  optionalStringArray(value.short_coin_ids, "short_coin_ids");
+
   validateUniverseHints(value.universe_hints);
   validateConstraints(value.constraints);
   validateFeasibility(
     value.constraints as ThesisConstraints,
     value.universe_hints as UniverseHints,
+    (value.strategy_mode as StrategyMode | undefined) ?? DEFAULT_STRATEGY_MODE,
   );
 }
 
@@ -1260,22 +1357,38 @@ function validateConstraints(
 function validateFeasibility(
   constraints: ThesisConstraints,
   universe: UniverseHints,
+  mode: StrategyMode,
 ) {
   if (constraints.asset_count_min > constraints.asset_count_max) {
     throw new ThesisValidationError(
       "constraints.asset_count_min must be <= asset_count_max",
     );
   }
-  // Need enough cap room to fill the non-cash portion across at least asset_count_min assets.
-  const maxAssetCoverage =
-    constraints.max_weight_per_asset * constraints.asset_count_min;
-  const requiredAssetCoverage = 1 - constraints.max_cash_weight;
-  if (maxAssetCoverage < requiredAssetCoverage - 1e-6) {
-    throw new ThesisValidationError(
-      `infeasible: max_weight_per_asset * asset_count_min (${maxAssetCoverage.toFixed(
-        4,
-      )}) < 1 - max_cash_weight (${requiredAssetCoverage.toFixed(4)})`,
-    );
+  // single_asset is a single position that fills the whole non-cash book,
+  // so the basket coverage inequality below does not apply -- it would
+  // otherwise reject a 1-asset thesis whose per-asset cap is < 100%.
+  // Require the count to actually be 1 so the mode and the constraints agree.
+  if (mode === "single_asset") {
+    if (
+      constraints.asset_count_min !== 1 ||
+      constraints.asset_count_max !== 1
+    ) {
+      throw new ThesisValidationError(
+        "single_asset strategy_mode requires asset_count_min == asset_count_max == 1",
+      );
+    }
+  } else {
+    // Need enough cap room to fill the non-cash portion across at least asset_count_min assets.
+    const maxAssetCoverage =
+      constraints.max_weight_per_asset * constraints.asset_count_min;
+    const requiredAssetCoverage = 1 - constraints.max_cash_weight;
+    if (maxAssetCoverage < requiredAssetCoverage - 1e-6) {
+      throw new ThesisValidationError(
+        `infeasible: max_weight_per_asset * asset_count_min (${maxAssetCoverage.toFixed(
+          4,
+        )}) < 1 - max_cash_weight (${requiredAssetCoverage.toFixed(4)})`,
+      );
+    }
   }
   if (
     universe.hand_picked_coin_ids &&

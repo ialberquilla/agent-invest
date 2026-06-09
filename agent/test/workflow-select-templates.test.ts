@@ -105,6 +105,69 @@ test("selectTemplates sends the catalog and thesis digest in the user message", 
   assert.equal(parsed.thesis.rebalance_frequency, "monthly");
 });
 
+test("selectTemplates drops short families when shorts are not permitted", async () => {
+  const withShorts: TemplateSelection = {
+    rationale: "Mix of long and short families.",
+    selected: [
+      { family: "partial_hedge_overlay", rank: 1, rationale: "hedge" },
+      { family: "core_satellite_allocation", rank: 2, rationale: "core" },
+      { family: "beta_hedged_alt_exposure", rank: 3, rationale: "beta" },
+    ],
+  };
+  const llm = fakeLLM([JSON.stringify(withShorts)]);
+
+  // THESIS has no allowed_sides -> defaults to long_only -> shorts dropped.
+  const result = await selectTemplates(
+    { run_id: "shorts-gate", thesis: THESIS },
+    deps(llm),
+  );
+
+  const families = result.delta.template_selection.selected.map((s) => s.family);
+  assert.deepEqual(families, ["core_satellite_allocation"]);
+  // Survivors are re-ranked contiguously from 1.
+  assert.equal(result.delta.template_selection.selected[0]?.rank, 1);
+});
+
+test("selectTemplates keeps short families when allowed_sides is long_short", async () => {
+  const withShorts: TemplateSelection = {
+    rationale: "Long/short book.",
+    selected: [
+      { family: "partial_hedge_overlay", rank: 1, rationale: "hedge" },
+      { family: "core_satellite_allocation", rank: 2, rationale: "core" },
+    ],
+  };
+  const llm = fakeLLM([JSON.stringify(withShorts)]);
+
+  const result = await selectTemplates(
+    { run_id: "shorts-ok", thesis: { ...THESIS, allowed_sides: "long_short" } },
+    deps(llm),
+  );
+
+  const families = result.delta.template_selection.selected.map((s) => s.family);
+  assert.deepEqual(families, ["partial_hedge_overlay", "core_satellite_allocation"]);
+});
+
+test("selectTemplates falls back to long-only when the gate empties the shortlist", async () => {
+  const onlyShorts: TemplateSelection = {
+    rationale: "All shorts.",
+    selected: [
+      { family: "partial_hedge_overlay", rank: 1, rationale: "hedge" },
+      { family: "drawdown_based_hedge", rank: 2, rationale: "ddh" },
+    ],
+  };
+  const llm = fakeLLM([JSON.stringify(onlyShorts)]);
+
+  const result = await selectTemplates(
+    { run_id: "shorts-empty", thesis: THESIS },
+    deps(llm),
+  );
+
+  assert.deepEqual(
+    result.delta.template_selection.selected.map((s) => s.family),
+    ["synthetic_long_allocation"],
+  );
+});
+
 test("selectTemplates recovers from a fenced JSON response", async () => {
   const llm = fakeLLM([
     "```json\n" + JSON.stringify(SAMPLE_SELECTION) + "\n```",
