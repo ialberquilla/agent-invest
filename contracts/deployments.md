@@ -10,10 +10,18 @@
 
 | Contract | Address |
 | --- | --- |
-| `StrategyVault` implementation | `0x5379ED99B967B1371FB01533E6d64c1AaD0425F3` |
+| `StrategyVault` implementation (current, payable `deposit`) | `0xf04B711585360FD6b61e588369c651d1CF15dD2e` |
 | `VaultFactory` | `0xd335d60DF2B199Cc3E7438A79a2725F64bD29F3b` |
 | `UpgradeableBeacon` | `0x637C3338D7FdE7092Aba28a6F98dc598D143CD78` |
 | Initial vault | `0x42E69E9b8e196c182c01C17219004CF7B10F2954` |
+
+### Beacon upgrades
+
+| Date | New implementation | Tx | Notes |
+| --- | --- | --- | --- |
+| 2026-06-09 | `0xf04B711585360FD6b61e588369c651d1CF15dD2e` | `0x54b42d69bd49e32bbb28a7251a26a69015795346f269c2048d12efbe5700a9c7` | payable `deposit` (USDC + gas-tank top-up in one tx) |
+
+Original impl at this factory: `0x5379ED99B967B1371FB01533E6d64c1AaD0425F3`.
 
 ### Transactions
 

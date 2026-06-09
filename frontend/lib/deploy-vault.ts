@@ -18,8 +18,10 @@ import {
 import {
   estimateExecutionFee,
   getAcceptablePrice,
+  getAcceptablePriceForDecrease,
   getMarketIndexToken,
 } from "@/lib/gmx-prices";
+import type { GmxOpenPosition } from "@/lib/gmx-positions";
 
 const SUPPORTED_CHAINS = [arbitrum, arbitrumSepolia] as const;
 
@@ -39,8 +41,16 @@ export type VaultBindingResponse = {
   chain_id: number;
   vault_address: string;
   asset_address: string;
+  display_name: string;
   status: string;
 };
+
+export type VaultDeployProgress =
+  | { phase: "checking_wallet" }
+  | { phase: "switching_chain"; chainId: number }
+  | { phase: "requesting_signature" }
+  | { phase: "transaction_submitted"; hash: `0x${string}` }
+  | { phase: "transaction_confirmed"; vaultAddress: string };
 
 export type VaultDeployabilityResponse =
   | {
@@ -106,7 +116,7 @@ const STRATEGY_VAULT_USER_ABI = [
     name: "deposit",
     inputs: [{ name: "amount", type: "uint256" }],
     outputs: [],
-    stateMutability: "nonpayable",
+    stateMutability: "payable",
   },
   {
     type: "function",
@@ -229,6 +239,7 @@ function strategyVaultChain() {
 
 export async function deployVaultOnChain(
   provider: EthereumProvider,
+  options: { onProgress?: (progress: VaultDeployProgress) => void } = {},
 ): Promise<VaultDeployment> {
   const chain = strategyVaultChain();
   const walletClient = createWalletClient({
@@ -236,14 +247,20 @@ export async function deployVaultOnChain(
     transport: custom(provider),
   });
   const publicClient = createPublicClient({ chain, transport: http() });
+  options.onProgress?.({ phase: "checking_wallet" });
   const [account] = await walletClient.getAddresses();
   if (!account) throw new Error("Connect a wallet before deploying");
 
   const currentChainId = await walletClient.getChainId();
   if (currentChainId !== STRATEGY_VAULT_CHAIN_ID) {
+    options.onProgress?.({
+      phase: "switching_chain",
+      chainId: STRATEGY_VAULT_CHAIN_ID,
+    });
     await walletClient.switchChain({ id: STRATEGY_VAULT_CHAIN_ID });
   }
 
+  options.onProgress?.({ phase: "requesting_signature" });
   const createVaultHash = await walletClient.writeContract({
     address: STRATEGY_VAULT_FACTORY_ADDRESS as `0x${string}`,
     abi: VAULT_FACTORY_ABI,
@@ -252,10 +269,15 @@ export async function deployVaultOnChain(
     account,
     chain,
   });
+  options.onProgress?.({
+    phase: "transaction_submitted",
+    hash: createVaultHash,
+  });
   const createVaultReceipt = await publicClient.waitForTransactionReceipt({
     hash: createVaultHash,
   });
   const vaultAddress = vaultAddressFromReceipt(createVaultReceipt.logs);
+  options.onProgress?.({ phase: "transaction_confirmed", vaultAddress });
 
   return {
     chainId: STRATEGY_VAULT_CHAIN_ID,
@@ -264,7 +286,9 @@ export async function deployVaultOnChain(
   };
 }
 
-function vaultAddressFromReceipt(logs: Parameters<typeof parseEventLogs>[0]["logs"]) {
+function vaultAddressFromReceipt(
+  logs: Parameters<typeof parseEventLogs>[0]["logs"],
+) {
   const [vaultCreated] = parseEventLogs({
     abi: VAULT_FACTORY_ABI,
     eventName: "VaultCreated",
@@ -272,7 +296,9 @@ function vaultAddressFromReceipt(logs: Parameters<typeof parseEventLogs>[0]["log
   }) as unknown as VaultCreatedLog[];
   const vaultAddress = vaultCreated?.args.vault;
   if (!vaultAddress) {
-    throw new Error("Vault creation receipt did not include a VaultCreated event");
+    throw new Error(
+      "Vault creation receipt did not include a VaultCreated event",
+    );
   }
   return vaultAddress;
 }
@@ -302,26 +328,49 @@ export async function assertVaultDeployable(
   return payload;
 }
 
+// Non-throwing read of an already-deployed vault for this run, so the UI can resume the manage
+// flow on reload instead of offering a duplicate deploy. Returns null if nothing is bound yet.
+export async function getExistingVaultBinding(
+  runId: string,
+): Promise<VaultBindingResponse | null> {
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/vault`);
+  const payload = (await response.json().catch(() => null)) as
+    | (VaultDeployabilityResponse & Partial<VaultBindingResponse>)
+    | null;
+  if (!response.ok || !payload || payload.deployable !== false) return null;
+  if (!payload.vault_address || !payload.mandate_id) return null;
+  return {
+    mandate_id: payload.mandate_id,
+    chain_id: payload.chain_id ?? STRATEGY_VAULT_CHAIN_ID,
+    vault_address: payload.vault_address,
+    asset_address: payload.asset_address ?? STRATEGY_VAULT_ASSET,
+    display_name:
+      typeof payload.display_name === "string" && payload.display_name.trim()
+        ? payload.display_name.trim()
+        : `Vault ${payload.vault_address.slice(0, 6)}...${payload.vault_address.slice(-4)}`,
+    status: payload.status ?? "active",
+  };
+}
+
 export async function saveVaultBinding(
   runId: string,
   deployment: VaultDeployment,
   accessToken?: string | null,
+  displayName = "Unnamed strategy",
 ): Promise<VaultBindingResponse> {
-  const response = await fetch(
-    `/api/runs/${encodeURIComponent(runId)}/vault`,
-    {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
-      },
-      body: JSON.stringify({
-        chain_id: deployment.chainId,
-        vault_address: deployment.vaultAddress,
-        asset_address: deployment.assetAddress,
-      }),
+  const response = await fetch(`/api/runs/${encodeURIComponent(runId)}/vault`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(accessToken ? { authorization: `Bearer ${accessToken}` } : {}),
     },
-  );
+    body: JSON.stringify({
+      chain_id: deployment.chainId,
+      vault_address: deployment.vaultAddress,
+      asset_address: deployment.assetAddress,
+      display_name: displayName,
+    }),
+  });
 
   const payload = (await response.json().catch(() => null)) as
     | (VaultBindingResponse & { message?: string })
@@ -331,13 +380,23 @@ export async function saveVaultBinding(
     throw new Error(payload?.message ?? "Failed to save vault binding");
   }
 
-  return payload as VaultBindingResponse;
+  const binding = payload as VaultBindingResponse;
+  return {
+    ...binding,
+    display_name:
+      typeof binding.display_name === "string" && binding.display_name.trim()
+        ? binding.display_name.trim()
+        : displayName,
+  };
 }
 
+// Deposit USDC collateral and, optionally, top up the native gas tank in the SAME deposit tx
+// (`deposit` is payable). Still needs a separate ERC20 approve tx first.
 export async function fundVaultOnChain(
   provider: EthereumProvider,
   vaultAddress: string,
   amount: string,
+  ethGas?: string,
 ) {
   const chain = strategyVaultChain();
   const walletClient = createWalletClient({
@@ -357,6 +416,8 @@ export async function fundVaultOnChain(
   if (amountUnits <= BigInt(0)) {
     throw new Error("Enter an amount greater than zero");
   }
+  const gasValue =
+    ethGas && ethGas.trim().length > 0 ? parseEther(ethGas) : BigInt(0);
 
   const approveHash = await walletClient.writeContract({
     address: STRATEGY_VAULT_ASSET as `0x${string}`,
@@ -373,6 +434,7 @@ export async function fundVaultOnChain(
     abi: STRATEGY_VAULT_USER_ABI,
     functionName: "deposit",
     args: [amountUnits],
+    value: gasValue,
     account,
     chain,
   });
@@ -386,7 +448,10 @@ export async function readVaultIdleBalance(
   vaultAddress: string,
 ) {
   const chain = strategyVaultChain();
-  const publicClient = createPublicClient({ chain, transport: custom(provider) });
+  const publicClient = createPublicClient({
+    chain,
+    transport: custom(provider),
+  });
   const balance = await publicClient.readContract({
     address: vaultAddress as `0x${string}`,
     abi: STRATEGY_VAULT_USER_ABI,
@@ -412,7 +477,8 @@ export async function readAllocationReadiness(
   return payload as VaultAllocationReadiness;
 }
 
-const ZERO_REFERRAL = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
+const ZERO_REFERRAL =
+  "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
 const USD_DECIMALS = 30;
 const DEFAULT_SLIPPAGE_BPS = 100; // 1%
 
@@ -457,7 +523,9 @@ async function buildOrderLegs(
   let kept = positive;
   let renormalize = false;
   if (maxLegs != null && maxLegs > 0 && maxLegs < positive.length) {
-    kept = [...positive].sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0)).slice(0, maxLegs);
+    kept = [...positive]
+      .sort((a, b) => (b.weight ?? 0) - (a.weight ?? 0))
+      .slice(0, maxLegs);
     renormalize = true;
   }
   const keptWeightSum = kept.reduce((sum, item) => sum + (item.weight ?? 0), 0);
@@ -466,9 +534,14 @@ async function buildOrderLegs(
   const legs: OrderLeg[] = [];
   for (const item of kept) {
     const market = item.gmx_market?.market_token;
-    if (!market) throw new Error(`Backend did not resolve a GMX market for ${item.coin_id}`);
+    if (!market)
+      throw new Error(
+        `Backend did not resolve a GMX market for ${item.coin_id}`,
+      );
 
-    const weight = renormalize ? (item.weight ?? 0) / keptWeightSum : (item.weight ?? 0);
+    const weight = renormalize
+      ? (item.weight ?? 0) / keptWeightSum
+      : (item.weight ?? 0);
     const weightBps = BigInt(Math.round(weight * 10_000));
     const collateralAmount = (collateralUnits * weightBps) / BigInt(10_000);
     const sizeDeltaUsd = parseUnits(
@@ -478,7 +551,13 @@ async function buildOrderLegs(
 
     const indexToken = await getMarketIndexToken(market);
     const price = await getAcceptablePrice(indexToken, true, slippageBps);
-    legs.push({ market: market as `0x${string}`, collateralAmount, sizeDeltaUsd, fee, price });
+    legs.push({
+      market: market as `0x${string}`,
+      collateralAmount,
+      sizeDeltaUsd,
+      fee,
+      price,
+    });
   }
   return legs;
 }
@@ -490,7 +569,10 @@ export async function fundVaultGasOnChain(
   ethAmount: string,
 ) {
   const chain = strategyVaultChain();
-  const walletClient = createWalletClient({ chain, transport: custom(provider) });
+  const walletClient = createWalletClient({
+    chain,
+    transport: custom(provider),
+  });
   const publicClient = createPublicClient({ chain, transport: http() });
   const [account] = await walletClient.getAddresses();
   if (!account) throw new Error("Connect a wallet before funding gas");
@@ -501,7 +583,8 @@ export async function fundVaultGasOnChain(
   }
 
   const value = parseEther(ethAmount);
-  if (value <= BigInt(0)) throw new Error("Enter an ETH amount greater than zero");
+  if (value <= BigInt(0))
+    throw new Error("Enter an ETH amount greater than zero");
 
   const hash = await walletClient.writeContract({
     address: vaultAddress as `0x${string}`,
@@ -515,9 +598,35 @@ export async function fundVaultGasOnChain(
   return readVaultNativeBalance(provider, vaultAddress);
 }
 
-export async function readVaultNativeBalance(provider: EthereumProvider, vaultAddress: string) {
+// Read idle USDC + native gas balances over a public RPC (no wallet needed) — used to hydrate the
+// manage panel when resuming an already-deployed vault.
+export async function readVaultBalances(vaultAddress: string) {
   const chain = strategyVaultChain();
-  const publicClient = createPublicClient({ chain, transport: custom(provider) });
+  const publicClient = createPublicClient({ chain, transport: http() });
+  const [idle, gas] = await Promise.all([
+    publicClient.readContract({
+      address: vaultAddress as `0x${string}`,
+      abi: STRATEGY_VAULT_USER_ABI,
+      functionName: "idleBalance",
+    }),
+    publicClient.readContract({
+      address: vaultAddress as `0x${string}`,
+      abi: STRATEGY_VAULT_USER_ABI,
+      functionName: "nativeBalance",
+    }),
+  ]);
+  return { idle: formatUnits(idle, ASSET_DECIMALS), gas: formatEther(gas) };
+}
+
+export async function readVaultNativeBalance(
+  provider: EthereumProvider,
+  vaultAddress: string,
+) {
+  const chain = strategyVaultChain();
+  const publicClient = createPublicClient({
+    chain,
+    transport: custom(provider),
+  });
   const balance = await publicClient.readContract({
     address: vaultAddress as `0x${string}`,
     abi: STRATEGY_VAULT_USER_ABI,
@@ -526,13 +635,54 @@ export async function readVaultNativeBalance(provider: EthereumProvider, vaultAd
   return formatEther(balance);
 }
 
+// Withdraw all idle USDC collateral back to the owner (recovery / finish).
+export async function withdrawVaultIdleOnChain(
+  provider: EthereumProvider,
+  vaultAddress: string,
+) {
+  const chain = strategyVaultChain();
+  const walletClient = createWalletClient({
+    chain,
+    transport: custom(provider),
+  });
+  const publicClient = createPublicClient({ chain, transport: http() });
+  const [account] = await walletClient.getAddresses();
+  if (!account) throw new Error("Connect a wallet before withdrawing");
+
+  const currentChainId = await walletClient.getChainId();
+  if (currentChainId !== STRATEGY_VAULT_CHAIN_ID) {
+    await walletClient.switchChain({ id: STRATEGY_VAULT_CHAIN_ID });
+  }
+
+  const idle = await publicClient.readContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "idleBalance",
+  });
+  if (idle <= BigInt(0)) return formatUnits(BigInt(0), ASSET_DECIMALS);
+
+  const hash = await walletClient.writeContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "withdraw",
+    args: [idle, account],
+    account,
+    chain,
+  });
+  await publicClient.waitForTransactionReceipt({ hash });
+  return readVaultIdleBalance(provider, vaultAddress);
+}
+
 // Sweep native ETH (GMX fee refunds + leftover gas tank) back to the owner.
 export async function withdrawVaultNativeOnChain(
   provider: EthereumProvider,
   vaultAddress: string,
 ) {
   const chain = strategyVaultChain();
-  const walletClient = createWalletClient({ chain, transport: custom(provider) });
+  const walletClient = createWalletClient({
+    chain,
+    transport: custom(provider),
+  });
   const publicClient = createPublicClient({ chain, transport: http() });
   const [account] = await walletClient.getAddresses();
   if (!account) throw new Error("Connect a wallet before sweeping gas");
@@ -563,7 +713,10 @@ export async function executeVaultAllocationOnChain(
   options?: { payFromTank?: boolean; slippageBps?: number; maxLegs?: number },
 ) {
   const chain = strategyVaultChain();
-  const walletClient = createWalletClient({ chain, transport: custom(provider) });
+  const walletClient = createWalletClient({
+    chain,
+    transport: custom(provider),
+  });
   const publicClient = createPublicClient({ chain, transport: http() });
   const [account] = await walletClient.getAddresses();
   if (!account) throw new Error("Connect a wallet before execution");
@@ -580,7 +733,8 @@ export async function executeVaultAllocationOnChain(
     options?.slippageBps ?? DEFAULT_SLIPPAGE_BPS,
     options?.maxLegs,
   );
-  if (legs.length === 0) throw new Error("No positive allocation legs to execute");
+  if (legs.length === 0)
+    throw new Error("No positive allocation legs to execute");
 
   const orders = legs.map((leg) => ({
     exchangeRouter,
@@ -620,7 +774,10 @@ export async function closeVaultPositionsAndWithdrawIdleOnChain(
   options?: { payFromTank?: boolean; slippageBps?: number; maxLegs?: number },
 ) {
   const chain = strategyVaultChain();
-  const walletClient = createWalletClient({ chain, transport: custom(provider) });
+  const walletClient = createWalletClient({
+    chain,
+    transport: custom(provider),
+  });
   const publicClient = createPublicClient({ chain, transport: http() });
   const [account] = await walletClient.getAddresses();
   if (!account) throw new Error("Connect a wallet before closing");
@@ -682,4 +839,84 @@ export async function closeVaultPositionsAndWithdrawIdleOnChain(
     });
     await publicClient.waitForTransactionReceipt({ hash: withdrawHash });
   }
+}
+
+export async function closeVaultOpenPositionsOnChain(
+  provider: EthereumProvider,
+  vaultAddress: string,
+  assetAddress: string,
+  positions: GmxOpenPosition[],
+  options?: { payFromTank?: boolean; slippageBps?: number },
+) {
+  const chain = strategyVaultChain();
+  const walletClient = createWalletClient({
+    chain,
+    transport: custom(provider),
+  });
+  const publicClient = createPublicClient({ chain, transport: http() });
+  const [account] = await walletClient.getAddresses();
+  if (!account) throw new Error("Connect a wallet before closing positions");
+
+  const currentChainId = await walletClient.getChainId();
+  if (currentChainId !== STRATEGY_VAULT_CHAIN_ID) {
+    await walletClient.switchChain({ id: STRATEGY_VAULT_CHAIN_ID });
+  }
+
+  const closeable = positions.filter(
+    (position) =>
+      BigInt(position.sizeUsdRaw) > BigInt(0) &&
+      BigInt(position.collateralAmountRaw) > BigInt(0),
+  );
+  if (closeable.length === 0) throw new Error("No open positions to close");
+
+  const { exchangeRouter, orderVault } = await readGmxRouting(
+    publicClient,
+    vaultAddress,
+  );
+  const fee = await estimateExecutionFee(publicClient);
+  const slippageBps = options?.slippageBps ?? DEFAULT_SLIPPAGE_BPS;
+
+  const orders = await Promise.all(
+    closeable.map(async (position) => {
+      const market = position.marketAddress as `0x${string}`;
+      const indexToken = await getMarketIndexToken(market);
+      const isLong = position.side === "Long";
+      return {
+        exchangeRouter,
+        orderVault,
+        market,
+        collateralToken: assetAddress as `0x${string}`,
+        isLong,
+        shouldUnwrapNativeToken: false,
+        sizeDeltaUsd: BigInt(position.sizeUsdRaw),
+        collateralWithdrawalAmount: BigInt(position.collateralAmountRaw),
+        acceptablePrice: await getAcceptablePriceForDecrease(
+          indexToken,
+          isLong,
+          slippageBps,
+        ),
+        executionFee: fee,
+        minOutputAmount: BigInt(0),
+        decreasePositionSwapType: 0,
+        referralCode: ZERO_REFERRAL,
+      };
+    }),
+  );
+
+  const totalFee = orders.reduce(
+    (sum, order) => sum + order.executionFee,
+    BigInt(0),
+  );
+  const value = options?.payFromTank ? BigInt(0) : totalFee;
+  const hash = await walletClient.writeContract({
+    address: vaultAddress as `0x${string}`,
+    abi: STRATEGY_VAULT_USER_ABI,
+    functionName: "createGmxMarketDecreaseOrders",
+    args: [orders],
+    value,
+    account,
+    chain,
+  });
+  await publicClient.waitForTransactionReceipt({ hash });
+  return hash;
 }

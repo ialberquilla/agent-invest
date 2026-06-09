@@ -277,6 +277,19 @@ contract StrategyVaultTest is Test {
         assertEq(vault.idleBalance(), amount);
     }
 
+    function test_DepositWithGasFundsBoth() external {
+        asset.mint(owner, 1_000e18);
+        vm.deal(owner, 0.01 ether);
+
+        vm.startPrank(owner);
+        asset.approve(address(vault), 1_000e18);
+        vault.deposit{value: 0.01 ether}(1_000e18);
+        vm.stopPrank();
+
+        assertEq(vault.idleBalance(), 1_000e18);
+        assertEq(vault.nativeBalance(), 0.01 ether);
+    }
+
     function test_OnlyOwnerCanDeposit() external {
         asset.mint(address(this), 1e18);
         asset.approve(address(vault), 1e18);

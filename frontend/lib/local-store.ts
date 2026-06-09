@@ -24,6 +24,7 @@ export type DeployedStrategy = {
   status: string;
   label: string;
   updated_at: string;
+  run_id?: string;
 };
 
 const STRATEGY_ID_KEY = "agent-invest:strategy-id";
@@ -118,7 +119,8 @@ function isDeployedStrategy(value: unknown): value is DeployedStrategy {
     isNonEmptyString(value.asset_address) &&
     isNonEmptyString(value.status) &&
     isNonEmptyString(value.label) &&
-    isNonEmptyString(value.updated_at)
+    isNonEmptyString(value.updated_at) &&
+    (value.run_id === undefined || isNonEmptyString(value.run_id))
   );
 }
 
@@ -355,14 +357,21 @@ export function upsertDeployedStrategy(strategy: {
   asset_address: string;
   status: string;
   label?: string;
+  run_id?: string;
 }) {
   if (!canUseLocalStorage()) return;
   const current = getDeployedStrategies();
+  const existing = current.find((entry) => entry.mandate_id === strategy.mandate_id);
+  const fallbackLabel = `Vault ${strategy.vault_address.slice(0, 6)}...${strategy.vault_address.slice(-4)}`;
+  const label =
+    strategy.label !== undefined
+      ? normalizeText(strategy.label) || existing?.label || fallbackLabel
+      : existing?.label || fallbackLabel;
   const next: DeployedStrategy = {
     ...strategy,
-    label:
-      normalizeKnownStrategyLabel(strategy.label) ||
-      `Vault ${strategy.vault_address.slice(0, 6)}...${strategy.vault_address.slice(-4)}`,
+    label,
+    // Preserve a previously-stored run_id if this update doesn't carry one.
+    run_id: strategy.run_id ?? existing?.run_id,
     updated_at: new Date().toISOString(),
   };
   window.localStorage.setItem(

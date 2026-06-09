@@ -7,6 +7,7 @@ import { ChatView } from "@/components/ChatView";
 import { ScreenerResultCard } from "@/components/ScreenerResultCard";
 import { StrategySidebar } from "@/components/StrategySidebar";
 import { ThemeToggle } from "@/components/ThemeToggle";
+import { VaultManagerPane } from "@/components/VaultManagerPane";
 import { WalletPositionsPane } from "@/components/WalletPositionsPane";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -19,6 +20,7 @@ import {
   getPinnedScreeners,
   getStrategyId,
   removeKnownStrategy,
+  type DeployedStrategy,
   type PinnedScreener,
   setStrategyId as persistStrategyId,
 } from "@/lib/local-store";
@@ -37,6 +39,11 @@ type AuthState = {
   login: () => void;
   logout: () => void;
   getAccessToken: () => Promise<string | null>;
+};
+
+type DeployedStrategyStatus = {
+  label: string;
+  tone: "idle" | "pending" | "live" | "error";
 };
 
 const anonymousAuth: AuthState = {
@@ -133,7 +140,15 @@ function PrivyStrategyChatShell() {
 
   return (
     <StrategyChatShellContent
-      auth={{ ready, authenticated, user, walletAddress, login, logout, getAccessToken }}
+      auth={{
+        ready,
+        authenticated,
+        user,
+        walletAddress,
+        login,
+        logout,
+        getAccessToken,
+      }}
     />
   );
 }
@@ -155,12 +170,20 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   const [deployedStrategies, setDeployedStrategies] = useState(() =>
     getDeployedStrategies(),
   );
+  const [deployedStrategyStatuses, setDeployedStrategyStatuses] = useState<
+    Record<string, DeployedStrategyStatus>
+  >({});
   const [activeScreenerId, setActiveScreenerId] = useState<string | null>(null);
   const [activeScreener, setActiveScreener] = useState<ScreenerResult | null>(
     null,
   );
+  const [selectedVault, setSelectedVault] = useState<DeployedStrategy | null>(
+    null,
+  );
   const [isWalletPositionsActive, setIsWalletPositionsActive] = useState(false);
-  const [walletPositionCount, setWalletPositionCount] = useState<number | null>(null);
+  const [walletPositionCount, setWalletPositionCount] = useState<number | null>(
+    null,
+  );
   const [walletPositionStatus, setWalletPositionStatus] = useState<
     "idle" | "loading" | "error"
   >("idle");
@@ -190,11 +213,91 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   }, []);
 
   useEffect(() => {
-    window.addEventListener("agent-invest:deployed-strategies", refreshDeployedStrategies);
+    window.addEventListener(
+      "agent-invest:deployed-strategies",
+      refreshDeployedStrategies,
+    );
     return () => {
-      window.removeEventListener("agent-invest:deployed-strategies", refreshDeployedStrategies);
+      window.removeEventListener(
+        "agent-invest:deployed-strategies",
+        refreshDeployedStrategies,
+      );
     };
   }, []);
+
+  useEffect(() => {
+    let isActive = true;
+
+    async function loadDeployedStrategyStatuses() {
+      if (deployedStrategies.length === 0) {
+        setDeployedStrategyStatuses({});
+        return;
+      }
+
+      try {
+        const activity = await readGmxAccountActivity(
+          deployedStrategies.map((strategy) => ({
+            type: "vault" as const,
+            address: strategy.vault_address,
+            label: strategy.label,
+          })),
+        );
+        if (!isActive) return;
+
+        const next: Record<string, DeployedStrategyStatus> = {};
+        for (const strategy of deployedStrategies) {
+          const address = strategy.vault_address.toLowerCase();
+          const openCount = activity.openPositions.filter(
+            (position) => position.accountAddress.toLowerCase() === address,
+          ).length;
+          const pendingCount = activity.pendingOrders.filter(
+            (order) => order.accountAddress.toLowerCase() === address,
+          ).length;
+
+          if (pendingCount > 0) {
+            next[strategy.mandate_id] = {
+              label: pendingCount === 1 ? "pending" : `${pendingCount} pending`,
+              tone: "pending",
+            };
+          } else if (openCount > 0) {
+            next[strategy.mandate_id] = {
+              label: openCount === 1 ? "live" : `${openCount} live`,
+              tone: "live",
+            };
+          } else {
+            next[strategy.mandate_id] = {
+              label: strategy.status,
+              tone: "idle",
+            };
+          }
+        }
+        setDeployedStrategyStatuses(next);
+      } catch {
+        if (!isActive) return;
+        setDeployedStrategyStatuses(
+          Object.fromEntries(
+            deployedStrategies.map((strategy) => [
+              strategy.mandate_id,
+              {
+                label: "unknown",
+                tone: "error" satisfies DeployedStrategyStatus["tone"],
+              },
+            ]),
+          ),
+        );
+      }
+    }
+
+    void loadDeployedStrategyStatuses();
+    const interval = window.setInterval(
+      () => void loadDeployedStrategyStatuses(),
+      30_000,
+    );
+    return () => {
+      isActive = false;
+      window.clearInterval(interval);
+    };
+  }, [deployedStrategies]);
 
   useEffect(() => {
     let isActive = true;
@@ -212,7 +315,9 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
           { type: "wallet", address: walletAddress },
         ]);
         if (!isActive) return;
-        setWalletPositionCount(activity.openPositions.length + activity.pendingOrders.length);
+        setWalletPositionCount(
+          activity.openPositions.length + activity.pendingOrders.length,
+        );
         setWalletPositionStatus("idle");
       } catch {
         if (!isActive) return;
@@ -310,6 +415,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
 
     setStrategyError(null);
     setIsWalletPositionsActive(false);
+    setSelectedVault(null);
     setIsCreatingStrategy(true);
 
     try {
@@ -339,6 +445,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
 
     setStrategyError(null);
     setIsWalletPositionsActive(false);
+    setSelectedVault(null);
     setActiveScreenerId(null);
     setActiveScreener(null);
     persistStrategyId(nextStrategyId);
@@ -362,6 +469,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     const nextStrategyId = remainingStrategies[0]?.strategy_id;
     setStrategyError(null);
     setIsWalletPositionsActive(false);
+    setSelectedVault(null);
     setActiveScreenerId(null);
     setActiveScreener(null);
 
@@ -404,6 +512,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     setStrategyError(null);
     setScreenerError(null);
     setIsWalletPositionsActive(false);
+    setSelectedVault(null);
     setActiveScreenerId(screener.id);
     setActiveScreener(null);
     setIsLoadingScreener(true);
@@ -427,7 +536,9 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
       setActiveScreener(payload);
     } catch (error) {
       setScreenerError(
-        error instanceof Error ? error.message : "Unable to load pinned screener",
+        error instanceof Error
+          ? error.message
+          : "Unable to load pinned screener",
       );
     } finally {
       setIsLoadingScreener(false);
@@ -443,7 +554,18 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
     setScreenerError(null);
     setActiveScreenerId(null);
     setActiveScreener(null);
+    setSelectedVault(null);
     setIsWalletPositionsActive(true);
+  }
+
+  function handleSelectDeployedStrategy(strategy: DeployedStrategy) {
+    if (isCreatingStrategy || isChatBusy) return;
+    setStrategyError(null);
+    setScreenerError(null);
+    setActiveScreenerId(null);
+    setActiveScreener(null);
+    setIsWalletPositionsActive(false);
+    setSelectedVault(strategy);
   }
 
   if (bootstrapError) {
@@ -489,16 +611,19 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
         strategies={knownStrategies}
         screeners={pinnedScreeners}
         deployedStrategies={deployedStrategies}
+        deployedStrategyStatuses={deployedStrategyStatuses}
         activeStrategyId={strategyId}
         activeScreenerId={activeScreenerId}
         isWalletPositionsActive={isWalletPositionsActive}
         walletPositionCount={walletPositionCount}
         walletPositionStatus={walletPositionStatus}
+        activeVaultMandateId={selectedVault?.mandate_id ?? null}
         disabled={isCreatingStrategy || isChatBusy}
         onSelectStrategy={handleSelectStrategy}
         onDeleteStrategy={handleDeleteStrategy}
         onSelectScreener={handleSelectScreener}
         onSelectWalletPositions={handleSelectWalletPositions}
+        onSelectDeployedStrategy={handleSelectDeployedStrategy}
         onNewStrategy={handleNewStrategy}
       />
 
@@ -511,7 +636,9 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
                 title={identity}
               >
                 <span className="size-2 shrink-0 rounded-full bg-emerald-500" />
-                <span className="truncate font-mono text-xs">{identityLabel}</span>
+                <span className="truncate font-mono text-xs">
+                  {identityLabel}
+                </span>
               </span>
               <ThemeToggle compact surface="topbar" />
               <Button
@@ -531,7 +658,12 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
             </>
           )}
         </div>
-        {isWalletPositionsActive ? (
+        {selectedVault ? (
+          <VaultManagerPane
+            vault={selectedVault}
+            onBack={() => setSelectedVault(null)}
+          />
+        ) : isWalletPositionsActive ? (
           <WalletPositionsPane
             walletAddress={walletAddress}
             onBack={() => setIsWalletPositionsActive(false)}
@@ -588,7 +720,9 @@ function PinnedScreenerPane({
           <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-muted-foreground">
             Pinned screener
           </p>
-          <h1 className="font-heading text-lg font-semibold">Market watchlist</h1>
+          <h1 className="font-heading text-lg font-semibold">
+            Market watchlist
+          </h1>
         </div>
         <Button variant="outline" size="sm" onClick={onBack}>
           Back to chat
