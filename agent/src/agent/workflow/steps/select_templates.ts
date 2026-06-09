@@ -7,9 +7,12 @@
 import type { LLMClient } from "../llm.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
 import {
+  resolveAllowedSides,
+  SHORT_REQUIRING_FAMILIES,
   STRATEGY_FAMILIES,
   TemplateSelectionValidationError,
   validateTemplateSelection,
+  type AllowedSides,
   type SelectTemplatesInput,
   type StepName,
   type TemplateSelection,
@@ -69,7 +72,7 @@ Rules:
 - selected MUST contain between 1 and 3 families, ranked best-fit first (rank 1, 2, 3).
 - family ids must come from the catalog and be unique within the shortlist.
 - ranks must be the contiguous set 1..n with no gaps or duplicates.
-- SHORTS GATE: only shortlist a family marked "REQUIRES SHORTS" when the thesis interpretation_notes (or objective) clearly opt into shorts or hedging. When in doubt, prefer long-only families.
+- SHORTS GATE: only shortlist a family marked "REQUIRES SHORTS" when the thesis allowed_sides is "long_short". For "long_only" or "long_flat", shortlist long-only families only. (The workflow also enforces this deterministically, so a short family picked under a non-short thesis will be dropped.)
 - Map thesis signals to families:
   - objective preserve_capital / income, low max_drawdown -> prefer core_satellite, threshold_rebalanced, periodic_rebalanced, volatility_targeted. When max_drawdown is TIGHT (<= 0.20), rank a drawdown-aware family (volatility_targeted, or threshold_rebalanced for low turnover) FIRST -- plain calendar rebalancing (periodic_rebalanced) does not control drawdown, so it should not be the rank-1 pick for a tight-drawdown mandate.
   - objective balanced_growth -> core_satellite, periodic_rebalanced, synthetic_long.
@@ -111,11 +114,19 @@ export async function selectTemplates(
     try {
       const parsed = parseJson(response.text);
       validateTemplateSelection(parsed);
+      // Deterministic SHORTS gate: regardless of what the LLM shortlisted,
+      // drop short-requiring families unless the thesis explicitly permits
+      // shorts (allowed_sides === "long_short"). This makes the gate a hard
+      // guarantee, not a prompt suggestion.
+      const gated = enforceShortsGate(parsed, resolveAllowedSides(input.thesis));
       logger.exit(NEXT_STEP, {
-        families: parsed.selected.map((s) => s.family),
-        top_family: parsed.selected[0]?.family,
+        families: gated.selected.map((s) => s.family),
+        top_family: gated.selected[0]?.family,
+        allowed_sides: resolveAllowedSides(input.thesis),
+        dropped_short_families:
+          parsed.selected.length - gated.selected.length,
       });
-      return { delta: { template_selection: parsed }, next: NEXT_STEP };
+      return { delta: { template_selection: gated }, next: NEXT_STEP };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       if (attempt === 1) {
@@ -129,6 +140,39 @@ export async function selectTemplates(
 
   // Unreachable: the loop either returns or throws.
   throw lastError ?? new Error("select_templates failed without an error");
+}
+
+// Remove short-requiring families when shorts are not permitted, then
+// re-rank the survivors contiguously from 1. If the gate empties the
+// shortlist (the LLM returned only short families for a long-only thesis),
+// fall back to a safe long-only default so the workflow can still proceed.
+function enforceShortsGate(
+  selection: TemplateSelection,
+  allowedSides: AllowedSides,
+): TemplateSelection {
+  if (allowedSides === "long_short") return selection;
+
+  const longOnly = selection.selected.filter(
+    (s) => !SHORT_REQUIRING_FAMILIES.has(s.family),
+  );
+  const kept =
+    longOnly.length > 0
+      ? longOnly
+      : [
+          {
+            family: "synthetic_long_allocation" as const,
+            rank: 1,
+            rationale:
+              "Long-only fallback: shorts are not permitted for this thesis.",
+          },
+        ];
+
+  const reranked = [...kept]
+    .sort((a, b) => a.rank - b.rank)
+    .map((s, index) => ({ ...s, rank: index + 1 }));
+
+  if (reranked.length === selection.selected.length) return selection;
+  return { rationale: selection.rationale, selected: reranked };
 }
 
 function buildSystem(attempt: number, lastError: Error | undefined): string {
@@ -155,6 +199,8 @@ function buildUserMessage(input: SelectTemplatesInput): string {
 function thesisDigest(thesis: Thesis) {
   return {
     objective: thesis.objective,
+    strategy_mode: thesis.strategy_mode ?? null,
+    allowed_sides: resolveAllowedSides(thesis),
     horizon_days: thesis.horizon_days,
     rebalance_frequency: thesis.rebalance_frequency,
     max_drawdown: thesis.constraints.max_drawdown,
