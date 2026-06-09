@@ -35,6 +35,8 @@ _CORE_WEIGHT = {"type": "float", "min": 0.0, "max": 1.0}
 _SLEEVE_CAP = {"type": "float", "min": 0.0, "max": 1.0}
 _HEDGE_WEIGHT = {"type": "float", "min": 0.0, "max": 2.0}
 _DRAWDOWN_THRESHOLD = {"type": "float", "min": 0.0, "max": 1.0}
+_SMA_LOOKBACK = {"type": "int", "min": 2, "max": 400}
+_TARGET_COIN_ID = {"type": "string"}
 
 
 # --- shared algo helpers -----------------------------------------------------
@@ -277,6 +279,48 @@ def _trend_following_long_neutral(universe, prices, config, window) -> bt.Strate
     signal = frame > sma
     return bt.Strategy(
         "trend_following_long_neutral",
+        [
+            bt.algos.RunWeekly(),
+            bt.algos.SelectWhere(signal),
+            bt.algos.WeighEqually(),
+            bt.algos.Rebalance(),
+        ],
+    )
+
+
+# --- single-asset builder ----------------------------------------------------
+#
+# One market, long/flat on an explicit moving-average trend signal: hold 100%
+# while price is above its SMA, otherwise sit in cash. This is the single_asset
+# strategy_mode shape -- a tactical setup rather than a basket. The coin is the
+# thesis target_coin_id when given, else the top-ranked coin in the resolved
+# (select_top=1) universe.
+
+
+def _single_asset_coin(universe: pd.DataFrame, config: dict) -> list[str]:
+    if "coin_id" not in universe.columns:
+        raise ValueError("universe frame must include a coin_id column")
+    available = [str(c) for c in universe["coin_id"].tolist()]
+    if not available:
+        raise ValueError("universe resolved to zero coins")
+    target = config.get("target_coin_id")
+    if target is not None:
+        if str(target) not in available:
+            raise ValueError(
+                f"target_coin_id {target!r} is not in the resolved universe"
+            )
+        return [str(target)]
+    return available[:1]
+
+
+def _single_asset_trend_setup(universe, prices, config, window) -> bt.Strategy:
+    coins = _single_asset_coin(universe, config)
+    frame = _float_prices(prices, coins)
+    lookback = int(config.get("sma_lookback", 50))
+    sma = frame.rolling(lookback, min_periods=lookback).mean()
+    signal = frame > sma
+    return bt.Strategy(
+        "single_asset_trend_setup",
         [
             bt.algos.RunWeekly(),
             bt.algos.SelectWhere(signal),
@@ -606,5 +650,20 @@ RECIPES: dict[str, Recipe] = {
             "drawdown_threshold": _DRAWDOWN_THRESHOLD,
         },
         preferred_factors=["recovery_rate", "max_drawdown_365d"],
+    ),
+    # --- single-asset family (single_asset strategy_mode) --------------------
+    # One market, long/flat on an SMA trend signal. No select_top/weighting
+    # slots: the book is one position at 100% (or flat). The candidate still
+    # carries select_top=1 at the job level to bound universe ranking.
+    "single_asset_trend_setup": _recipe(
+        "single_asset_trend_setup",
+        _single_asset_trend_setup,
+        composite_formula="trade_count_aware_sharpe",
+        min_history_days=50,
+        slot_schema={
+            "target_coin_id": _TARGET_COIN_ID,
+            "sma_lookback": _SMA_LOOKBACK,
+        },
+        preferred_factors=["pct_above_sma_200d", "roc_90d"],
     ),
 }

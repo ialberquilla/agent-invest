@@ -43,7 +43,14 @@ SHORT_FAMILIES = [
     "drawdown_based_hedge",
 ]
 
-ALL_FAMILIES = LONG_ONLY_FAMILIES + SHORT_FAMILIES
+# Single-asset family (single_asset strategy_mode): one market, long/flat.
+# Kept separate from LONG_ONLY_FAMILIES because it carries no select_top /
+# weighting slots.
+SINGLE_ASSET_FAMILIES = [
+    "single_asset_trend_setup",
+]
+
+ALL_FAMILIES = LONG_ONLY_FAMILIES + SHORT_FAMILIES + SINGLE_ASSET_FAMILIES
 
 _CONTRACT_KEYS = {
     "candidate_id",
@@ -85,6 +92,11 @@ def _universe(coins: list[str]) -> pd.DataFrame:
 
 
 def _config(template_id: str, *, weighting: str = "equal") -> dict:
+    # single_asset has no select_top / weighting slots: the book is one
+    # position. weighting is accepted and ignored so the shared parametrized
+    # tests can call _config uniformly.
+    if template_id == "single_asset_trend_setup":
+        return {"sma_lookback": 50}
     config: dict = {"select_top": 6, "weighting": weighting}
     if template_id in ("core_satellite_allocation", "barbell_allocation"):
         config["core_weight"] = 0.7
@@ -195,6 +207,63 @@ def test_rebalance_trigger_only_where_supported() -> None:
     )
 
 
+def test_single_asset_honors_target_coin_id() -> None:
+    """single_asset_trend_setup trades only the target coin -- never another
+    name from the resolved universe."""
+    prices = _wide_prices()
+    coins = ["bitcoin", "ethereum", "solana", "avalanche-2", "chainlink", "uniswap"]
+    window = (prices.index[0].date(), prices.index[-1].date())
+    candidate = {
+        "candidate_id": "c1",
+        "thesis": {"objective": "balanced", "primary_factors": []},
+    }
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        payload = to_dict(
+            run_recipe(
+                TEMPLATES["single_asset_trend_setup"],
+                _universe(coins),
+                prices,
+                {"target_coin_id": "solana", "sma_lookback": 50},
+                window,
+                candidate=candidate,
+            )
+        )
+    held = {
+        coin
+        for rebalance in payload["allocation_metrics"]["rebalances"]
+        for coin, weight in rebalance["weights"].items()
+        if abs(weight) > 1e-9
+    }
+    assert held <= {"solana"}, f"held a non-target coin: {held}"
+    assert "solana" in held  # uptrending synthetic data -> held at least once
+
+
+def test_single_asset_rejects_basket_config_and_unknown_target() -> None:
+    recipe = TEMPLATES["single_asset_trend_setup"]
+    # No select_top / weighting slots on this family.
+    with pytest.raises(ValueError, match="Unknown config key"):
+        recipe.validate_config({"select_top": 5, "weighting": "equal"})
+    # A target not present in the resolved universe is an error, not a
+    # silent fallback to the top coin.
+    with pytest.raises(ValueError, match="not in the resolved universe"):
+        recipe.build(
+            _universe(["bitcoin", "ethereum"]),
+            _wide_prices(),
+            {"target_coin_id": "dogecoin"},
+            (date(2022, 1, 1), date(2023, 1, 1)),
+        )
+
+
+def test_single_asset_long_flat_sits_out_a_downtrend() -> None:
+    """In a sustained downtrend the long/flat rule should keep the book mostly
+    in cash, so it loses far less than a buy-and-hold single long."""
+    prices = _wide_prices(drift=-0.004)
+    trend = _run("single_asset_trend_setup", prices)
+    hold = _run("synthetic_long_allocation", prices, weighting="equal")
+    assert trend["metrics"]["max_drawdown"] >= hold["metrics"]["max_drawdown"]
+
+
 @pytest.mark.skipif(
     not os.environ.get("DATABASE_URL"),
     reason="needs Postgres (DATABASE_URL); live integration check",
@@ -211,11 +280,7 @@ def test_live_run_per_family(template_id: str) -> None:
         "candidate_id": "c1",
         "thesis": {"objective": "balanced", "primary_factors": []},
     }
-    config = {"select_top": 5, "weighting": "equal"}
-    if template_id in ("core_satellite_allocation", "barbell_allocation"):
-        config["core_weight"] = 0.7
-    if template_id == "barbell_allocation":
-        config["sleeve_cap"] = 0.05
+    config = _config(template_id)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         payload = to_dict(
