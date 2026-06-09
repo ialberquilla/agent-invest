@@ -1,4 +1,4 @@
-"""Common utilities shared across agent-invest Python CLIs."""
+"""Common utilities shared across pond3r-portfolio Python CLIs."""
 
 from __future__ import annotations
 

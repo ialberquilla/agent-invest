@@ -536,7 +536,7 @@ test("POST /ingestion rejects unknown loaders", async () => {
 
 test("POST /maintenance/storage/cleanup deletes old storage files", async () => {
   const storageRoot = await mkdtemp(
-    path.join(tmpdir(), "agent-invest-cleanup-"),
+    path.join(tmpdir(), "pond3r-portfolio-cleanup-"),
   );
   const previousStorageRoot = process.env.STORAGE_ROOT;
   const previousToken = process.env.MAINTENANCE_TOKEN;

@@ -1,4 +1,4 @@
-# agent-invest
+# pond3r-portfolio
 
 Phase 1 storage is local filesystem only. S3 and AWS credentials are no longer required.
 

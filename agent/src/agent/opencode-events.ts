@@ -14,8 +14,8 @@ export type ToolPartLike = {
   };
 };
 
-// Map a bash invocation of `./agent-invest <subcmd>` back to a
-// logical tool name ("agent-invest:<subcmd>") so the DB is queryable
+// Map a bash invocation of `./pond3r-portfolio <subcmd>` back to a
+// logical tool name ("pond3r-portfolio:<subcmd>") so the DB is queryable
 // per CLI subcommand, not just per opencode tool.
 export function effectiveToolName(toolName: string, input: unknown): string {
   if (toolName !== "bash" || !input || typeof input !== "object") {
@@ -24,9 +24,9 @@ export function effectiveToolName(toolName: string, input: unknown): string {
   const command = (input as Record<string, unknown>).command;
   if (typeof command !== "string") return toolName;
   const match = command.match(
-    /(?:^|[\s/])(?:\.\/)?agent-invest\s+([a-z_][a-z0-9_-]*)/i,
+    /(?:^|[\s/])(?:\.\/)?pond3r-portfolio\s+([a-z_][a-z0-9_-]*)/i,
   );
-  return match?.[1] ? `agent-invest:${match[1]}` : toolName;
+  return match?.[1] ? `pond3r-portfolio:${match[1]}` : toolName;
 }
 
 // Walk an opencode event payload to find an embedded "tool" message

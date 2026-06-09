@@ -1,7 +1,7 @@
-"""agent-invest CLI - single entrypoint dispatching to individual scripts.
+"""pond3r-portfolio CLI - single entrypoint dispatching to individual scripts.
 
-Run `agent-invest list` to see available commands and
-`agent-invest help <command>` for command-specific arguments. All commands
+Run `pond3r-portfolio list` to see available commands and
+`pond3r-portfolio help <command>` for command-specific arguments. All commands
 accept a `--payload '<json>'` argument and emit JSON on stdout.
 """
 
@@ -34,11 +34,11 @@ INTERNAL_COMMANDS: frozenset[str] = frozenset({
 
 
 def print_list() -> None:
-    sys.stdout.write("agent-invest CLI commands:\n\n")
+    sys.stdout.write("pond3r-portfolio CLI commands:\n\n")
     for cmd, description in COMMANDS.items():
         sys.stdout.write(f"  {cmd:<28}  {description}\n")
     sys.stdout.write(
-        "\nUse `agent-invest help <command>` to see command-specific arguments.\n"
+        "\nUse `pond3r-portfolio help <command>` to see command-specific arguments.\n"
         "All commands accept --payload '<json>' (most also accept individual flags) "
         "and emit JSON on stdout.\n"
     )
@@ -58,7 +58,7 @@ def run_command(command: str, args: Sequence[str]) -> int:
         return 2
     if command not in COMMANDS:
         sys.stderr.write(
-            f"error: unknown command '{command}'. Run `agent-invest list`.\n"
+            f"error: unknown command '{command}'. Run `pond3r-portfolio list`.\n"
         )
         return 2
     module = importlib.import_module(f"agent_invest_scripts.{command}")
@@ -86,7 +86,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 2
         if target not in COMMANDS:
             sys.stderr.write(
-                f"error: unknown command '{target}'. Run `agent-invest list`.\n"
+                f"error: unknown command '{target}'. Run `pond3r-portfolio list`.\n"
             )
             return 2
         try:

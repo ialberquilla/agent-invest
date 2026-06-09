@@ -3,7 +3,7 @@ const { spawnSync } = require("node:child_process");
 const command = "pnpm";
 const args = [
   "--filter",
-  "@agent-invest/agent",
+  "@pond3r-portfolio/agent",
   "ingest:gmx",
   "--",
   "--dry-run",

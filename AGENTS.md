@@ -1,8 +1,8 @@
-# agent-invest
+# pond3r-portfolio
 
 ## What this project is
 
-agent-invest is a **crypto portfolio research copilot**. It turns a vague investment
+pond3r-portfolio is a **crypto portfolio research copilot**. It turns a vague investment
 intent into an explicit, parameterized, GMX-executable strategy: it interprets a brief,
 proposes candidate strategies, backtests them with realistic costs, validates them
 against the user's thesis/risk limits, and finalizes a recommended strategy. The user
@@ -19,7 +19,7 @@ repos. **Default to the smallest thing that works — no speculative abstraction
 
 ## Repository layout (pnpm + uv monorepo)
 
-- `agent/` — `@agent-invest/agent`. The backend.
+- `agent/` — `@pond3r-portfolio/agent`. The backend.
   - `src/api/server.ts` — Fastify HTTP API (runs, strategies, messages, events/SSE,
     artifacts, ingestion, eval inspection).
   - `src/agent/` — the agent layer driven by the **opencode SDK** (not the Anthropic
@@ -41,12 +41,12 @@ repos. **Default to the smallest thing that works — no speculative abstraction
     bindings — never memory/strategy content. Migrations in `agent/migrations/`.
   - `src/ingestion/` — out-of-band data ingestion (GMX history, CoinGecko market caps).
     The agent only reads ingested data; it does not fetch.
-  - `scripts/` (Python, `agent-invest-scripts`) — the compute layer. The agent invokes
+  - `scripts/` (Python, `pond3r-portfolio-scripts`) — the compute layer. The agent invokes
     these directly via opencode's shell tool through one dispatcher CLI
-    (`python -m agent_invest_scripts.cli`, wrapper `agent/agent-invest`). Each
+    (`python -m agent_invest_scripts.cli`, wrapper `agent/pond3r-portfolio`). Each
     subcommand: CLI flags in, JSON to stdout, errors as JSON. Crypto signal/backtest
     logic lives in `agent_invest_scripts/_lib/` (uses the `bt` backtesting library).
-- `contracts/` — `@agent-invest/contracts`. Foundry/Solidity. `StrategyVault.sol` is a
+- `contracts/` — `@pond3r-portfolio/contracts`. Foundry/Solidity. `StrategyVault.sol` is a
   per-user ERC-4626 collateral vault that executes owner-approved GMX v2 perp orders
   (increase/decrease/cancel). Strategy intelligence stays off-chain; the vault only
   executes. Solc 0.8.26.
@@ -73,11 +73,11 @@ must remain a first-class MCP/API tool; do not give chat access to opencode `bas
 ```sh
 pnpm dev                  # run the agent server (tsx watch)
 pnpm test                 # agent TypeScript tests
-pnpm --filter @agent-invest/agent typecheck
+pnpm --filter @pond3r-portfolio/agent typecheck
 pnpm db:migrate           # apply Drizzle migrations
 pnpm contracts:build / contracts:test / contracts:fmt
 # Python tests: from agent/scripts, `uv run pytest`
-# Agent compute CLI: from agent/, `./agent-invest list` / `help <cmd>` / `<cmd> [args]`
+# Agent compute CLI: from agent/, `./pond3r-portfolio list` / `help <cmd>` / `<cmd> [args]`
 ```
 
 ## CRITICAL: Package Manager Policy

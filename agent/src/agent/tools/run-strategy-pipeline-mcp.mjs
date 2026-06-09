@@ -77,7 +77,7 @@ async function handleRequest(message) {
         protocolVersion:
           message.params?.protocolVersion ?? PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: { name: "agent-invest", version: "0.0.0" },
+        serverInfo: { name: "pond3r-portfolio", version: "0.0.0" },
       };
     case "ping":
       return {};
@@ -315,5 +315,5 @@ function errorMessage(error) {
 }
 
 function log(message) {
-  process.stderr.write(`[agent-invest-mcp] ${message}\n`);
+  process.stderr.write(`[pond3r-portfolio-mcp] ${message}\n`);
 }

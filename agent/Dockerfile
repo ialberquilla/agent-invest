@@ -39,12 +39,12 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY scripts/enforce-pnpm.cjs ./scripts/enforce-pnpm.cjs
 COPY agent/package.json ./agent/package.json
-RUN pnpm install --frozen-lockfile --filter @agent-invest/agent
+RUN pnpm install --frozen-lockfile --filter @pond3r-portfolio/agent
 
 FROM deps AS builder
 WORKDIR /app
 COPY agent ./agent
-RUN pnpm --filter @agent-invest/agent build
+RUN pnpm --filter @pond3r-portfolio/agent build
 
 FROM base AS python-deps
 WORKDIR /app/agent/scripts
