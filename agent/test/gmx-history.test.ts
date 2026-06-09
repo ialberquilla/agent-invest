@@ -38,27 +38,27 @@ const representativeTokenSymbols = [
   "DOGE",
 ];
 
-test("filterSymbols drops deprecated, GLV, forex, and commodity symbols", () => {
+test("filterSymbols drops deprecated and GLV symbols", () => {
   const filtered = filterSymbols(representativeTokenSymbols);
 
   assert.equal(filtered.includes("ETH_deprecated"), false);
   assert.equal(filtered.includes("SOL_deprecated.v2"), false);
   assert.equal(filtered.includes("GLV.BTC-USDC"), false);
-  assert.equal(filtered.includes("XAUT"), false);
-  assert.equal(filtered.includes("XAUT.v2"), false);
-  assert.equal(filtered.includes("GOLD"), false);
-  assert.equal(filtered.includes("SILVER"), false);
-  assert.equal(filtered.includes("BRENTOIL"), false);
-  assert.equal(filtered.includes("WTIOIL"), false);
-  assert.equal(filtered.includes("NATGAS"), false);
 });
 
-test("filterSymbols keeps stablecoins, wrapped variants, and synthetic feeds", () => {
+test("filterSymbols keeps stablecoins, wrapped variants, and commodity feeds", () => {
   const filtered = filterSymbols(representativeTokenSymbols);
 
   assert.deepEqual(filtered, [
     "BTC",
     "ETH",
+    "XAUT",
+    "XAUT.v2",
+    "GOLD",
+    "SILVER",
+    "BRENTOIL",
+    "WTIOIL",
+    "NATGAS",
     "USDC",
     "USDC.e",
     "USDT",
@@ -80,7 +80,7 @@ test("filterSymbols applies CLI inclusion before exclusion", () => {
     "ETH",
   ]);
 
-  assert.deepEqual(filterSymbols(symbols, options), ["BTC"]);
+  assert.deepEqual(filterSymbols(symbols, options), ["BTC", "GOLD"]);
 });
 
 test("parseOptions ignores a forwarded argument separator", () => {
