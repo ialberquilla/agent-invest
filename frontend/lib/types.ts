@@ -16,6 +16,9 @@ export type StrategyResult = {
   backtest: StrategyBacktestSummary;
   charts: StrategyCharts;
   suggested_reruns?: SuggestedRerun[];
+  // Present (and false) for short-bearing books: GMX perp funding/borrow is
+  // not modelled by the backtester, so returns are understated.
+  costs?: { funding_modeled: boolean };
 };
 
 // One-click follow-up emitted by the backend (buildSuggestedReruns). Each

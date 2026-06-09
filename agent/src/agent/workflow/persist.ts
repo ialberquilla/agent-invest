@@ -17,10 +17,12 @@ import {
 } from "./controller.ts";
 import { buildMandate } from "./mandate.ts";
 import { buildSuggestedReruns } from "./suggested-reruns.ts";
+import { resolveAllowedSides, resolveStrategyMode } from "./state.ts";
 import type {
   CandidateBacktest,
   EquityPoint,
   FinalWinner,
+  Thesis,
   WizardBrief,
   WorkflowState,
 } from "./state.ts";
@@ -227,6 +229,13 @@ export function workflowStateToStructuredResult(
       // frontend renders these as buttons that relaunch the pipeline with
       // based_on_run_id + the suggestion's overrides.
       suggested_reruns: buildSuggestedReruns(final.thesis),
+      // Cost-model disclosure: the bt runner approximates trading costs but
+      // does NOT model GMX perp funding/borrow, so any short-bearing book is
+      // understated. The frontend badges this. Long-only books carry no
+      // funding, so the flag is omitted.
+      ...(usesShorts(final.thesis)
+        ? { costs: { funding_modeled: false } }
+        : {}),
       artifacts: [],
     };
   }
@@ -251,6 +260,19 @@ export function workflowStateToStructuredResult(
     suggested_reruns: final.thesis ? buildSuggestedReruns(final.thesis) : [],
     artifacts: [],
   };
+}
+
+// True when the winning thesis runs a short-bearing book (pair / hedge /
+// long-short, or any thesis that opted into shorts). Such books have GMX
+// perp funding the bt runner does not model -- surfaced as a disclosure.
+function usesShorts(thesis: Thesis): boolean {
+  if (resolveAllowedSides(thesis) === "long_short") return true;
+  const mode = resolveStrategyMode(thesis);
+  return (
+    mode === "pair_trade" ||
+    mode === "hedge_overlay" ||
+    mode === "long_short_portfolio"
+  );
 }
 
 function isFiniteNum(value: number | undefined): value is number {

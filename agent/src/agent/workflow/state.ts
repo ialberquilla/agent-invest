@@ -112,6 +112,9 @@ export type ThesisConstraints = {
   max_gross_exposure?: number;
   max_net_exposure?: number;
   max_leg_weight?: number;
+  // Intended net market beta (0 for market-neutral, ~1 for fully-long).
+  // Validated against the realised beta of the backtest within a tolerance.
+  target_net_beta?: number;
 };
 
 export type Thesis = {
@@ -1482,6 +1485,16 @@ function validateConstraints(
           `constraints.${field} must be between 0 and ${max}`,
         );
       }
+    }
+  }
+  // Net beta can be negative (a net-short book), so it has a signed range.
+  if (value.target_net_beta !== undefined) {
+    requireFiniteNumber(value.target_net_beta, "constraints.target_net_beta");
+    const v = value.target_net_beta as number;
+    if (v < -2 || v > 2) {
+      throw new ThesisValidationError(
+        "constraints.target_net_beta must be between -2 and 2",
+      );
     }
   }
 }

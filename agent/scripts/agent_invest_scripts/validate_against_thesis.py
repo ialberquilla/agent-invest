@@ -156,6 +156,23 @@ def _validate_result(
                 allocation.get("max_single_weight"),
                 constraints["max_leg_weight"],
             )
+    # Net market beta: regress the realised strategy returns on the benchmark
+    # returns. target_net_beta is the intended exposure (0 for market-neutral,
+    # ~1 for fully-long); a violation is a realised beta more than
+    # BETA_TOLERANCE away from it. Skipped when there is too little data or a
+    # degenerate (zero-variance) benchmark.
+    if "target_net_beta" in constraints:
+        beta = _net_beta_from_result(result)
+        if beta is not None:
+            target = constraints["target_net_beta"]
+            if isinstance(target, int | float) and abs(beta - float(target)) > BETA_TOLERANCE:
+                violations.append(
+                    {
+                        "constraint": "target_net_beta",
+                        "actual": round(beta, 4),
+                        "expected": target,
+                    }
+                )
     # horizon_days is the forward-looking holding period, NOT a backtest
     # length floor. The window recommender already targets enough history
     # automatically (max(2 * horizon_days, 1460) days), and select_window
@@ -170,6 +187,52 @@ def _validate_result(
         "passed": len(violations) == 0,
         "violations": violations,
     }
+
+
+# How far a realised net beta may sit from the thesis target before it counts
+# as a violation. A band, not an exact match -- backtested beta is a noisy
+# estimate, so a market-neutral (target 0) book passes at |beta| <= 0.25 and a
+# fully-long (target 1) book fails only if it has materially shed market beta.
+BETA_TOLERANCE = 0.25
+
+
+def _curve_returns(curve: Any) -> dict[str, float]:
+    """date -> simple return from a [{date, value}, ...] equity/benchmark curve.
+    Beta is scale-invariant, so a normalised benchmark curve is fine."""
+    if not isinstance(curve, list):
+        return {}
+    points: list[tuple[str, float]] = []
+    for entry in curve:
+        if not isinstance(entry, dict):
+            continue
+        date = entry.get("date")
+        value = entry.get("value")
+        if isinstance(date, str) and isinstance(value, int | float):
+            points.append((date, float(value)))
+    returns: dict[str, float] = {}
+    for (_, prev), (date, value) in zip(points, points[1:]):
+        if prev != 0:
+            returns[date] = value / prev - 1.0
+    return returns
+
+
+def _net_beta_from_result(result: Mapping[str, Any]) -> float | None:
+    """cov(strategy, benchmark) / var(benchmark) over date-aligned returns.
+    None when there is too little overlap or the benchmark has no variance."""
+    strat = _curve_returns(result.get("equity_curve"))
+    bench = _curve_returns(result.get("benchmark_curve"))
+    common = [date for date in strat if date in bench]
+    if len(common) < 20:
+        return None
+    xs = [bench[date] for date in common]
+    ys = [strat[date] for date in common]
+    mean_x = sum(xs) / len(xs)
+    mean_y = sum(ys) / len(ys)
+    var_x = sum((x - mean_x) ** 2 for x in xs)
+    if var_x <= 0:
+        return None
+    cov = sum((x - mean_x) * (y - mean_y) for x, y in zip(xs, ys))
+    return cov / var_x
 
 
 def _exposure_from_allocation(

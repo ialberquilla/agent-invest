@@ -228,6 +228,7 @@ export function thesisForValidate(thesis: Thesis): Record<string, unknown> {
       "max_gross_exposure",
       "max_net_exposure",
       "max_leg_weight",
+      "target_net_beta",
     ] as const) {
       const value = thesis.constraints[key];
       if (typeof value === "number") constraints[key] = value;
