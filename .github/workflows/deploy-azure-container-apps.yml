@@ -11,6 +11,7 @@ env:
   CONTAINER_APP_ENV: ${{ vars.AZURE_CONTAINER_APP_ENV }}
   AGENT_IMAGE: agent-invest-agent
   FRONTEND_IMAGE: agent-invest-frontend
+  IMAGE_TAG: ${{ github.sha }}
   AGENT_APP_NAME: agent-invest-agent-prod
   FRONTEND_APP_NAME: agent-invest-frontend-prod
   GMX_INGESTION_JOB_NAME: agent-invest-gmx-ingest
@@ -42,7 +43,9 @@ jobs:
           context: .
           file: ./agent/Dockerfile
           push: true
-          tags: ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest
+          tags: |
+            ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest
+            ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:${{ env.IMAGE_TAG }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -62,7 +65,7 @@ jobs:
             --name "${{ env.AGENT_APP_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --environment "${{ env.CONTAINER_APP_ENV }}" \
-            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:${{ env.IMAGE_TAG }}" \
             --target-port 8000 \
             --ingress external \
             --registry-server "${{ env.REGISTRY_NAME }}.azurecr.io" \
@@ -110,7 +113,9 @@ jobs:
           az containerapp update \
             --name "${{ env.AGENT_APP_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:${{ env.IMAGE_TAG }}" \
+            --command "" \
+            --args "" \
             --cpu 2.0 \
             --memory 4Gi \
             --set-env-vars \
@@ -146,7 +151,7 @@ jobs:
             --name "${{ env.GMX_INGESTION_JOB_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --environment "${{ env.CONTAINER_APP_ENV }}" \
-            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:${{ env.IMAGE_TAG }}" \
             --registry-server "${{ env.REGISTRY_NAME }}.azurecr.io" \
             --trigger-type Schedule \
             --cron-expression "0 2 * * *" \
@@ -172,7 +177,7 @@ jobs:
           az containerapp job update \
             --name "${{ env.GMX_INGESTION_JOB_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:${{ env.IMAGE_TAG }}" \
             --cron-expression "0 2 * * *" \
             --replica-timeout 3600 \
             --replica-retry-limit 1 \
@@ -199,7 +204,7 @@ jobs:
             --name "${{ env.COINGECKO_INGESTION_JOB_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --environment "${{ env.CONTAINER_APP_ENV }}" \
-            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:${{ env.IMAGE_TAG }}" \
             --registry-server "${{ env.REGISTRY_NAME }}.azurecr.io" \
             --trigger-type Schedule \
             --cron-expression "0 3 * * *" \
@@ -230,7 +235,7 @@ jobs:
           az containerapp job update \
             --name "${{ env.COINGECKO_INGESTION_JOB_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:latest" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.AGENT_IMAGE }}:${{ env.IMAGE_TAG }}" \
             --cron-expression "0 3 * * *" \
             --replica-timeout 1800 \
             --replica-retry-limit 1 \
@@ -278,7 +283,9 @@ jobs:
           context: .
           file: ./frontend/Dockerfile
           push: true
-          tags: ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:latest
+          tags: |
+            ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:latest
+            ${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}
           build-args: |
             NEXT_PUBLIC_GA_MEASUREMENT_ID=${{ vars.NEXT_PUBLIC_GA_MEASUREMENT_ID }}
             NEXT_PUBLIC_PRIVY_APP_ID=${{ vars.NEXT_PUBLIC_PRIVY_APP_ID }}
@@ -302,7 +309,7 @@ jobs:
             --name "${{ env.FRONTEND_APP_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
             --environment "${{ env.CONTAINER_APP_ENV }}" \
-            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:latest" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}" \
             --target-port 4000 \
             --ingress external \
             --registry-server "${{ env.REGISTRY_NAME }}.azurecr.io" \
@@ -335,7 +342,7 @@ jobs:
           az containerapp update \
             --name "${{ env.FRONTEND_APP_NAME }}" \
             --resource-group "${{ env.RESOURCE_GROUP }}" \
-            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:latest" \
+            --image "${{ env.REGISTRY_NAME }}.azurecr.io/${{ env.FRONTEND_IMAGE }}:${{ env.IMAGE_TAG }}" \
             --cpu 0.5 \
             --memory 1Gi \
             --set-env-vars \
