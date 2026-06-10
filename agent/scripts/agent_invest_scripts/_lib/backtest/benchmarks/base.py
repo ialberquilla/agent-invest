@@ -12,6 +12,8 @@ Objective = Literal["high_growth", "balanced", "preserve_capital", "income"]
 class Benchmark(Protocol):
     ID: str
     OBJECTIVE: Objective
+    # Coins whose price history equity_curve() reads (empty when it needs none).
+    REQUIRED_COIN_IDS: tuple[str, ...]
 
     def equity_curve(
         self,
@@ -47,9 +49,15 @@ def price_series(
             series = source["price"]
 
     series.index = pd.to_datetime(series.index)
-    series = series.sort_index().reindex(index)
+    # Reindex to every calendar day and carry the last observed price across
+    # sporadic interior gaps (real daily crypto data has occasional missing
+    # days). ffill cannot fill a leading gap, so a remaining NaN means the
+    # window starts before this coin's first observation -- still an error.
+    series = series.sort_index().reindex(index).ffill()
     if series.isna().any():
-        raise ValueError(f"missing benchmark price for {coin_id} in requested window")
+        raise ValueError(
+            f"missing benchmark price for {coin_id} at the start of the requested window"
+        )
     return series.astype(float)
 
 

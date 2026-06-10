@@ -181,3 +181,100 @@ def test_validate_against_thesis_checks_constraints(
     }
 
 
+
+def test_validate_exposure_constraints_for_long_short_book() -> None:
+    """Gross/net/per-leg exposure constraints are checked from the signed
+    rebalance weights -- the long-book max_weight_per_asset rule does not
+    apply to a short-bearing pair/long-short book."""
+    batch = {
+        "batch_id": "b",
+        "run_id": "r",
+        "round": 1,
+        "results": [
+            {
+                "candidate_id": "balanced_pair",
+                "template_id": "explicit_pair_trade",
+                "config": {},
+                "metrics": {"max_drawdown": -0.1},
+                "allocation_metrics": {
+                    "max_single_weight": 1.0,
+                    "rebalances": [{"weights": {"solana": 1.0, "bitcoin": -0.8}}],
+                },
+            },
+            {
+                "candidate_id": "over_levered",
+                "template_id": "explicit_pair_trade",
+                "config": {},
+                "metrics": {"max_drawdown": -0.1},
+                "allocation_metrics": {
+                    "max_single_weight": 1.5,
+                    "rebalances": [{"weights": {"solana": 1.5, "bitcoin": -1.5}}],
+                },
+            },
+        ],
+    }
+    thesis = {
+        "objective": "growth",
+        "constraints": {
+            "max_gross_exposure": 2.0,
+            "max_net_exposure": 0.5,
+            "max_leg_weight": 1.2,
+        },
+    }
+    out = validate_against_thesis.validate_batch(batch, thesis)
+
+    # balanced_pair: gross 1.8 <= 2, net 0.2 <= 0.5, leg 1.0 <= 1.2 -> pass.
+    # over_levered: gross 3.0 > 2 and leg 1.5 > 1.2 -> fail (net 0.0 is fine).
+    assert out["passing_candidate_ids"] == ["balanced_pair"]
+    over = next(r for r in out["results"] if r["candidate_id"] == "over_levered")
+    failed = {v["constraint"] for v in over["violations"]}
+    assert failed == {"max_gross_exposure", "max_leg_weight"}
+
+def _curve(values: list[float]) -> list[dict[str, object]]:
+    # 2024-01-01 .. : one point per day, only date+value matter for beta.
+    return [
+        {"date": f"2024-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}", "value": v}
+        for i, v in enumerate(values)
+    ]
+
+
+def test_validate_target_net_beta() -> None:
+    """A market-neutral book (flat vs a moving benchmark) passes target 0; a
+    net-long book (tracks the benchmark, beta ~1) fails it."""
+    import math
+
+    # 30 days of a benchmark that actually moves.
+    bench_values = [100.0 * math.exp(0.002 * i) for i in range(30)]
+    neutral_values = [100.0] * 30  # zero returns -> beta 0
+    long_values = list(bench_values)  # tracks benchmark -> beta ~1
+
+    batch = {
+        "batch_id": "b",
+        "run_id": "r",
+        "round": 1,
+        "results": [
+            {
+                "candidate_id": "neutral",
+                "template_id": "long_short_momentum_rotation",
+                "config": {},
+                "metrics": {"max_drawdown": -0.1},
+                "equity_curve": _curve(neutral_values),
+                "benchmark_curve": _curve(bench_values),
+            },
+            {
+                "candidate_id": "net_long",
+                "template_id": "long_short_momentum_rotation",
+                "config": {},
+                "metrics": {"max_drawdown": -0.1},
+                "equity_curve": _curve(long_values),
+                "benchmark_curve": _curve(bench_values),
+            },
+        ],
+    }
+    thesis = {"objective": "growth", "constraints": {"target_net_beta": 0.0}}
+    out = validate_against_thesis.validate_batch(batch, thesis)
+
+    assert out["passing_candidate_ids"] == ["neutral"]
+    net_long = next(r for r in out["results"] if r["candidate_id"] == "net_long")
+    failed = {v["constraint"] for v in net_long["violations"]}
+    assert "target_net_beta" in failed

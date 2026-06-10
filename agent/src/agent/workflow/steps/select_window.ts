@@ -16,6 +16,7 @@ import type {
   Window,
 } from "../state.ts";
 import { DYNAMIC_UNIVERSE_FAMILIES } from "../state.ts";
+import { scriptObjectiveFromWorkflow } from "./run_and_validate.ts";
 
 export type SelectWindowDeps = {
   recommendWindow?: typeof runRecommendBacktestWindow;
@@ -128,11 +129,18 @@ async function resolveRecommendation(
   recommendWindow: typeof runRecommendBacktestWindow,
   mode: "fixed_universe" | "dynamic_universe",
 ): Promise<Recommendation> {
+  // Keep the window inside the run benchmark's data so the benchmark curve
+  // has no leading gaps (e.g. a long-history single coin would otherwise pull
+  // the window back before usd-coin -- the balanced benchmark's stable leg --
+  // even exists).
+  const benchmarkObjective = scriptObjectiveFromWorkflow(input.thesis.objective);
+
   if (mode === "fixed_universe") {
     return {
       response: await recommendWindow({
         coin_ids: input.universe.coin_ids,
         horizon_days: input.thesis.horizon_days,
+        benchmark_objective: benchmarkObjective,
       }),
       coin_ids: input.universe.coin_ids,
       excluded_coin_ids: [],
@@ -151,6 +159,7 @@ async function resolveRecommendation(
     const response = await recommendWindow({
       coin_ids: coinIds,
       horizon_days: input.thesis.horizon_days,
+      benchmark_objective: benchmarkObjective,
     });
     last = response;
 
@@ -180,6 +189,7 @@ async function resolveRecommendation(
       (await recommendWindow({
         coin_ids: coinIds,
         horizon_days: input.thesis.horizon_days,
+        benchmark_objective: benchmarkObjective,
       })),
     coin_ids: coinIds,
     excluded_coin_ids: excluded,

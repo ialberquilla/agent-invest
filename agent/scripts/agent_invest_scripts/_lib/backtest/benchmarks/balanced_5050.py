@@ -22,6 +22,9 @@ TARGET_WEIGHTS = {"bitcoin": 0.5, "usd-coin": 0.5}
 class Balanced5050Benchmark:
     ID: str = "balanced_5050"
     OBJECTIVE: Objective = "balanced"
+    # Coins whose price history equity_curve() reads. The window selector
+    # uses these to keep the backtest window inside the benchmark's data.
+    REQUIRED_COIN_IDS: tuple[str, ...] = ("bitcoin", "usd-coin")
     cost_model: TradingCostModel = TradingCostModel()
 
     def equity_curve(

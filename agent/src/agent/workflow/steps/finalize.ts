@@ -6,7 +6,11 @@ import type { LLMClient } from "../llm.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
 import {
   FinalizeValidationError,
+  resolveAllowedSides,
+  resolveExecutionMode,
+  resolveStrategyMode,
   validateFinalizeNarrative,
+  type AllocationWeight,
   type Attempt,
   type FinalWinner,
   type FinalizeInput,
@@ -41,10 +45,11 @@ export const FINALIZE_PROMPT = `You are the finalize step for an investment-stra
 A candidate has already been selected. Your job is to emit a user-facing narrative explaining this strategy, its assumptions, its risks, and what the user should do next. Emit JSON only -- no prose, no Markdown fences.
 
 You will receive in the user message:
-- thesis: how the user's brief was interpreted (objective, horizon, constraints).
-- universe: { coin_ids, source } -- the coin set the strategy uses.
+- thesis: how the user's brief was interpreted (objective, horizon, constraints, strategy_mode, allowed_sides, execution_mode).
+- universe: { coin_ids, source } -- the coin set the strategy ranks over.
 - window: { start, end, horizon_days, effective } -- the backtest window the strategy was scored over.
 - winner: the selected candidate config (template, weighting, select_top, rebalance_trigger, rationale).
+- book: the strategy's ACTUAL holdings at the first rebalance, derived from the backtest -- { long_legs, short_legs, long_count, short_count, gross_exposure, net_exposure, has_shorts }. Use THIS, not winner.select_top, to describe what the strategy holds. May be null if no holdings were captured.
 - is_best_effort: boolean. When FALSE, the winner fully satisfied every thesis constraint. When TRUE, NO candidate fully satisfied the thesis and this is the CLOSEST-FIT fallback we are showing anyway.
 - unmet_constraints: present only for best_effort -- the constraints the winner did NOT meet, with observed vs target values.
 - attempts: the iteration history that led here. Useful for "why this candidate not the earlier ones" framing.
@@ -66,11 +71,18 @@ Output schema (all fields required, all strings non-empty, all arrays non-empty)
   "next_steps": ["actionable user next steps -- each as one short sentence. Examples: 'rerun with different constraints', 'paper trade for N weeks', 'review with a licensed advisor'."]
 }
 
+STRATEGY SHAPE (use \`book\` and \`thesis.strategy_mode\` -- this is the most common source of wrong narratives):
+- \`winner.select_top\` is a RANKING POOL size, NOT the number of holdings. A rotation strategy ranks select_top names, then holds far fewer (e.g. select_top=8 -> long the top 2, short the bottom 2). NEVER say "basket of N coins" using select_top. Describe holdings from \`book\` (e.g. "long the 2 strongest, short the 2 weakest").
+- When \`book.has_shorts\` is true (or thesis.allowed_sides is "long_short"), this is a LONG/SHORT book, NOT a long-only basket. The title and summary MUST reflect that it goes both long AND short. If \`book.net_exposure\` is near zero, it is roughly market-neutral; say so.
+- For long/short books, state the gross and net exposure in plain terms (e.g. "~200% gross, ~0% net"), and name which coins are long vs short from \`book.long_legs\`/\`book.short_legs\`.
+- When \`book.has_shorts\` is true, at least one risk entry MUST disclose that the backtest does NOT fully model perpetual funding/borrow costs, so realized short-side costs may be higher than shown.
+- The title should reflect the real shape and holding count from \`book\` (e.g. "2-long / 2-short momentum rotation"), not the ranking pool size.
+
 Rules:
 - Do not invent metrics or backtest results that are not visible in the input.
 - Do not contradict the thesis constraints. If the winner config has select_top=7 and the thesis says max 10, do not claim "narrow concentration".
 - This is not financial advice. Reflect that in the risks and next_steps lists.
-- Keep the language concrete: name actual coins from the universe, the actual rebalance cadence, the actual horizon.`;
+- Keep the language concrete: name actual coins, the actual rebalance cadence, the actual horizon, and the actual long/short holdings.`;
 
 export async function finalize(
   input: FinalizeInput,
@@ -217,6 +229,10 @@ function buildUserMessage(
       window_length_days: input.window.effective.window_length_days,
     },
     winner,
+    // The actual holdings (signed weights at the first rebalance) so the
+    // narrative describes what the strategy holds -- long/short legs,
+    // gross/net exposure -- rather than inferring a basket from select_top.
+    book: bookDigest(input.winner_backtest?.allocation),
     // When best_effort, the strategy did NOT fully satisfy the thesis;
     // unmet_constraints lists what it missed so the narrative can be
     // honest about it.
@@ -252,6 +268,36 @@ function thesisDigest(thesis: Thesis) {
     rebalance_frequency: thesis.rebalance_frequency,
     constraints: thesis.constraints,
     interpretation_notes: thesis.interpretation_notes,
+    strategy_mode: resolveStrategyMode(thesis),
+    allowed_sides: resolveAllowedSides(thesis),
+    execution_mode: resolveExecutionMode(thesis),
+  };
+}
+
+// Summarize the winner's actual first-rebalance holdings into the
+// long/short shape the narrative must describe. select_top is a ranking
+// pool, not a holding count, so the only honest source for "what does it
+// hold" is the realized allocation. Returns null when no holdings were
+// captured (e.g. a curve-less older record).
+function bookDigest(allocation: AllocationWeight[] | undefined) {
+  if (!allocation || allocation.length === 0) return null;
+  const round = (n: number) => Math.round(n * 10000) / 10000;
+  const long_legs = allocation
+    .filter((a) => a.weight > 0)
+    .map((a) => ({ coin_id: a.coin_id, weight: round(a.weight) }));
+  const short_legs = allocation
+    .filter((a) => a.weight < 0)
+    .map((a) => ({ coin_id: a.coin_id, weight: round(a.weight) }));
+  const gross = allocation.reduce((s, a) => s + Math.abs(a.weight), 0);
+  const net = allocation.reduce((s, a) => s + a.weight, 0);
+  return {
+    long_legs,
+    short_legs,
+    long_count: long_legs.length,
+    short_count: short_legs.length,
+    gross_exposure: round(gross),
+    net_exposure: round(net),
+    has_shorts: short_legs.length > 0,
   };
 }
 

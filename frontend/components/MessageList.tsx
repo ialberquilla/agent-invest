@@ -11,7 +11,12 @@ import { StrategyResultReport } from "@/components/StrategyResultReport";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { TimelinePart } from "@/lib/agent-events";
 import { ChatMessage } from "@/lib/local-store";
-import type { ScreenerResult, StrategyResult, StructuredChatResult } from "@/lib/types";
+import type {
+  ScreenerResult,
+  StrategyResult,
+  StructuredChatResult,
+  SuggestedRerun,
+} from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // A structured result is worth rendering as the full report card only
@@ -47,6 +52,8 @@ type MessageListProps = {
   onSelectPrompt?: (prompt: string) => void;
   onOpenWizard?: () => void;
   onPinnedScreenersChange?: () => void;
+  onRerun?: (suggestion: SuggestedRerun, basedOnRunId: string) => void;
+  rerunDisabled?: boolean;
 };
 
 export function MessageList({
@@ -59,6 +66,8 @@ export function MessageList({
   onSelectPrompt,
   onOpenWizard,
   onPinnedScreenersChange,
+  onRerun,
+  rerunDisabled = false,
 }: MessageListProps) {
   const endRef = useRef<HTMLDivElement | null>(null);
   const latestReportRef = useRef<HTMLDivElement | null>(null);
@@ -132,7 +141,16 @@ export function MessageList({
               onPinnedScreenersChange={onPinnedScreenersChange}
             />
           ) : report ? (
-            <StrategyResultReport result={report} runId={runId ?? undefined} />
+            <StrategyResultReport
+              result={report}
+              runId={runId ?? undefined}
+              rerunDisabled={rerunDisabled}
+              onRerun={
+                onRerun && runId
+                  ? (suggestion) => onRerun(suggestion, runId)
+                  : undefined
+              }
+            />
           ) : message.error ? (
             <div className="rounded-xl bg-destructive/10 px-4 py-3 text-sm leading-6 text-destructive ring-1 ring-destructive/20">
               {message.error}

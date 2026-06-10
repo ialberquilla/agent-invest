@@ -15,6 +15,9 @@ DAILY_YIELD = (1.0 + 0.04) ** (1.0 / 365.0) - 1.0
 class StakedEthProxyBenchmark:
     ID: str = "staked_eth_proxy"
     OBJECTIVE: Objective = "income"
+    # Coins whose price history equity_curve() reads. The window selector
+    # uses these to keep the backtest window inside the benchmark's data.
+    REQUIRED_COIN_IDS: tuple[str, ...] = ("ethereum",)
 
     def equity_curve(
         self,

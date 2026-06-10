@@ -1,11 +1,17 @@
 from datetime import date
 
 import pandas as pd
+import pytest
 
-from agent_invest_scripts._lib.backtest.benchmarks import BENCHMARKS, benchmark_for
+from agent_invest_scripts._lib.backtest.benchmarks import (
+    BENCHMARKS,
+    benchmark_coin_ids,
+    benchmark_for,
+)
 from agent_invest_scripts._lib.backtest.benchmarks.balanced_5050 import (
     Balanced5050Benchmark,
 )
+from agent_invest_scripts._lib.backtest.benchmarks.base import price_series
 from agent_invest_scripts._lib.backtest.costs import TradingCostModel
 
 
@@ -53,6 +59,41 @@ def test_balanced_5050_uses_repo_cost_defaults() -> None:
         slippage_bps=30,
         gas_usd_per_swap=1,
     )
+
+
+def test_benchmark_coin_ids_reports_required_history() -> None:
+    assert benchmark_coin_ids("high_growth") == ("bitcoin",)
+    assert benchmark_coin_ids("balanced") == ("bitcoin", "usd-coin")
+    assert benchmark_coin_ids("preserve_capital") == ()
+    assert benchmark_coin_ids("income") == ("ethereum",)
+
+
+def test_price_series_forward_fills_interior_gaps() -> None:
+    # A missing interior day (2024-01-03) is carried forward, not rejected:
+    # real daily crypto data has sporadic single-day gaps.
+    index = pd.date_range(*WINDOW, freq="D")
+    sparse = pd.Series(
+        [100.0, 101.0, 102.0, 105.0],
+        index=pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-04", "2024-01-05"]),
+    )
+
+    series = price_series({"bitcoin": sparse}, "bitcoin", index)
+
+    assert list(series.index) == list(index)
+    assert series.loc["2024-01-03"] == 101.0  # carried from 2024-01-02
+
+
+def test_price_series_rejects_leading_gap() -> None:
+    # ffill cannot fill before the first observation, so a window that starts
+    # before the coin's history is still an error.
+    index = pd.date_range(*WINDOW, freq="D")
+    late = pd.Series(
+        [102.0, 105.0],
+        index=pd.to_datetime(["2024-01-04", "2024-01-05"]),
+    )
+
+    with pytest.raises(ValueError, match="at the start of the requested window"):
+        price_series({"bitcoin": late}, "bitcoin", index)
 
 
 def _prices() -> dict[str, pd.DataFrame]:

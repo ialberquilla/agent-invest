@@ -31,6 +31,79 @@ export type RebalanceFrequency =
 
 export type WeightMode = "percentage" | "dollar";
 
+// The strategy SHAPE the thesis takes. Drives feasibility rules, eligible
+// templates, and universe sizing downstream. basket_allocation is the
+// default and the only fully-runnable shape today; the others land across
+// later phases (see plans/workflow_backtest_improvements.md). Optional on
+// the Thesis so existing long-basket runs are unchanged when it is unset.
+export type StrategyMode =
+  | "single_asset"
+  | "pair_trade"
+  | "hedge_overlay"
+  | "basket_allocation"
+  | "momentum_rotation"
+  | "long_short_portfolio";
+
+export const STRATEGY_MODES: readonly StrategyMode[] = [
+  "single_asset",
+  "pair_trade",
+  "hedge_overlay",
+  "basket_allocation",
+  "momentum_rotation",
+  "long_short_portfolio",
+];
+
+// The direction permission, kept as a separate axis from the mode so a
+// shape (e.g. momentum_rotation) can be long-only, long/flat, or
+// long/short without a combinatorial enum. Shorts require explicit user
+// intent: never inferred from "growth"/"momentum" language.
+export type AllowedSides = "long_only" | "long_flat" | "long_short";
+
+export const ALLOWED_SIDES: readonly AllowedSides[] = [
+  "long_only",
+  "long_flat",
+  "long_short",
+];
+
+export type ExecutionMode = "wallet_direct" | "strategy_vault";
+
+export const EXECUTION_MODES: readonly ExecutionMode[] = [
+  "wallet_direct",
+  "strategy_vault",
+];
+
+// Defaults applied when the thesis leaves a mode field unset. They
+// reproduce the pre-mode behavior (a long-only basket deployed to a
+// vault) so unset === unchanged.
+export const DEFAULT_STRATEGY_MODE: StrategyMode = "basket_allocation";
+export const DEFAULT_ALLOWED_SIDES: AllowedSides = "long_only";
+export const DEFAULT_EXECUTION_MODE: ExecutionMode = "strategy_vault";
+
+// Trend-signal speed for single_asset setups: a deterministic preset that
+// selects the SMA-lookback sweep propose_candidates explores. "balanced" is
+// the historical default ([20, 50, 100]); "fast"/"slow" shift the window so
+// the guided setup can offer a Fast/Balanced/Slow control without exposing
+// raw lookback numbers. Each maps to a fixed three-point sweep so the run
+// stays deterministic.
+export type SignalSpeed = "fast" | "balanced" | "slow";
+
+export const SIGNAL_SPEEDS: readonly SignalSpeed[] = [
+  "fast",
+  "balanced",
+  "slow",
+];
+
+export const DEFAULT_SIGNAL_SPEED: SignalSpeed = "balanced";
+
+export const SIGNAL_SPEED_LOOKBACKS: Record<
+  SignalSpeed,
+  readonly [number, number, number]
+> = {
+  fast: [10, 20, 50],
+  balanced: [20, 50, 100],
+  slow: [50, 100, 200],
+};
+
 export type UniverseHints = {
   top_n: number;
   // Skip the first N market-cap ranks before applying top_n. Lets the
@@ -58,6 +131,15 @@ export type ThesisConstraints = {
   max_drawdown: number;
   asset_count_min: number;
   asset_count_max: number;
+  // Exposure limits for short-bearing books (pair/hedge/long-short). Long
+  // modes ignore them; short-bearing modes validate against these instead
+  // of the long-only max_weight_per_asset rule. See validate_against_thesis.
+  max_gross_exposure?: number;
+  max_net_exposure?: number;
+  max_leg_weight?: number;
+  // Intended net market beta (0 for market-neutral, ~1 for fully-long).
+  // Validated against the realised beta of the backtest within a tolerance.
+  target_net_beta?: number;
 };
 
 export type Thesis = {
@@ -68,6 +150,79 @@ export type Thesis = {
   constraints: ThesisConstraints;
   rebalance_frequency: RebalanceFrequency;
   interpretation_notes: string;
+  // Strategy shape + direction permission (optional; default via the
+  // resolve* helpers). Gate feasibility and template selection.
+  strategy_mode?: StrategyMode;
+  allowed_sides?: AllowedSides;
+  execution_mode?: ExecutionMode;
+  // Explicit legs for single-asset / pair / hedge shapes. Unused by
+  // basket modes. Consumed by select_universe and the dedicated recipes
+  // in later phases; carried here so they survive an override + rerun.
+  target_coin_id?: string;
+  long_coin_ids?: string[];
+  short_coin_ids?: string[];
+  // Trend-signal speed for single_asset setups (selects the SMA sweep).
+  signal_speed?: SignalSpeed;
+};
+
+// Resolve a thesis mode field to its effective value, applying the
+// default when unset. Use these everywhere downstream instead of reading
+// the optional field directly, so an unset thesis behaves exactly like a
+// long-only basket.
+export function resolveStrategyMode(
+  thesis: Pick<Thesis, "strategy_mode">,
+): StrategyMode {
+  return thesis.strategy_mode ?? DEFAULT_STRATEGY_MODE;
+}
+
+export function resolveAllowedSides(
+  thesis: Pick<Thesis, "allowed_sides">,
+): AllowedSides {
+  return thesis.allowed_sides ?? DEFAULT_ALLOWED_SIDES;
+}
+
+export function resolveExecutionMode(
+  thesis: Pick<Thesis, "execution_mode">,
+): ExecutionMode {
+  return thesis.execution_mode ?? DEFAULT_EXECUTION_MODE;
+}
+
+export function resolveSignalSpeed(
+  thesis: Pick<Thesis, "signal_speed">,
+): SignalSpeed {
+  return thesis.signal_speed ?? DEFAULT_SIGNAL_SPEED;
+}
+
+// Deterministic overrides applied to the interpreted Thesis after
+// interpret_brief and before universe/template selection. They let a
+// follow-up run re-shape a prior result ("fewer assets", "lower
+// drawdown") without re-briefing from scratch. PR1 covers the subset
+// that maps cleanly onto existing Thesis fields and re-validates;
+// strategy-mode / leg / template-family overrides arrive in later phases
+// (see plans/workflow_backtest_improvements.md section 13). Applied by
+// applyOverrides() in overrides.ts.
+export type StrategyRunOverrides = {
+  asset_count_min?: number;
+  asset_count_max?: number;
+  max_weight_per_asset?: number;
+  max_cash_weight?: number;
+  max_drawdown?: number;
+  horizon_days?: number;
+  rebalance_frequency?: RebalanceFrequency;
+  top_n?: number;
+  top_skip?: number;
+  exclude_stablecoins?: boolean;
+  exclude_wrapped?: boolean;
+  hand_picked_coin_ids?: string[];
+  // Shape overrides: pivot a finished run into a different strategy mode
+  // (e.g. a basket result into a single-asset trend setup) on a rerun.
+  strategy_mode?: StrategyMode;
+  allowed_sides?: AllowedSides;
+  execution_mode?: ExecutionMode;
+  target_coin_id?: string;
+  long_coin_ids?: string[];
+  short_coin_ids?: string[];
+  signal_speed?: SignalSpeed;
 };
 
 // The strategy-family catalog mirrors spec.md section 9. select_templates
@@ -90,18 +245,46 @@ export const STRATEGY_FAMILIES = [
   "beta_hedged_alt_exposure", // 9.11
   "drawdown_based_hedge", // 9.12
   "volatility_targeted_exposure", // 9.13
+  // single_asset strategy_mode only. select_templates forces this family
+  // for single-asset theses and drops it from every other shortlist.
+  "single_asset_trend_setup",
+  // pair_trade strategy_mode only (REQUIRES SHORTS). Explicit long/short legs.
+  "explicit_pair_trade",
+  // momentum_rotation strategy_mode: regime-gated long/flat rotation.
+  "long_flat_momentum_rotation",
+  // long_short_portfolio strategy_mode (REQUIRES SHORTS): long strongest,
+  // short weakest by momentum.
+  "long_short_momentum_rotation",
 ] as const;
 export type StrategyFamily = (typeof STRATEGY_FAMILIES)[number];
 
-// Families that require short exposure. Until the Thesis carries an
-// explicit allowed_sides field, select_templates only shortlists these
-// when the brief/interpretation_notes opt into shorts or hedging.
+// Families usable only under a specific strategy_mode. select_templates
+// gates these the same way the SHORTS gate handles short families: a
+// mode-only family is forced in for its mode and dropped everywhere else.
+export const SINGLE_ASSET_FAMILY = "single_asset_trend_setup";
+export const PAIR_TRADE_FAMILY = "explicit_pair_trade";
+export const MOMENTUM_ROTATION_FAMILY = "long_flat_momentum_rotation";
+export const LONG_SHORT_FAMILY = "long_short_momentum_rotation";
+
+// Mode-only families, forced in by select_templates for their mode and
+// dropped from every other shortlist.
+export const MODE_ONLY_FAMILIES: ReadonlySet<string> = new Set([
+  SINGLE_ASSET_FAMILY,
+  PAIR_TRADE_FAMILY,
+  MOMENTUM_ROTATION_FAMILY,
+  LONG_SHORT_FAMILY,
+]);
+
+// Families that require short exposure. select_templates only shortlists
+// these when the thesis permits shorts (allowed_sides === "long_short").
 export const SHORT_REQUIRING_FAMILIES: ReadonlySet<StrategyFamily> = new Set([
   "partial_hedge_overlay",
   "trend_following_long_short",
   "relative_value_pair_trade",
   "beta_hedged_alt_exposure",
   "drawdown_based_hedge",
+  "long_short_momentum_rotation",
+  "explicit_pair_trade",
 ]);
 
 export type SelectedFamily = {
@@ -173,6 +356,25 @@ export type Universe = {
     risk_profile?: string;
     dropped_filters?: Array<"exclude_stablecoins" | "exclude_wrapped">;
   };
+  // Explainability: what was considered vs selected and why names were
+  // rejected. Populated only on the rank_universe path (a hand-picked /
+  // single-asset / pair universe is explicit, so there is nothing to
+  // explain). Surfaced in the structured result for "why these assets?".
+  exploration?: AssetExploration;
+};
+
+export type AssetExploration = {
+  considered_count: number;
+  selected_count: number;
+  selected: string[];
+  rejected: ExploredAsset[];
+};
+
+export type ExploredAsset = {
+  coin_id: string;
+  symbol?: string;
+  market_cap_rank?: number;
+  reason: string;
 };
 
 export type SelectUniverseInput = {
@@ -241,6 +443,10 @@ export const ALLOCATION_TEMPLATES = [
   "relative_value_pair_trade",
   "trend_following_long_short",
   "drawdown_based_hedge",
+  "single_asset_trend_setup",
+  "explicit_pair_trade",
+  "long_flat_momentum_rotation",
+  "long_short_momentum_rotation",
 ] as const;
 export type AllocationTemplate = (typeof ALLOCATION_TEMPLATES)[number];
 
@@ -267,6 +473,8 @@ export const REBALANCE_TRIGGER_FAMILIES = [
   "relative_momentum_rotation",
   "partial_hedge_overlay",
   "beta_hedged_alt_exposure",
+  "long_flat_momentum_rotation",
+  "long_short_momentum_rotation",
 ] as const;
 // Structural-slot families (core_weight; barbell additionally caps the sleeve).
 export const CORE_WEIGHT_FAMILIES = [
@@ -300,6 +508,19 @@ export type ProposedCandidate = {
   // Structural slots for CORE_WEIGHT_FAMILIES. sleeve_cap is barbell-only.
   core_weight?: number;
   sleeve_cap?: number;
+  // single_asset_trend_setup slots. sma_lookback is the trend-signal
+  // window; target_coin_id pins the single market (else the recipe uses
+  // the top-ranked coin). Forbidden on every other family.
+  sma_lookback?: number;
+  target_coin_id?: string;
+  // explicit_pair_trade slots: the named long/short legs and the optional
+  // hedge ratio sizing the short. Forbidden on every other family.
+  long_coin_id?: string;
+  short_coin_id?: string;
+  hedge_ratio?: number;
+  // Momentum-rotation slot (long_flat / long_short rotation): the trailing
+  // return window used to rank the pool. Forbidden on every other family.
+  momentum_lookback?: number;
   rationale: string;
 };
 
@@ -567,12 +788,25 @@ export const DEFAULT_WORKFLOW_CAPS: WorkflowCaps = {
   max_wall_clock_ms: 15 * 60 * 1000,
 };
 
+// Bumped whenever a change could alter the mandate produced from the same
+// typed inputs + data snapshot (new steps, changed sweep/validation, new
+// override semantics). Persisted on every run so a `based_on_run_id`
+// rerun can be checked for reproducibility against its parent.
+export const WORKFLOW_VERSION = "2026-06-09.1";
+
 // Full workflow state. The controller maintains one of these per run
 // and passes it (read-only) into each step; deltas are merged into
 // state by the dispatcher rather than by the step itself.
 export type WorkflowState = {
   run_id: string;
   brief: string | WizardBrief;
+  // Provenance + reproducibility (PR1). workflow_version is stamped at
+  // run start; overrides/based_on_run_id/data_as_of carry the rerun
+  // inputs so the persisted run records exactly what reshaped it.
+  workflow_version: string;
+  overrides?: StrategyRunOverrides;
+  based_on_run_id?: string;
+  data_as_of?: string;
   thesis?: Thesis;
   template_selection?: TemplateSelection;
   universe?: Universe;
@@ -1080,6 +1314,106 @@ function validateCandidate(
       );
     }
   }
+
+  // single_asset_trend_setup slots. sma_lookback / target_coin_id only
+  // make sense for the single-asset family; for it, select_top must be 1
+  // (one position is the whole book).
+  if (candidate.sma_lookback !== undefined) {
+    if (family !== SINGLE_ASSET_FAMILY) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: sma_lookback is only allowed on ${SINGLE_ASSET_FAMILY}`,
+      );
+    }
+    requireFiniteInteger(candidate.sma_lookback, `candidates[${index}].sma_lookback`);
+    const lookback = candidate.sma_lookback as number;
+    if (lookback < 2 || lookback > 400) {
+      throw new ProposalValidationError(
+        `candidates[${index}].sma_lookback must be in [2, 400]`,
+      );
+    }
+  }
+  if (candidate.target_coin_id !== undefined) {
+    if (family !== SINGLE_ASSET_FAMILY) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: target_coin_id is only allowed on ${SINGLE_ASSET_FAMILY}`,
+      );
+    }
+    requireString(candidate.target_coin_id, `candidates[${index}].target_coin_id`);
+  }
+  if (family === SINGLE_ASSET_FAMILY && selectTop !== 1) {
+    throw new ProposalValidationError(
+      `candidates[${index}]: ${SINGLE_ASSET_FAMILY} requires select_top = 1 (got ${selectTop})`,
+    );
+  }
+
+  // explicit_pair_trade slots: named long/short legs and an optional hedge
+  // ratio. The two legs span exactly two markets, so select_top must be 2.
+  for (const legField of ["long_coin_id", "short_coin_id"] as const) {
+    if (candidate[legField] !== undefined) {
+      if (family !== PAIR_TRADE_FAMILY) {
+        throw new ProposalValidationError(
+          `candidates[${index}]: ${legField} is only allowed on ${PAIR_TRADE_FAMILY}`,
+        );
+      }
+      requireString(candidate[legField], `candidates[${index}].${legField}`);
+    }
+  }
+  if (candidate.hedge_ratio !== undefined) {
+    if (family !== PAIR_TRADE_FAMILY) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: hedge_ratio is only allowed on ${PAIR_TRADE_FAMILY}`,
+      );
+    }
+    requireFiniteNumber(candidate.hedge_ratio, `candidates[${index}].hedge_ratio`);
+    const ratio = candidate.hedge_ratio as number;
+    if (ratio < 0 || ratio > 2) {
+      throw new ProposalValidationError(
+        `candidates[${index}].hedge_ratio must be in [0, 2]`,
+      );
+    }
+  }
+  if (family === PAIR_TRADE_FAMILY) {
+    if (selectTop !== 2) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: ${PAIR_TRADE_FAMILY} requires select_top = 2 (got ${selectTop})`,
+      );
+    }
+    if (
+      candidate.long_coin_id === undefined ||
+      candidate.short_coin_id === undefined
+    ) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: ${PAIR_TRADE_FAMILY} requires long_coin_id and short_coin_id`,
+      );
+    }
+    if (candidate.long_coin_id === candidate.short_coin_id) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: long_coin_id and short_coin_id must differ`,
+      );
+    }
+  }
+
+  // Momentum-rotation slot. Only the rotation families accept it.
+  if (candidate.momentum_lookback !== undefined) {
+    if (
+      family !== MOMENTUM_ROTATION_FAMILY &&
+      family !== LONG_SHORT_FAMILY
+    ) {
+      throw new ProposalValidationError(
+        `candidates[${index}]: momentum_lookback is only allowed on the momentum rotation families`,
+      );
+    }
+    requireFiniteInteger(
+      candidate.momentum_lookback,
+      `candidates[${index}].momentum_lookback`,
+    );
+    const lookback = candidate.momentum_lookback as number;
+    if (lookback < 2 || lookback > 400) {
+      throw new ProposalValidationError(
+        `candidates[${index}].momentum_lookback must be in [2, 400]`,
+      );
+    }
+  }
 }
 
 // Wizard brief stays loosely typed until we re-wire it in the controller.
@@ -1132,11 +1466,30 @@ export function validateThesis(value: unknown): asserts value is Thesis {
 
   requireString(value.interpretation_notes, "interpretation_notes");
 
+  if (value.strategy_mode !== undefined) {
+    requireEnum(value.strategy_mode, STRATEGY_MODES, "strategy_mode");
+  }
+  if (value.allowed_sides !== undefined) {
+    requireEnum(value.allowed_sides, ALLOWED_SIDES, "allowed_sides");
+  }
+  if (value.execution_mode !== undefined) {
+    requireEnum(value.execution_mode, EXECUTION_MODES, "execution_mode");
+  }
+  if (value.signal_speed !== undefined) {
+    requireEnum(value.signal_speed, SIGNAL_SPEEDS, "signal_speed");
+  }
+  if (value.target_coin_id !== undefined) {
+    requireString(value.target_coin_id, "target_coin_id");
+  }
+  optionalStringArray(value.long_coin_ids, "long_coin_ids");
+  optionalStringArray(value.short_coin_ids, "short_coin_ids");
+
   validateUniverseHints(value.universe_hints);
   validateConstraints(value.constraints);
   validateFeasibility(
     value.constraints as ThesisConstraints,
     value.universe_hints as UniverseHints,
+    (value.strategy_mode as StrategyMode | undefined) ?? DEFAULT_STRATEGY_MODE,
   );
 }
 
@@ -1219,27 +1572,97 @@ function validateConstraints(
       throw new ThesisValidationError(`constraints.${field} must be >= 1`);
     }
   }
+  // Optional exposure ceilings for short-bearing books. Allow up to 5x
+  // gross/net leverage and a 2x per-leg cap -- generous bounds; the real
+  // limits come from the thesis values, this just rejects nonsense.
+  for (const [field, max] of [
+    ["max_gross_exposure", 5],
+    ["max_net_exposure", 5],
+    ["max_leg_weight", 2],
+  ] as const) {
+    if (value[field] !== undefined) {
+      requireFiniteNumber(value[field], `constraints.${field}`);
+      const v = value[field] as number;
+      if (v < 0 || v > max) {
+        throw new ThesisValidationError(
+          `constraints.${field} must be between 0 and ${max}`,
+        );
+      }
+    }
+  }
+  // Net beta can be negative (a net-short book), so it has a signed range.
+  if (value.target_net_beta !== undefined) {
+    requireFiniteNumber(value.target_net_beta, "constraints.target_net_beta");
+    const v = value.target_net_beta as number;
+    if (v < -2 || v > 2) {
+      throw new ThesisValidationError(
+        "constraints.target_net_beta must be between -2 and 2",
+      );
+    }
+  }
 }
 
 function validateFeasibility(
   constraints: ThesisConstraints,
   universe: UniverseHints,
+  mode: StrategyMode,
 ) {
   if (constraints.asset_count_min > constraints.asset_count_max) {
     throw new ThesisValidationError(
       "constraints.asset_count_min must be <= asset_count_max",
     );
   }
-  // Need enough cap room to fill the non-cash portion across at least asset_count_min assets.
-  const maxAssetCoverage =
-    constraints.max_weight_per_asset * constraints.asset_count_min;
-  const requiredAssetCoverage = 1 - constraints.max_cash_weight;
-  if (maxAssetCoverage < requiredAssetCoverage - 1e-6) {
-    throw new ThesisValidationError(
-      `infeasible: max_weight_per_asset * asset_count_min (${maxAssetCoverage.toFixed(
-        4,
-      )}) < 1 - max_cash_weight (${requiredAssetCoverage.toFixed(4)})`,
-    );
+  // single_asset is a single position that fills the whole non-cash book,
+  // so the basket coverage inequality below does not apply -- it would
+  // otherwise reject a 1-asset thesis whose per-asset cap is < 100%.
+  // Require the count to actually be 1 so the mode and the constraints agree.
+  if (mode === "single_asset") {
+    if (
+      constraints.asset_count_min !== 1 ||
+      constraints.asset_count_max !== 1
+    ) {
+      throw new ThesisValidationError(
+        "single_asset strategy_mode requires asset_count_min == asset_count_max == 1",
+      );
+    }
+  } else if (mode === "pair_trade") {
+    // A pair is exactly two legs (+1 long / -hedge short). The long-book
+    // coverage inequality does not apply; gross/net exposure is validated
+    // against the backtest at run time, not here.
+    if (
+      constraints.asset_count_min !== 2 ||
+      constraints.asset_count_max !== 2
+    ) {
+      throw new ThesisValidationError(
+        "pair_trade strategy_mode requires asset_count_min == asset_count_max == 2",
+      );
+    }
+  } else if (
+    mode === "momentum_rotation" ||
+    mode === "long_short_portfolio"
+  ) {
+    // Rotation books hold a subset of a ranked pool (long/flat) or both
+    // sides of it (long/short), so the fully-invested long-basket coverage
+    // inequality does not apply. They just need a pool big enough to rank:
+    // long/short needs both sides, so it wants more names.
+    const minPool = mode === "long_short_portfolio" ? 4 : 3;
+    if (constraints.asset_count_min < minPool) {
+      throw new ThesisValidationError(
+        `${mode} strategy_mode requires asset_count_min >= ${minPool} (a pool to rotate within)`,
+      );
+    }
+  } else {
+    // Need enough cap room to fill the non-cash portion across at least asset_count_min assets.
+    const maxAssetCoverage =
+      constraints.max_weight_per_asset * constraints.asset_count_min;
+    const requiredAssetCoverage = 1 - constraints.max_cash_weight;
+    if (maxAssetCoverage < requiredAssetCoverage - 1e-6) {
+      throw new ThesisValidationError(
+        `infeasible: max_weight_per_asset * asset_count_min (${maxAssetCoverage.toFixed(
+          4,
+        )}) < 1 - max_cash_weight (${requiredAssetCoverage.toFixed(4)})`,
+      );
+    }
   }
   if (
     universe.hand_picked_coin_ids &&

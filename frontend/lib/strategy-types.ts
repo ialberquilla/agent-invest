@@ -1,0 +1,187 @@
+// Wizard strategy-type picker. "basket" runs the full allocation wizard
+// unchanged; the other types collect a couple of fields and submit a
+// deterministic StrategyRunOverrides object that reshapes the interpreted
+// thesis (the same overrides plumbing the rerun buttons use). Keeping the
+// override math here makes it unit-testable independent of the React UI.
+
+export type WizardStrategyType =
+  | "basket"
+  | "single_asset"
+  | "pair_trade"
+  | "long_short";
+
+export type StrategyTypeOption = {
+  value: WizardStrategyType;
+  label: string;
+  description: string;
+};
+
+export const STRATEGY_TYPE_OPTIONS: StrategyTypeOption[] = [
+  {
+    value: "basket",
+    label: "Diversified basket",
+    description: "A multi-asset long allocation. Full guided setup.",
+  },
+  {
+    value: "single_asset",
+    label: "Single-asset trend setup",
+    description: "One market, long when trending up, otherwise cash.",
+  },
+  {
+    value: "pair_trade",
+    label: "Pair trade",
+    description: "Long one market, short another (relative value).",
+  },
+  {
+    value: "long_short",
+    label: "Long/short momentum",
+    description: "Long the strongest, short the weakest (market-neutral).",
+  },
+];
+
+// Trend-signal speed presets for single-asset setups. Map 1:1 to the
+// backend `signal_speed` override, which selects the deterministic SMA
+// lookback sweep. Kept here so the UI can show the actual lookbacks it maps
+// to as a read-only assumption.
+export type SignalSpeed = "fast" | "balanced" | "slow";
+
+export const SIGNAL_SPEED_OPTIONS: {
+  value: SignalSpeed;
+  label: string;
+  lookbacks: [number, number, number];
+}[] = [
+  { value: "fast", label: "Fast", lookbacks: [10, 20, 50] },
+  { value: "balanced", label: "Balanced", lookbacks: [20, 50, 100] },
+  { value: "slow", label: "Slow", lookbacks: [50, 100, 200] },
+];
+
+// Horizon presets for the single-asset assumptions block, mapped to the
+// backend `horizon_days` override.
+export type HorizonPreset = "6m" | "1y" | "2y";
+
+export const HORIZON_OPTIONS: {
+  value: HorizonPreset;
+  label: string;
+  days: number;
+}[] = [
+  { value: "6m", label: "6 months", days: 180 },
+  { value: "1y", label: "1 year", days: 365 },
+  { value: "2y", label: "2 years", days: 730 },
+];
+
+export type NonBasketFields = {
+  targetCoin: string;
+  longCoin: string;
+  shortCoin: string;
+  poolSize: number;
+  // Single-asset assumptions (visible + adjustable in the guided setup).
+  horizon: HorizonPreset;
+  maxDrawdownPct: number;
+  signalSpeed: SignalSpeed;
+};
+
+export const DEFAULT_NON_BASKET_FIELDS: NonBasketFields = {
+  targetCoin: "",
+  longCoin: "",
+  shortCoin: "",
+  poolSize: 8,
+  // Defaults mirror the neutral base brief in ChatView (1y horizon, 50%
+  // max drawdown) and the historical balanced SMA sweep, so leaving the
+  // assumptions untouched reproduces the previous single-asset behavior.
+  horizon: "1y",
+  maxDrawdownPct: 50,
+  signalSpeed: "balanced",
+};
+
+// Per-side holding count for a long/short rotation given the ranking pool
+// size. Mirrors the Python recipe's `_rotation_counts` (max(1, pool // 3)):
+// the strategy goes long the strongest N and short the weakest N, so the
+// pool size is NOT the holding count. Used to preview "8 -> 2 long / 2 short"
+// in the wizard so the pool size doesn't read as the number of positions.
+export function rotationPerSide(poolSize: number): number {
+  return Math.max(1, Math.floor(poolSize / 3));
+}
+
+// A coin id as the pipeline expects it: lower-case, hyphenated (e.g. "bitcoin",
+// "avalanche-2"). We normalise light user input but don't guess.
+export function normalizeCoinId(raw: string): string {
+  return raw.trim().toLowerCase().replace(/\s+/g, "-");
+}
+
+export type ValidationResult = { ok: true } | { ok: false; message: string };
+
+export function validateNonBasket(
+  type: WizardStrategyType,
+  fields: NonBasketFields,
+): ValidationResult {
+  if (type === "single_asset") {
+    if (!normalizeCoinId(fields.targetCoin)) {
+      return { ok: false, message: "Enter the coin id to trade (e.g. bitcoin)." };
+    }
+  }
+  if (type === "pair_trade") {
+    const long = normalizeCoinId(fields.longCoin);
+    const short = normalizeCoinId(fields.shortCoin);
+    if (!long || !short) {
+      return { ok: false, message: "Enter both the long and the short coin id." };
+    }
+    if (long === short) {
+      return { ok: false, message: "The long and short coins must differ." };
+    }
+  }
+  if (type === "long_short") {
+    if (!Number.isFinite(fields.poolSize) || fields.poolSize < 4) {
+      return { ok: false, message: "The ranking pool needs at least 4 assets." };
+    }
+  }
+  return { ok: true };
+}
+
+// Deterministic overrides for a non-basket type. Returns undefined for
+// "basket" (the full wizard owns that path). Assumes validateNonBasket passed.
+export function buildStrategyOverrides(
+  type: WizardStrategyType,
+  fields: NonBasketFields,
+): Record<string, unknown> | undefined {
+  switch (type) {
+    case "basket":
+      return undefined;
+    case "single_asset": {
+      const horizonDays =
+        HORIZON_OPTIONS.find((o) => o.value === fields.horizon)?.days ?? 365;
+      return {
+        strategy_mode: "single_asset",
+        // Declare the shape explicitly so the persisted thesis matches the
+        // single-asset long/flat setup the backend runs (rather than leaving
+        // these to defaults that read as a vault-deployed long-only basket).
+        allowed_sides: "long_flat",
+        execution_mode: "wallet_direct",
+        asset_count_min: 1,
+        asset_count_max: 1,
+        target_coin_id: normalizeCoinId(fields.targetCoin),
+        horizon_days: horizonDays,
+        // Backend max_drawdown is a fraction in [0, 1].
+        max_drawdown: fields.maxDrawdownPct / 100,
+        signal_speed: fields.signalSpeed,
+      };
+    }
+    case "pair_trade":
+      return {
+        strategy_mode: "pair_trade",
+        allowed_sides: "long_short",
+        asset_count_min: 2,
+        asset_count_max: 2,
+        long_coin_ids: [normalizeCoinId(fields.longCoin)],
+        short_coin_ids: [normalizeCoinId(fields.shortCoin)],
+      };
+    case "long_short": {
+      const pool = Math.max(4, Math.round(fields.poolSize));
+      return {
+        strategy_mode: "long_short_portfolio",
+        allowed_sides: "long_short",
+        asset_count_min: pool,
+        asset_count_max: pool,
+      };
+    }
+  }
+}

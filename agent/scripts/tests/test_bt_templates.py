@@ -32,18 +32,37 @@ LONG_ONLY_FAMILIES = [
     "volatility_targeted_exposure",
     "relative_momentum_rotation",
     "trend_following_long_neutral",
+    # long/flat momentum rotation: long-only, regime-gated.
+    "long_flat_momentum_rotation",
 ]
 
-# Five short/hedge families add negative weights in Phase 2.
+# Short/hedge families add negative weights.
 SHORT_FAMILIES = [
     "partial_hedge_overlay",
     "beta_hedged_alt_exposure",
     "relative_value_pair_trade",
     "trend_following_long_short",
     "drawdown_based_hedge",
+    # long/short momentum rotation: long strongest N, short weakest N.
+    "long_short_momentum_rotation",
 ]
 
-ALL_FAMILIES = LONG_ONLY_FAMILIES + SHORT_FAMILIES
+# Single-asset family (single_asset strategy_mode): one market, long/flat.
+# Kept separate from LONG_ONLY_FAMILIES because it carries no select_top /
+# weighting slots.
+SINGLE_ASSET_FAMILIES = [
+    "single_asset_trend_setup",
+]
+
+# Explicit pair trade (pair_trade strategy_mode): named long/short legs, no
+# select_top / weighting slots.
+PAIR_FAMILIES = [
+    "explicit_pair_trade",
+]
+
+ALL_FAMILIES = (
+    LONG_ONLY_FAMILIES + SHORT_FAMILIES + SINGLE_ASSET_FAMILIES + PAIR_FAMILIES
+)
 
 _CONTRACT_KEYS = {
     "candidate_id",
@@ -85,6 +104,20 @@ def _universe(coins: list[str]) -> pd.DataFrame:
 
 
 def _config(template_id: str, *, weighting: str = "equal") -> dict:
+    # single_asset has no select_top / weighting slots: the book is one
+    # position. weighting is accepted and ignored so the shared parametrized
+    # tests can call _config uniformly.
+    if template_id == "single_asset_trend_setup":
+        return {"sma_lookback": 50}
+    if template_id == "explicit_pair_trade":
+        # ethereum/bitcoin are both in the synthetic + live universes.
+        return {"long_coin_id": "ethereum", "short_coin_id": "bitcoin"}
+    if template_id in (
+        "long_short_momentum_rotation",
+        "long_flat_momentum_rotation",
+    ):
+        # Rotation families take a momentum lookback, not a weighting slot.
+        return {"select_top": 6, "momentum_lookback": 90}
     config: dict = {"select_top": 6, "weighting": weighting}
     if template_id in ("core_satellite_allocation", "barbell_allocation"):
         config["core_weight"] = 0.7
@@ -195,6 +228,145 @@ def test_rebalance_trigger_only_where_supported() -> None:
     )
 
 
+def test_single_asset_honors_target_coin_id() -> None:
+    """single_asset_trend_setup trades only the target coin -- never another
+    name from the resolved universe."""
+    prices = _wide_prices()
+    coins = ["bitcoin", "ethereum", "solana", "avalanche-2", "chainlink", "uniswap"]
+    window = (prices.index[0].date(), prices.index[-1].date())
+    candidate = {
+        "candidate_id": "c1",
+        "thesis": {"objective": "balanced", "primary_factors": []},
+    }
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        payload = to_dict(
+            run_recipe(
+                TEMPLATES["single_asset_trend_setup"],
+                _universe(coins),
+                prices,
+                {"target_coin_id": "solana", "sma_lookback": 50},
+                window,
+                candidate=candidate,
+            )
+        )
+    held = {
+        coin
+        for rebalance in payload["allocation_metrics"]["rebalances"]
+        for coin, weight in rebalance["weights"].items()
+        if abs(weight) > 1e-9
+    }
+    assert held <= {"solana"}, f"held a non-target coin: {held}"
+    assert "solana" in held  # uptrending synthetic data -> held at least once
+
+
+def test_single_asset_rejects_basket_config_and_unknown_target() -> None:
+    recipe = TEMPLATES["single_asset_trend_setup"]
+    # No select_top / weighting slots on this family.
+    with pytest.raises(ValueError, match="Unknown config key"):
+        recipe.validate_config({"select_top": 5, "weighting": "equal"})
+    # A target not present in the resolved universe is an error, not a
+    # silent fallback to the top coin.
+    with pytest.raises(ValueError, match="not in the resolved universe"):
+        recipe.build(
+            _universe(["bitcoin", "ethereum"]),
+            _wide_prices(),
+            {"target_coin_id": "dogecoin"},
+            (date(2022, 1, 1), date(2023, 1, 1)),
+        )
+
+
+def test_single_asset_long_flat_sits_out_a_downtrend() -> None:
+    """In a sustained downtrend the long/flat rule should keep the book mostly
+    in cash, so it loses far less than a buy-and-hold single long."""
+    prices = _wide_prices(drift=-0.004)
+    trend = _run("single_asset_trend_setup", prices)
+    hold = _run("synthetic_long_allocation", prices, weighting="equal")
+    assert trend["metrics"]["max_drawdown"] >= hold["metrics"]["max_drawdown"]
+
+
+def test_explicit_pair_trade_longs_and_shorts_named_legs() -> None:
+    prices = _wide_prices()
+    coins = ["bitcoin", "ethereum", "solana", "avalanche-2", "chainlink", "uniswap"]
+    window = (prices.index[0].date(), prices.index[-1].date())
+    candidate = {
+        "candidate_id": "c1",
+        "thesis": {"objective": "balanced", "primary_factors": []},
+    }
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        payload = to_dict(
+            run_recipe(
+                TEMPLATES["explicit_pair_trade"],
+                _universe(coins),
+                prices,
+                {"long_coin_id": "solana", "short_coin_id": "bitcoin", "hedge_ratio": 0.8},
+                window,
+                candidate=candidate,
+            )
+        )
+    weights = payload["allocation_metrics"]["rebalances"][0]["weights"]
+    assert weights.get("solana", 0.0) > 0.0
+    assert weights.get("bitcoin", 0.0) < 0.0
+    # No third leg.
+    held = {coin for coin, w in weights.items() if abs(w) > 1e-9}
+    assert held == {"solana", "bitcoin"}
+
+
+def test_explicit_pair_trade_rejects_bad_legs() -> None:
+    recipe = TEMPLATES["explicit_pair_trade"]
+    with pytest.raises(ValueError, match="Missing required config key"):
+        recipe.validate_config({"long_coin_id": "ethereum"})
+    with pytest.raises(ValueError, match="must differ"):
+        recipe.build(
+            _universe(["bitcoin", "ethereum"]),
+            _wide_prices(),
+            {"long_coin_id": "bitcoin", "short_coin_id": "bitcoin"},
+            (date(2022, 1, 1), date(2023, 1, 1)),
+        )
+    with pytest.raises(ValueError, match="not in the resolved universe"):
+        recipe.build(
+            _universe(["bitcoin", "ethereum"]),
+            _wide_prices(),
+            {"long_coin_id": "dogecoin", "short_coin_id": "bitcoin"},
+            (date(2022, 1, 1), date(2023, 1, 1)),
+        )
+
+
+def test_long_short_momentum_is_market_neutral() -> None:
+    """long_short_momentum_rotation opens both legs and the rebalance target
+    weights net to roughly zero (gross ~2.0, net ~0.0)."""
+    payload = _run("long_short_momentum_rotation", _wide_prices())
+    rebalances = payload["allocation_metrics"]["rebalances"]
+    # Find a rebalance that actually took positions (post-lookback warmup).
+    active = [
+        r["weights"]
+        for r in rebalances
+        if any(abs(w) > 1e-9 for w in r["weights"].values())
+    ]
+    assert active, "expected at least one active rebalance"
+    weights = active[0]
+    assert min(weights.values()) < 0.0, "expected a short leg"
+    assert max(weights.values()) > 0.0, "expected a long leg"
+    # Reported weights are the drifted holdings at the rebalance snapshot, so
+    # net is approximately (not exactly) flat -- tiny vs the ~2.0 gross book.
+    gross = sum(abs(w) for w in weights.values())
+    assert gross > 1.5, "expected a roughly 2.0-gross long/short book"
+    assert abs(sum(weights.values())) < 0.15, "long/short book should be ~net flat"
+
+
+def test_long_flat_momentum_sits_out_a_downtrend() -> None:
+    """In a sustained downtrend the regime filter keeps long_flat mostly in
+    cash, so it draws down far less than a long-only basket."""
+    prices = _wide_prices(drift=-0.004)
+    flat = _run("long_flat_momentum_rotation", prices)
+    hold = _run("synthetic_long_allocation", prices, weighting="equal")
+    assert flat["metrics"]["max_drawdown"] >= hold["metrics"]["max_drawdown"]
+    # No shorts in long_flat.
+    for rebalance in flat["allocation_metrics"]["rebalances"]:
+        assert all(w >= -1e-9 for w in rebalance["weights"].values())
+
+
 @pytest.mark.skipif(
     not os.environ.get("DATABASE_URL"),
     reason="needs Postgres (DATABASE_URL); live integration check",
@@ -211,11 +383,7 @@ def test_live_run_per_family(template_id: str) -> None:
         "candidate_id": "c1",
         "thesis": {"objective": "balanced", "primary_factors": []},
     }
-    config = {"select_top": 5, "weighting": "equal"}
-    if template_id in ("core_satellite_allocation", "barbell_allocation"):
-        config["core_weight"] = 0.7
-    if template_id == "barbell_allocation":
-        config["sleeve_cap"] = 0.05
+    config = _config(template_id)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         payload = to_dict(

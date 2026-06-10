@@ -57,12 +57,28 @@ Thesis schema (all fields required unless marked optional):
     "asset_count_max": integer >= asset_count_min
   },
   "rebalance_frequency": "daily" | "weekly" | "monthly" | "quarterly",
-  "interpretation_notes": "string explaining assumptions, ambiguities, and how the brief was translated"
+  "interpretation_notes": "string explaining assumptions, ambiguities, and how the brief was translated",
+  "strategy_mode": optional "single_asset" | "pair_trade" | "hedge_overlay" | "basket_allocation" | "momentum_rotation" | "long_short_portfolio" (the strategy SHAPE -- see below),
+  "allowed_sides": optional "long_only" | "long_flat" | "long_short" (direction permission -- see SHORTS rule below),
+  "execution_mode": optional "wallet_direct" | "strategy_vault",
+  "target_coin_id": optional string (single_asset only: the one market, e.g. "bitcoin"),
+  "long_coin_ids": optional string[] (pair_trade only: the long leg, e.g. ["ethereum"]),
+  "short_coin_ids": optional string[] (pair_trade only: the short leg, e.g. ["bitcoin"])
 }
+
+Strategy mode (set strategy_mode + allowed_sides + execution_mode; when the brief is silent, OMIT them and the system defaults to a long-only basket deployed to a vault):
+- "basket_allocation" (default): a 3+ asset long basket. Leave strategy_mode unset for this.
+- "single_asset": one market only. Requires asset_count_min == asset_count_max == 1. Best default execution_mode is "wallet_direct".
+- "momentum_rotation": rank and rotate into the strongest few markets.
+- "pair_trade": long one named market, short another (relative value). Set allowed_sides="long_short", asset_count_min == asset_count_max == 2, and name the legs in long_coin_ids / short_coin_ids. Only use when the brief names a long-vs-short pair or asks for relative value.
+- "hedge_overlay" / "long_short_portfolio": involve shorts -- only use when the brief explicitly opts into shorts/hedging/market-neutral, and set allowed_sides accordingly.
+- SHORTS rule: set allowed_sides to "long_short" ONLY when the user explicitly asks for shorts, hedging, market-neutral, or relative value. NEVER infer shorts from generic "growth" or "momentum" language. Default to "long_only" (or "long_flat" for trend/de-risking briefs).
 
 Feasibility (will be validated):
 - asset_count_min <= asset_count_max
-- max_weight_per_asset * asset_count_min >= 1 - max_cash_weight  (must be able to fill the non-cash portion)
+- For basket/momentum/long-short modes: max_weight_per_asset * asset_count_min >= 1 - max_cash_weight  (must be able to fill the non-cash portion)
+- For single_asset: asset_count_min == asset_count_max == 1 (the coverage rule above does not apply; one position fills the book)
+- For pair_trade: asset_count_min == asset_count_max == 2 (two legs; the coverage rule does not apply)
 - horizon_days >= 30
 - If hand_picked_coin_ids is set, its length must be within [asset_count_min, asset_count_max]
 

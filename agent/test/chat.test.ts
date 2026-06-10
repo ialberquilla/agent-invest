@@ -60,6 +60,7 @@ test("runStrategyPipeline creates a run and does not await workflow completion",
         state: {
           run_id: "stub",
           brief: "stub",
+          workflow_version: "test",
           attempts: [],
           counters: { reinterpret_brief: 0, broaden_universe: 0 },
         },
@@ -80,11 +81,71 @@ test("runStrategyPipeline creates a run and does not await workflow completion",
       threadId: "chat-1",
       kind: "strategy_pipeline",
       status: "running",
-      metadata: { brief: "Find a BTC momentum strategy" },
+      metadata: {
+        brief: "Find a BTC momentum strategy",
+        based_on_run_id: null,
+        overrides: null,
+        data_as_of: null,
+      },
     },
   ]);
 
   finishWorkflow();
+});
+
+test("runStrategyPipeline forwards rerun overrides to the workflow and run metadata", async () => {
+  const insertedRuns: unknown[] = [];
+  let forwarded:
+    | { brief: unknown; options: unknown }
+    | undefined;
+  const agent = createChatAgent({
+    db: createRunDbDouble(insertedRuns) as never,
+    async runWorkflow(_runId, brief, _deps, options) {
+      forwarded = { brief, options };
+      return {
+        state: {
+          run_id: "stub",
+          brief: "stub",
+          workflow_version: "test",
+          attempts: [],
+          counters: { reinterpret_brief: 0, broaden_universe: 0 },
+        },
+      };
+    },
+  });
+
+  const result = await agent.runStrategyPipeline(
+    {
+      brief: "Find a BTC momentum strategy",
+      based_on_run_id: "parent-run",
+      overrides: { asset_count_max: 4, max_weight_per_asset: 0.4 },
+      data_as_of: "2026-06-01",
+    },
+    "chat-1",
+  );
+
+  // run() is fire-and-forget; give the background workflow a tick to start.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.deepEqual(forwarded?.options, {
+    based_on_run_id: "parent-run",
+    overrides: { asset_count_max: 4, max_weight_per_asset: 0.4 },
+    data_as_of: "2026-06-01",
+  });
+  assert.deepEqual(insertedRuns, [
+    {
+      runId: result.run_id,
+      threadId: "chat-1",
+      kind: "strategy_pipeline",
+      status: "running",
+      metadata: {
+        brief: "Find a BTC momentum strategy",
+        based_on_run_id: "parent-run",
+        overrides: { asset_count_max: 4, max_weight_per_asset: 0.4 },
+        data_as_of: "2026-06-01",
+      },
+    },
+  ]);
 });
 
 test("extractChatResponseText omits reasoning parts", () => {

@@ -24,6 +24,7 @@ function stubWorkflowState(
   return {
     run_id: "stub",
     brief: "stub",
+    workflow_version: "test",
     attempts: [],
     counters: { reinterpret_brief: 0, broaden_universe: 0 },
     final: {
@@ -592,6 +593,78 @@ test("POST /maintenance/storage/cleanup deletes old storage files", async () => 
     if (previousToken === undefined) delete process.env.MAINTENANCE_TOKEN;
     else process.env.MAINTENANCE_TOKEN = previousToken;
     await rm(storageRoot, { force: true, recursive: true });
+  }
+});
+
+test("GET /markets/gmx returns the tradeable coin list", async () => {
+  const app = buildServer({
+    repositories: {
+      ...createRepositoryDouble(createState()),
+      listGmxTradeableCoins: async () => [
+        { coin_id: "bitcoin", symbol: "BTC" },
+        { coin_id: "ethereum", symbol: "ETH" },
+      ],
+    } as never,
+  });
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/markets/gmx" });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), {
+      coins: [
+        { coin_id: "bitcoin", symbol: "BTC" },
+        { coin_id: "ethereum", symbol: "ETH" },
+      ],
+    });
+  } finally {
+    await app.close();
+  }
+});
+
+test("POST /messages forwards strategy-type overrides to the workflow", async () => {
+  const state = createState();
+  let captured: unknown;
+  const app = buildServer({
+    repositories: createRepositoryDouble(state),
+    runWorkflow: (async (
+      _runId: string,
+      _brief: unknown,
+      _deps: unknown,
+      options: unknown,
+    ) => {
+      captured = options;
+      return stubWorkflowState("ov");
+    }) as never,
+  });
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      payload: {
+        strategy_id: "strategy-ov",
+        text: "single asset",
+        user_id: "user-ov",
+        overrides: {
+          strategy_mode: "single_asset",
+          asset_count_min: 1,
+          asset_count_max: 1,
+          target_coin_id: "bitcoin",
+        },
+      },
+      url: "/messages",
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(captured, {
+      overrides: {
+        strategy_mode: "single_asset",
+        asset_count_min: 1,
+        asset_count_max: 1,
+        target_coin_id: "bitcoin",
+      },
+    });
+  } finally {
+    await app.close();
   }
 });
 

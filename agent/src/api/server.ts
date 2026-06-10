@@ -20,6 +20,7 @@ import { buildMandate } from "../agent/workflow/mandate";
 import { workflowStateToStructuredResult } from "../agent/workflow/persist";
 import type {
   FinalWinner,
+  StrategyRunOverrides,
   WizardBrief,
   WorkflowState,
 } from "../agent/workflow/state";
@@ -63,7 +64,10 @@ import {
   bindVaultToMandate as defaultBindVaultToMandate,
   readVaultForMandate as defaultReadVaultForMandate,
 } from "../db/repositories/vaults";
-import { resolveMarketsBatch as defaultResolveMarketsBatch } from "../db/repositories/gmx-markets";
+import {
+  listGmxTradeableCoins as defaultListGmxTradeableCoins,
+  resolveMarketsBatch as defaultResolveMarketsBatch,
+} from "../db/repositories/gmx-markets";
 import {
   deletePinnedScreener as defaultDeletePinnedScreener,
   listPinnedScreeners as defaultListPinnedScreeners,
@@ -103,6 +107,7 @@ type Repositories = {
   bindVaultToMandate: typeof defaultBindVaultToMandate;
   readVaultForMandate: typeof defaultReadVaultForMandate;
   resolveMarketsBatch: typeof defaultResolveMarketsBatch;
+  listGmxTradeableCoins: typeof defaultListGmxTradeableCoins;
   listPinnedScreeners: typeof defaultListPinnedScreeners;
   upsertPinnedScreener: typeof defaultUpsertPinnedScreener;
   readPinnedScreener: typeof defaultReadPinnedScreener;
@@ -140,7 +145,12 @@ type ServerDependencies = {
       onEvent: (event: unknown) => void | Promise<void>,
     ): Promise<ChatAgentResponse>;
     runStrategyPipeline?(
-      input: { brief: string },
+      input: {
+        brief: string;
+        based_on_run_id?: string;
+        overrides?: StrategyRunOverrides;
+        data_as_of?: string;
+      },
       chatSessionId?: string,
     ): Promise<{ run_id: string }>;
   };
@@ -209,6 +219,145 @@ function requiredNumber(body: Record<string, unknown>, key: string) {
     throw httpError(400, `Request body field '${key}' must be a number`);
   }
   return parsed;
+}
+
+// Shape-validate the optional `overrides` object from a strategy-pipeline
+// request. Type checks only -- feasibility (e.g. asset_count_min <= max)
+// is enforced later by applyOverrides against the interpreted thesis.
+// Returns undefined when no overrides were sent.
+function parseStrategyRunOverrides(
+  raw: unknown,
+): StrategyRunOverrides | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!isRecord(raw)) {
+    throw httpError(400, "Request body field 'overrides' must be an object");
+  }
+
+  const out: Record<string, unknown> = {};
+  const numberFields = [
+    "asset_count_min",
+    "asset_count_max",
+    "max_weight_per_asset",
+    "max_cash_weight",
+    "max_drawdown",
+    "horizon_days",
+    "top_n",
+    "top_skip",
+  ] as const;
+  for (const key of numberFields) {
+    if (raw[key] === undefined) continue;
+    const value =
+      typeof raw[key] === "string" ? Number(raw[key]) : raw[key];
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+      throw httpError(400, `overrides.${key} must be a number`);
+    }
+    out[key] = value;
+  }
+
+  for (const key of ["exclude_stablecoins", "exclude_wrapped"] as const) {
+    if (raw[key] === undefined) continue;
+    if (typeof raw[key] !== "boolean") {
+      throw httpError(400, `overrides.${key} must be a boolean`);
+    }
+    out[key] = raw[key];
+  }
+
+  if (raw.rebalance_frequency !== undefined) {
+    const allowed = ["daily", "weekly", "monthly", "quarterly"];
+    if (!allowed.includes(raw.rebalance_frequency as string)) {
+      throw httpError(
+        400,
+        `overrides.rebalance_frequency must be one of ${allowed.join(", ")}`,
+      );
+    }
+    out.rebalance_frequency = raw.rebalance_frequency;
+  }
+
+  if (raw.hand_picked_coin_ids !== undefined) {
+    if (
+      !Array.isArray(raw.hand_picked_coin_ids) ||
+      !raw.hand_picked_coin_ids.every((id) => typeof id === "string")
+    ) {
+      throw httpError(
+        400,
+        "overrides.hand_picked_coin_ids must be an array of strings",
+      );
+    }
+    out.hand_picked_coin_ids = raw.hand_picked_coin_ids;
+  }
+
+  if (raw.strategy_mode !== undefined) {
+    const allowed = [
+      "single_asset",
+      "pair_trade",
+      "hedge_overlay",
+      "basket_allocation",
+      "momentum_rotation",
+      "long_short_portfolio",
+    ];
+    if (!allowed.includes(raw.strategy_mode as string)) {
+      throw httpError(
+        400,
+        `overrides.strategy_mode must be one of ${allowed.join(", ")}`,
+      );
+    }
+    out.strategy_mode = raw.strategy_mode;
+  }
+
+  if (raw.target_coin_id !== undefined) {
+    if (typeof raw.target_coin_id !== "string" || !raw.target_coin_id.trim()) {
+      throw httpError(400, "overrides.target_coin_id must be a non-empty string");
+    }
+    out.target_coin_id = raw.target_coin_id.trim();
+  }
+
+  if (raw.allowed_sides !== undefined) {
+    const allowed = ["long_only", "long_flat", "long_short"];
+    if (!allowed.includes(raw.allowed_sides as string)) {
+      throw httpError(
+        400,
+        `overrides.allowed_sides must be one of ${allowed.join(", ")}`,
+      );
+    }
+    out.allowed_sides = raw.allowed_sides;
+  }
+
+  if (raw.execution_mode !== undefined) {
+    const allowed = ["wallet_direct", "strategy_vault"];
+    if (!allowed.includes(raw.execution_mode as string)) {
+      throw httpError(
+        400,
+        `overrides.execution_mode must be one of ${allowed.join(", ")}`,
+      );
+    }
+    out.execution_mode = raw.execution_mode;
+  }
+
+  if (raw.signal_speed !== undefined) {
+    const allowed = ["fast", "balanced", "slow"];
+    if (!allowed.includes(raw.signal_speed as string)) {
+      throw httpError(
+        400,
+        `overrides.signal_speed must be one of ${allowed.join(", ")}`,
+      );
+    }
+    out.signal_speed = raw.signal_speed;
+  }
+
+  for (const key of ["long_coin_ids", "short_coin_ids"] as const) {
+    if (raw[key] === undefined) continue;
+    if (
+      !Array.isArray(raw[key]) ||
+      !(raw[key] as unknown[]).every((id) => typeof id === "string")
+    ) {
+      throw httpError(400, `overrides.${key} must be an array of strings`);
+    }
+    out[key] = raw[key];
+  }
+
+  return Object.keys(out).length > 0
+    ? (out as StrategyRunOverrides)
+    : undefined;
 }
 
 function requiredChoice<T extends readonly string[]>(
@@ -963,6 +1112,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     bindVaultToMandate: defaultBindVaultToMandate,
     readVaultForMandate: defaultReadVaultForMandate,
     resolveMarketsBatch: defaultResolveMarketsBatch,
+    listGmxTradeableCoins: defaultListGmxTradeableCoins,
     listPinnedScreeners: defaultListPinnedScreeners,
     upsertPinnedScreener: defaultUpsertPinnedScreener,
     readPinnedScreener: defaultReadPinnedScreener,
@@ -1004,6 +1154,10 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const userId = requiredText(body, "user_id");
     const strategyId = requiredText(body, "strategy_id");
     const text = resolveMessageText(body);
+    // Deterministic thesis overrides (e.g. the wizard's strategy-type picker
+    // selecting a single-asset / pair / long-short shape). Applied after
+    // interpret_brief and re-validated, same as a structured rerun.
+    const overrides = parseStrategyRunOverrides(body.overrides);
     const runId = randomUUID();
 
     const strategy = await repositories.ensureStrategy(userId, strategyId);
@@ -1069,6 +1223,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
         {
           llm: workflowLLM,
         },
+        { overrides },
       );
       request.log.info(
         { runId, final_kind: workflowState.final?.kind ?? null },
@@ -1116,6 +1271,14 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   }
 
   app.get("/health", async () => ({ ok: true }));
+
+  // The GMX-tradeable coin set (coin_id + symbol), for the strategy-type
+  // picker's asset selector. Read-only; safe without the API key gate below
+  // would still apply -- this sits after it like the other routes.
+  app.get("/markets/gmx", async () => {
+    const coins = await repositories.listGmxTradeableCoins();
+    return { coins };
+  });
 
   app.post<{ Params: { id: string } }>("/users/:id/claim", async (request) => {
     const body = (request.body ?? {}) as Record<string, unknown>;
@@ -1373,6 +1536,10 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     const userId = requiredText(body, "user_id");
     const strategyId = requiredText(body, "strategy_id");
     const text = resolveMessageText(body);
+    // Deterministic thesis overrides (e.g. the wizard's strategy-type picker
+    // selecting a single-asset / pair / long-short shape). Applied after
+    // interpret_brief and re-validated, same as a structured rerun.
+    const overrides = parseStrategyRunOverrides(body.overrides);
     const runId = randomUUID();
 
     const strategy = await repositories.ensureStrategy(userId, strategyId);
@@ -1391,6 +1558,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
         {
           llm: workflowLLM,
         },
+        { overrides },
       );
       request.log.info(
         { runId, final_kind: workflowState.final?.kind ?? null },
@@ -1432,7 +1600,20 @@ export function buildServer(dependencies: ServerDependencies = {}) {
       throw httpError(500, "Chat agent cannot start strategy pipeline runs");
     }
 
-    return executeChatAgent.runStrategyPipeline({ brief }, chatSessionId);
+    const based_on_run_id =
+      typeof body.based_on_run_id === "string" && body.based_on_run_id.trim()
+        ? body.based_on_run_id.trim()
+        : undefined;
+    const data_as_of =
+      typeof body.data_as_of === "string" && body.data_as_of.trim()
+        ? body.data_as_of.trim()
+        : undefined;
+    const overrides = parseStrategyRunOverrides(body.overrides);
+
+    return executeChatAgent.runStrategyPipeline(
+      { brief, based_on_run_id, overrides, data_as_of },
+      chatSessionId,
+    );
   });
 
   app.post("/internal/tools/screen-markets", async (request) => {

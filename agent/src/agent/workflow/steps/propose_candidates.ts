@@ -10,6 +10,13 @@ import {
   ProposalValidationError,
   REBALANCE_TRIGGER_FAMILIES,
   REBALANCE_TRIGGERS,
+  resolveStrategyMode,
+  resolveSignalSpeed,
+  SIGNAL_SPEED_LOOKBACKS,
+  LONG_SHORT_FAMILY,
+  MOMENTUM_ROTATION_FAMILY,
+  PAIR_TRADE_FAMILY,
+  SINGLE_ASSET_FAMILY,
   WEIGHTING_SCHEMES,
   validateProposal,
   type AllocationTemplate,
@@ -120,7 +127,45 @@ export async function proposeCandidates(
     horizon_days: input.thesis.horizon_days,
     prior_attempts: input.attempts?.length ?? 0,
     has_refinement_hint: lastHint(input.attempts) !== undefined,
+    strategy_mode: resolveStrategyMode(input.thesis),
   });
+
+  // single_asset is a fixed one-position shape with no select_top/weighting
+  // space to explore -- only the trend signal window. Build the candidates
+  // deterministically (an SMA-lookback sweep on the target coin) and skip
+  // the LLM entirely.
+  const mode = resolveStrategyMode(input.thesis);
+  if (mode === "single_asset") {
+    const proposal = buildSingleAssetProposal(input);
+    logger.exit(NEXT_STEP, {
+      candidate_count: proposal.candidates.length,
+      template_mix: summariseTemplates(proposal.candidates),
+      single_asset: true,
+    });
+    return { delta: { proposal }, next: NEXT_STEP };
+  }
+  if (mode === "pair_trade") {
+    const proposal = buildPairTradeProposal(input);
+    logger.exit(NEXT_STEP, {
+      candidate_count: proposal.candidates.length,
+      template_mix: summariseTemplates(proposal.candidates),
+      pair_trade: true,
+    });
+    return { delta: { proposal }, next: NEXT_STEP };
+  }
+  if (mode === "momentum_rotation" || mode === "long_short_portfolio") {
+    const family =
+      mode === "long_short_portfolio"
+        ? LONG_SHORT_FAMILY
+        : MOMENTUM_ROTATION_FAMILY;
+    const proposal = buildRotationProposal(input, family);
+    logger.exit(NEXT_STEP, {
+      candidate_count: proposal.candidates.length,
+      template_mix: summariseTemplates(proposal.candidates),
+      rotation: mode,
+    });
+    return { delta: { proposal }, next: NEXT_STEP };
+  }
 
   const userMessage = buildUserMessage(input);
   let lastError: Error | undefined;
@@ -165,6 +210,130 @@ export async function proposeCandidates(
   }
 
   throw lastError ?? new Error("propose_candidates failed without an error");
+}
+
+// Deterministic single_asset proposal: long/flat on one coin, sweeping the
+// SMA trend-signal window. The coin is the thesis target_coin_id when set,
+// else the top-ranked coin in the resolved universe (pinned so the run is
+// reproducible). select_top is always 1 (one position is the whole book).
+// The sweep is the three-point set for the thesis signal_speed preset
+// (Fast/Balanced/Slow); default "balanced" reproduces the historical
+// [20, 50, 100].
+export function buildSingleAssetProposal(
+  input: ProposeCandidatesInput,
+): Proposal {
+  const target = input.thesis.target_coin_id ?? input.universe.coin_ids[0];
+  if (!target) {
+    throw new ProposalValidationError(
+      "single_asset proposal requires a target coin (thesis.target_coin_id or a non-empty universe)",
+    );
+  }
+  const speed = resolveSignalSpeed(input.thesis);
+  const lookbacks = SIGNAL_SPEED_LOOKBACKS[speed];
+  const candidates: ProposedCandidate[] = lookbacks.map(
+    (sma_lookback, index) => ({
+      candidate_id: `sa${index + 1}`,
+      template_id: SINGLE_ASSET_FAMILY,
+      select_top: 1,
+      weighting: "equal",
+      sma_lookback,
+      target_coin_id: target,
+      rationale: `Single-asset long/flat on ${target} with a ${sma_lookback}-day SMA trend filter.`,
+    }),
+  );
+  const proposal: Proposal = {
+    iteration_hypothesis: `Single-asset ${speed} trend setup on ${target}; sweep the SMA trend-signal window.`,
+    candidates,
+  };
+  validateProposal(proposal, {
+    thesis: input.thesis,
+    universe: input.universe,
+  });
+  return proposal;
+}
+
+// Deterministic pair_trade proposal: long one named coin, short another,
+// sweeping the hedge ratio that sizes the short leg. Legs come from the
+// thesis (long_coin_ids[0]/short_coin_ids[0]) or the first two coins of the
+// resolved universe. select_top is always 2.
+const PAIR_TRADE_HEDGE_RATIOS = [0.5, 1.0, 1.5] as const;
+
+export function buildPairTradeProposal(
+  input: ProposeCandidatesInput,
+): Proposal {
+  const long = input.thesis.long_coin_ids?.[0] ?? input.universe.coin_ids[0];
+  const short = input.thesis.short_coin_ids?.[0] ?? input.universe.coin_ids[1];
+  if (!long || !short) {
+    throw new ProposalValidationError(
+      "pair_trade proposal requires two coins (thesis legs or a 2-coin universe)",
+    );
+  }
+  if (long === short) {
+    throw new ProposalValidationError(
+      "pair_trade proposal requires distinct long and short coins",
+    );
+  }
+  const candidates: ProposedCandidate[] = PAIR_TRADE_HEDGE_RATIOS.map(
+    (hedge_ratio, index) => ({
+      candidate_id: `pt${index + 1}`,
+      template_id: PAIR_TRADE_FAMILY,
+      select_top: 2,
+      weighting: "equal",
+      long_coin_id: long,
+      short_coin_id: short,
+      hedge_ratio,
+      rationale: `Long ${long} / short ${short} at a ${hedge_ratio}x hedge ratio.`,
+    }),
+  );
+  const proposal: Proposal = {
+    iteration_hypothesis: `Pair trade: long ${long}, short ${short}; sweep the hedge ratio.`,
+    candidates,
+  };
+  validateProposal(proposal, {
+    thesis: input.thesis,
+    universe: input.universe,
+  });
+  return proposal;
+}
+
+// Deterministic momentum-rotation proposal (long/flat or long/short): rank a
+// pool of select_top names and sweep the momentum-lookback window. The pool
+// is the thesis asset_count_max, capped by the resolved universe size.
+const ROTATION_MOMENTUM_LOOKBACKS = [30, 90, 180] as const;
+
+export function buildRotationProposal(
+  input: ProposeCandidatesInput,
+  family: typeof MOMENTUM_ROTATION_FAMILY | typeof LONG_SHORT_FAMILY,
+): Proposal {
+  const pool = Math.min(
+    input.thesis.constraints.asset_count_max,
+    input.universe.coin_ids.length,
+  );
+  if (pool < input.thesis.constraints.asset_count_min) {
+    throw new ProposalValidationError(
+      `rotation proposal: universe (${input.universe.coin_ids.length}) cannot satisfy asset_count_min=${input.thesis.constraints.asset_count_min}`,
+    );
+  }
+  const candidates: ProposedCandidate[] = ROTATION_MOMENTUM_LOOKBACKS.map(
+    (momentum_lookback, index) => ({
+      candidate_id: `mr${index + 1}`,
+      template_id: family,
+      select_top: pool,
+      weighting: "equal",
+      rebalance_trigger: "periodic_30d",
+      momentum_lookback,
+      rationale: `${family} over a ${pool}-name pool with a ${momentum_lookback}-day momentum window.`,
+    }),
+  );
+  const proposal: Proposal = {
+    iteration_hypothesis: `${family}: rank a ${pool}-name pool and sweep the momentum lookback.`,
+    candidates,
+  };
+  validateProposal(proposal, {
+    thesis: input.thesis,
+    universe: input.universe,
+  });
+  return proposal;
 }
 
 export function expandProposalWithSweep(

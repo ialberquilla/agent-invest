@@ -13,6 +13,7 @@ import {
   type ValidateAgainstThesisResponse,
 } from "../cli.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
+import { resolveAllowedSides, resolveStrategyMode } from "../state.ts";
 import type {
   AllocationWeight,
   Attempt,
@@ -140,15 +141,53 @@ function candidateToBatchEntry(
   candidate: ProposedCandidate,
   thesis: Thesis,
 ) {
-  const config: Record<string, unknown> = { weighting: candidate.weighting };
-  if (candidate.rebalance_trigger !== undefined) {
-    config.rebalance_trigger = candidate.rebalance_trigger;
-  }
-  if (candidate.core_weight !== undefined) {
-    config.core_weight = candidate.core_weight;
-  }
-  if (candidate.sleeve_cap !== undefined) {
-    config.sleeve_cap = candidate.sleeve_cap;
+  const config: Record<string, unknown> = {};
+  if (candidate.template_id === "single_asset_trend_setup") {
+    // The single-asset recipe takes no weighting/select_top slot; its
+    // config is the trend window and (optionally) the pinned coin.
+    if (candidate.sma_lookback !== undefined) {
+      config.sma_lookback = candidate.sma_lookback;
+    }
+    const target = candidate.target_coin_id ?? thesis.target_coin_id;
+    if (target !== undefined) {
+      config.target_coin_id = target;
+    }
+  } else if (candidate.template_id === "explicit_pair_trade") {
+    // The pair recipe takes named legs and an optional hedge ratio; no
+    // weighting/select_top slot.
+    if (candidate.long_coin_id !== undefined) {
+      config.long_coin_id = candidate.long_coin_id;
+    }
+    if (candidate.short_coin_id !== undefined) {
+      config.short_coin_id = candidate.short_coin_id;
+    }
+    if (candidate.hedge_ratio !== undefined) {
+      config.hedge_ratio = candidate.hedge_ratio;
+    }
+  } else if (
+    candidate.template_id === "long_flat_momentum_rotation" ||
+    candidate.template_id === "long_short_momentum_rotation"
+  ) {
+    // The rotation recipes take the momentum window and an optional rebalance
+    // trigger; no weighting slot. select_top stays top-level (the recipe's
+    // own slot, injected into config by run_candidate_batch).
+    if (candidate.momentum_lookback !== undefined) {
+      config.momentum_lookback = candidate.momentum_lookback;
+    }
+    if (candidate.rebalance_trigger !== undefined) {
+      config.rebalance_trigger = candidate.rebalance_trigger;
+    }
+  } else {
+    config.weighting = candidate.weighting;
+    if (candidate.rebalance_trigger !== undefined) {
+      config.rebalance_trigger = candidate.rebalance_trigger;
+    }
+    if (candidate.core_weight !== undefined) {
+      config.core_weight = candidate.core_weight;
+    }
+    if (candidate.sleeve_cap !== undefined) {
+      config.sleeve_cap = candidate.sleeve_cap;
+    }
   }
   return {
     candidate_id: candidate.candidate_id,
@@ -192,14 +231,50 @@ export function scriptObjectiveFromWorkflow(
 // The workflow stores max_drawdown as positive (user-facing
 // convention); we negate it here so the floor check matches semantics.
 export function thesisForValidate(thesis: Thesis): Record<string, unknown> {
+  const dd = -Math.abs(thesis.constraints.max_drawdown);
+  // Non-basket books are not fully-invested diversified long baskets, so the
+  // long-only rules (max_weight_per_asset, asset_count) don't apply: a pair /
+  // long-short book carries shorts, and a momentum rotation concentrates into
+  // a few names. Validate drawdown plus any explicit exposure ceilings.
+  if (usesExposureValidation(thesis)) {
+    const constraints: Record<string, unknown> = { max_drawdown: dd };
+    for (const key of [
+      "max_gross_exposure",
+      "max_net_exposure",
+      "max_leg_weight",
+      "target_net_beta",
+    ] as const) {
+      const value = thesis.constraints[key];
+      if (typeof value === "number") constraints[key] = value;
+    }
+    return {
+      objective: thesis.objective,
+      horizon_days: thesis.horizon_days,
+      constraints,
+    };
+  }
   return {
     objective: thesis.objective,
     horizon_days: thesis.horizon_days,
     constraints: {
       ...thesis.constraints,
-      max_drawdown: -Math.abs(thesis.constraints.max_drawdown),
+      max_drawdown: dd,
     },
   };
+}
+
+// True for books validated by exposure/drawdown rather than the long-only
+// max_weight/asset_count rules: short-bearing books AND the long/flat
+// momentum rotation (long-only but concentrated into a few names).
+function usesExposureValidation(thesis: Thesis): boolean {
+  if (resolveAllowedSides(thesis) === "long_short") return true;
+  const mode = resolveStrategyMode(thesis);
+  return (
+    mode === "pair_trade" ||
+    mode === "hedge_overlay" ||
+    mode === "long_short_portfolio" ||
+    mode === "momentum_rotation"
+  );
 }
 
 export function normalizeValidationSummary(

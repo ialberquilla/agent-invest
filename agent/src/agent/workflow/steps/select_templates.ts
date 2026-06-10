@@ -7,11 +7,22 @@
 import type { LLMClient } from "../llm.ts";
 import { createStepLogger, type StepLogger } from "../logging.ts";
 import {
+  LONG_SHORT_FAMILY,
+  MODE_ONLY_FAMILIES,
+  MOMENTUM_ROTATION_FAMILY,
+  PAIR_TRADE_FAMILY,
+  resolveAllowedSides,
+  resolveStrategyMode,
+  SHORT_REQUIRING_FAMILIES,
+  SINGLE_ASSET_FAMILY,
   STRATEGY_FAMILIES,
   TemplateSelectionValidationError,
   validateTemplateSelection,
+  type AllowedSides,
   type SelectTemplatesInput,
   type StepName,
+  type StrategyFamily,
+  type StrategyMode,
   type TemplateSelection,
   type Thesis,
 } from "../state.ts";
@@ -69,7 +80,8 @@ Rules:
 - selected MUST contain between 1 and 3 families, ranked best-fit first (rank 1, 2, 3).
 - family ids must come from the catalog and be unique within the shortlist.
 - ranks must be the contiguous set 1..n with no gaps or duplicates.
-- SHORTS GATE: only shortlist a family marked "REQUIRES SHORTS" when the thesis interpretation_notes (or objective) clearly opt into shorts or hedging. When in doubt, prefer long-only families.
+- SHORTS GATE: only shortlist a family marked "REQUIRES SHORTS" when the thesis allowed_sides is "long_short". For "long_only" or "long_flat", shortlist long-only families only. (The workflow also enforces this deterministically, so a short family picked under a non-short thesis will be dropped.)
+- NEVER shortlist "single_asset_trend_setup", "explicit_pair_trade", "long_flat_momentum_rotation", or "long_short_momentum_rotation": they are selected automatically for their strategy_mode and dropped from any other shortlist.
 - Map thesis signals to families:
   - objective preserve_capital / income, low max_drawdown -> prefer core_satellite, threshold_rebalanced, periodic_rebalanced, volatility_targeted. When max_drawdown is TIGHT (<= 0.20), rank a drawdown-aware family (volatility_targeted, or threshold_rebalanced for low turnover) FIRST -- plain calendar rebalancing (periodic_rebalanced) does not control drawdown, so it should not be the rank-1 pick for a tight-drawdown mandate.
   - objective balanced_growth -> core_satellite, periodic_rebalanced, synthetic_long.
@@ -91,7 +103,24 @@ export async function selectTemplates(
     objective: input.thesis.objective,
     horizon_days: input.thesis.horizon_days,
     rebalance_frequency: input.thesis.rebalance_frequency,
+    strategy_mode: resolveStrategyMode(input.thesis),
   });
+
+  // Fixed one-family shapes skip the LLM entirely: nothing else fits the
+  // mode, so there is no selection to reason about.
+  const forced = forcedFamilyForMode(resolveStrategyMode(input.thesis));
+  if (forced) {
+    const selection: TemplateSelection = {
+      rationale: forced.rationale,
+      selected: [{ family: forced.family, rank: 1, rationale: forced.rationale }],
+    };
+    logger.exit(NEXT_STEP, {
+      families: [forced.family],
+      top_family: forced.family,
+      forced_mode: resolveStrategyMode(input.thesis),
+    });
+    return { delta: { template_selection: selection }, next: NEXT_STEP };
+  }
 
   const userMessage = buildUserMessage(input);
 
@@ -111,11 +140,23 @@ export async function selectTemplates(
     try {
       const parsed = parseJson(response.text);
       validateTemplateSelection(parsed);
+      // Deterministic gates: drop mode-only families (single-asset / pair,
+      // each forced in only for its own mode, handled above) and any
+      // short-requiring family unless the thesis permits shorts. Hard
+      // guarantees, not prompt hopes.
+      const modeGated = dropModeOnlyFamilies(parsed);
+      const gated = enforceShortsGate(
+        modeGated,
+        resolveAllowedSides(input.thesis),
+      );
       logger.exit(NEXT_STEP, {
-        families: parsed.selected.map((s) => s.family),
-        top_family: parsed.selected[0]?.family,
+        families: gated.selected.map((s) => s.family),
+        top_family: gated.selected[0]?.family,
+        allowed_sides: resolveAllowedSides(input.thesis),
+        dropped_short_families:
+          parsed.selected.length - gated.selected.length,
       });
-      return { delta: { template_selection: parsed }, next: NEXT_STEP };
+      return { delta: { template_selection: gated }, next: NEXT_STEP };
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
       if (attempt === 1) {
@@ -129,6 +170,100 @@ export async function selectTemplates(
 
   // Unreachable: the loop either returns or throws.
   throw lastError ?? new Error("select_templates failed without an error");
+}
+
+// The fixed one-family shape for a mode, or undefined for modes that pick
+// a family via the LLM. These short-circuit select_templates entirely.
+function forcedFamilyForMode(
+  mode: StrategyMode,
+): { family: StrategyFamily; rationale: string } | undefined {
+  switch (mode) {
+    case "single_asset":
+      return {
+        family: SINGLE_ASSET_FAMILY,
+        rationale: "single_asset mode: one market, long/flat on a trend signal.",
+      };
+    case "pair_trade":
+      return {
+        family: PAIR_TRADE_FAMILY,
+        rationale: "pair_trade mode: long one named market, short another.",
+      };
+    case "momentum_rotation":
+      return {
+        family: MOMENTUM_ROTATION_FAMILY,
+        rationale:
+          "momentum_rotation mode: rotate into the strongest names, de-risk to cash when the market trend is down.",
+      };
+    case "long_short_portfolio":
+      return {
+        family: LONG_SHORT_FAMILY,
+        rationale:
+          "long_short_portfolio mode: long the strongest names, short the weakest by momentum.",
+      };
+    default:
+      return undefined;
+  }
+}
+
+// Drop mode-only families (single-asset, pair, the two rotation families)
+// from a shortlist for any other mode -- they are forced in for their own
+// mode and never valid elsewhere -- re-ranking the survivors. Falls back to
+// a long-only default if it empties the list.
+function dropModeOnlyFamilies(
+  selection: TemplateSelection,
+): TemplateSelection {
+  const kept = selection.selected.filter(
+    (s) => !MODE_ONLY_FAMILIES.has(s.family),
+  );
+  if (kept.length === selection.selected.length) return selection;
+  const survivors =
+    kept.length > 0
+      ? kept
+      : [
+          {
+            family: "synthetic_long_allocation" as const,
+            rank: 1,
+            rationale:
+              "Long-only fallback: a mode-only family is not valid for this mode.",
+          },
+        ];
+  const reranked = [...survivors]
+    .sort((a, b) => a.rank - b.rank)
+    .map((s, index) => ({ ...s, rank: index + 1 }));
+  return { rationale: selection.rationale, selected: reranked };
+}
+
+// Remove short-requiring families when shorts are not permitted, then
+// re-rank the survivors contiguously from 1. If the gate empties the
+// shortlist (the LLM returned only short families for a long-only thesis),
+// fall back to a safe long-only default so the workflow can still proceed.
+function enforceShortsGate(
+  selection: TemplateSelection,
+  allowedSides: AllowedSides,
+): TemplateSelection {
+  if (allowedSides === "long_short") return selection;
+
+  const longOnly = selection.selected.filter(
+    (s) => !SHORT_REQUIRING_FAMILIES.has(s.family),
+  );
+  const kept =
+    longOnly.length > 0
+      ? longOnly
+      : [
+          {
+            family: "synthetic_long_allocation" as const,
+            rank: 1,
+            rationale:
+              "Long-only fallback: shorts are not permitted for this thesis.",
+          },
+        ];
+
+  const reranked = [...kept]
+    .sort((a, b) => a.rank - b.rank)
+    .map((s, index) => ({ ...s, rank: index + 1 }));
+
+  if (reranked.length === selection.selected.length) return selection;
+  return { rationale: selection.rationale, selected: reranked };
 }
 
 function buildSystem(attempt: number, lastError: Error | undefined): string {
@@ -155,6 +290,8 @@ function buildUserMessage(input: SelectTemplatesInput): string {
 function thesisDigest(thesis: Thesis) {
   return {
     objective: thesis.objective,
+    strategy_mode: thesis.strategy_mode ?? null,
+    allowed_sides: resolveAllowedSides(thesis),
     horizon_days: thesis.horizon_days,
     rebalance_frequency: thesis.rebalance_frequency,
     max_drawdown: thesis.constraints.max_drawdown,

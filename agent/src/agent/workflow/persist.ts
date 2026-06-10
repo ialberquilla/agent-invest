@@ -10,12 +10,19 @@ import { randomUUID } from "node:crypto";
 import { db as defaultDb } from "../../db/client.ts";
 import { insertMandate } from "../../db/repositories/strategy-mandates.ts";
 import { runs } from "../../db/schema.ts";
-import { runWorkflow, type WorkflowDeps } from "./controller.ts";
+import {
+  runWorkflow,
+  type RunWorkflowOptions,
+  type WorkflowDeps,
+} from "./controller.ts";
 import { buildMandate } from "./mandate.ts";
+import { buildSuggestedReruns } from "./suggested-reruns.ts";
+import { resolveAllowedSides, resolveStrategyMode } from "./state.ts";
 import type {
   CandidateBacktest,
   EquityPoint,
   FinalWinner,
+  Thesis,
   WizardBrief,
   WorkflowState,
 } from "./state.ts";
@@ -34,13 +41,14 @@ export async function runWorkflowAndPersist(
   run_id: string,
   brief: string | WizardBrief,
   deps: RunWorkflowAndPersistDeps = {},
+  options: RunWorkflowOptions = {},
 ): Promise<RunWorkflowAndPersistResult> {
   const db = deps.db ?? defaultDb;
   const startedAt = Date.now();
   let state: WorkflowState;
 
   try {
-    state = await runWorkflow(run_id, brief, deps);
+    state = await runWorkflow(run_id, brief, deps, options);
   } catch (error) {
     // Unhandled controller exception (the controller is supposed to
     // short-circuit instead, but if something throws above that we
@@ -139,6 +147,12 @@ async function persistMandate(
 function buildMetadata(state: WorkflowState, duration_ms: number) {
   return {
     brief: state.brief,
+    // Provenance + reproducibility (PR1): the exact inputs that shaped
+    // this run, so a `based_on_run_id` rerun can be traced and replayed.
+    workflow_version: state.workflow_version,
+    overrides: state.overrides ?? null,
+    based_on_run_id: state.based_on_run_id ?? null,
+    data_as_of: state.data_as_of ?? null,
     structured_result: workflowStateToStructuredResult(state),
     final: state.final,
     counters: state.counters,
@@ -211,6 +225,22 @@ export function workflowStateToStructuredResult(
       allocation: buildAllocation(backtest),
       kpis: backtest ? buildKpis(backtest) : {},
       charts,
+      // One-click follow-up reruns derived from the resolved thesis. The
+      // frontend renders these as buttons that relaunch the pipeline with
+      // based_on_run_id + the suggestion's overrides.
+      suggested_reruns: buildSuggestedReruns(final.thesis),
+      // Cost-model disclosure: the bt runner approximates trading costs but
+      // does NOT model GMX perp funding/borrow, so any short-bearing book is
+      // understated. The frontend badges this. Long-only books carry no
+      // funding, so the flag is omitted.
+      ...(usesShorts(final.thesis)
+        ? { costs: { funding_modeled: false } }
+        : {}),
+      // "Why these assets?": the considered/selected/rejected breakdown from
+      // the universe step (present only on the rank_universe path).
+      ...(final.universe.exploration
+        ? { asset_exploration: final.universe.exploration }
+        : {}),
       artifacts: [],
     };
   }
@@ -230,8 +260,24 @@ export function workflowStateToStructuredResult(
     refinement_reasons: final.reasons,
     allocation: [],
     kpis: {},
+    // A no-viable run still has a thesis when one was interpreted; offer
+    // reruns off it so the user can loosen constraints in one click.
+    suggested_reruns: final.thesis ? buildSuggestedReruns(final.thesis) : [],
     artifacts: [],
   };
+}
+
+// True when the winning thesis runs a short-bearing book (pair / hedge /
+// long-short, or any thesis that opted into shorts). Such books have GMX
+// perp funding the bt runner does not model -- surfaced as a disclosure.
+function usesShorts(thesis: Thesis): boolean {
+  if (resolveAllowedSides(thesis) === "long_short") return true;
+  const mode = resolveStrategyMode(thesis);
+  return (
+    mode === "pair_trade" ||
+    mode === "hedge_overlay" ||
+    mode === "long_short_portfolio"
+  );
 }
 
 function isFiniteNum(value: number | undefined): value is number {

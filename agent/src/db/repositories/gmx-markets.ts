@@ -145,6 +145,32 @@ export async function resolveMarketsBatch(
   return { resolved, failures };
 }
 
+// Every CoinGecko coin_id that resolves to an executable GMX market, with
+// its GMX symbol. Drives the strategy-type picker's coin selector so users
+// choose from the tradeable set instead of typing a coin_id. Sorted by
+// symbol; unresolvable bridge entries are dropped.
+export async function listGmxTradeableCoins(
+  db: Db = defaultDb,
+): Promise<Array<{ coin_id: string; symbol: string }>> {
+  const [tokens, markets, symbolByCoinId] = await Promise.all([
+    loadTokens(db),
+    loadMarkets(db),
+    loadSymbolByCoinId(db),
+  ]);
+  const data = { tokens, markets, symbolByCoinId };
+  const out: Array<{ coin_id: string; symbol: string }> = [];
+  for (const coinId of Object.keys(symbolByCoinId)) {
+    try {
+      const market = resolveMarketFrom(data, coinId);
+      out.push({ coin_id: coinId, symbol: market.symbol });
+    } catch {
+      // Bridged but not executable (no token/market) -- skip.
+    }
+  }
+  out.sort((a, b) => a.symbol.localeCompare(b.symbol));
+  return out;
+}
+
 export async function countGmxMarkets(db: Db = defaultDb): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })

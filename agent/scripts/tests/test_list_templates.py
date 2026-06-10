@@ -20,6 +20,10 @@ def test_list_templates_returns_registered_template_metadata() -> None:
         "relative_value_pair_trade",
         "trend_following_long_short",
         "drawdown_based_hedge",
+        "explicit_pair_trade",
+        "single_asset_trend_setup",
+        "long_flat_momentum_rotation",
+        "long_short_momentum_rotation",
     ]
     for template in payload:
         assert set(template) == {

@@ -12,6 +12,9 @@ from .base import Objective, daily_index, normalize, price_series
 class BtcHodlBenchmark:
     ID: str = "btc_hodl"
     OBJECTIVE: Objective = "high_growth"
+    # Coins whose price history equity_curve() reads. The window selector
+    # uses these to keep the backtest window inside the benchmark's data.
+    REQUIRED_COIN_IDS: tuple[str, ...] = ("bitcoin",)
 
     def equity_curve(
         self,

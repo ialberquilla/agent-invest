@@ -3,7 +3,7 @@
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 import { Compass } from "lucide-react";
 
-import { AllocationWizard } from "@/components/AllocationWizard";
+import { StrategyTypePicker } from "@/components/StrategyTypePicker";
 import { Composer } from "@/components/Composer";
 import { IdentityBar } from "@/components/IdentityBar";
 import { MessageList } from "@/components/MessageList";
@@ -25,7 +25,7 @@ import {
   upsertKnownStrategy,
 } from "@/lib/local-store";
 import { readSse } from "@/lib/sse";
-import type { Run, StructuredChatResult } from "@/lib/types";
+import type { Run, StructuredChatResult, SuggestedRerun } from "@/lib/types";
 import type { AllocationWizardState } from "@/lib/wizard-prompt";
 
 type ChatViewProps = {
@@ -124,12 +124,34 @@ function sleep(ms: number) {
 }
 
 type RunSubmission =
-  | { text: string }
-  | { wizard_params: AllocationWizardState; displayText: string };
+  | { text: string; displayText?: string }
+  | {
+      wizard_params: AllocationWizardState;
+      displayText: string;
+      // Deterministic thesis overrides for a non-basket strategy type chosen
+      // in the picker. Applied after interpret_brief and re-validated.
+      overrides?: Record<string, unknown>;
+    };
 
 function wizardSubmissionText() {
   return "Allocation wizard submission";
 }
+
+// A neutral base brief for the non-basket picker paths. interpret_brief turns
+// it into a starting thesis; the strategy-type overrides then reshape it.
+const BASE_WIZARD_PARAMS: AllocationWizardState = {
+  universe: "top25",
+  exclusions: ["stablecoins", "wrapped"],
+  minimumMarketCap: "1b",
+  concentrationLimit: "agent",
+  maxDrawdown: "50",
+  riskPreference: "balanced",
+  horizon: "1y",
+  rebalance: "monthly",
+  initialCapitalUsd: "",
+  cashAllocation: "none",
+  targetAssets: "agent",
+};
 
 export function ChatView({
   strategyId,
@@ -191,7 +213,9 @@ export function ChatView({
     }
 
     const userText =
-      "text" in submission ? submission.text : submission.displayText;
+      "text" in submission
+        ? (submission.displayText ?? submission.text)
+        : submission.displayText;
 
     setMessages((current) => [...current, { role: "user", text: userText }]);
     setIsSending(true);
@@ -331,6 +355,7 @@ export function ChatView({
         body: JSON.stringify({
           strategy_id: strategyId,
           wizard_params: submission.wizard_params,
+          overrides: submission.overrides,
           user_id: getAnonymousUserId(),
         }),
       });
@@ -420,11 +445,45 @@ export function ChatView({
     await submitRun({ text });
   }
 
+  // Relaunch the pipeline from a finished run with one structured change.
+  // The chat agent forwards based_on_run_id + the exact overrides to
+  // run_strategy_pipeline (overrides are applied deterministically there),
+  // so the instruction is explicit and leaves nothing to infer.
+  async function handleRerun(
+    suggestion: SuggestedRerun,
+    basedOnRunId: string,
+  ) {
+    const instruction = [
+      "Re-run the previous strategy as a new pipeline run.",
+      `Call ${"run_strategy_pipeline"} with based_on_run_id="${basedOnRunId}"`,
+      `and these exact overrides (do not modify them): ${JSON.stringify(
+        suggestion.overrides,
+      )}.`,
+      "Reuse the original brief.",
+    ].join(" ");
+    await submitRun({ text: instruction, displayText: `Rerun: ${suggestion.label}` });
+  }
+
   async function handleWizardSubmit(wizardParams: AllocationWizardState) {
     setIsWizardOpen(false);
     await submitRun({
       wizard_params: wizardParams,
       displayText: wizardSubmissionText(),
+    });
+  }
+
+  // Non-basket strategy types from the picker: a base wizard brief gives
+  // interpret_brief something to work from, and the overrides deterministically
+  // reshape the thesis into the chosen single-asset / pair / long-short shape.
+  async function handleWizardOverrides(
+    overrides: Record<string, unknown>,
+    label: string,
+  ) {
+    setIsWizardOpen(false);
+    await submitRun({
+      wizard_params: BASE_WIZARD_PARAMS,
+      overrides,
+      displayText: `Guided setup: ${label}`,
     });
   }
 
@@ -490,6 +549,8 @@ export function ChatView({
             onSelectPrompt={handleSend}
             onOpenWizard={() => setIsWizardOpen(true)}
             onPinnedScreenersChange={onPinnedScreenersChange}
+            onRerun={handleRerun}
+            rerunDisabled={isDisabled}
           />
         </div>
 
@@ -511,7 +572,11 @@ export function ChatView({
                 </Button>
               </div>
               <div className="p-2 sm:p-3">
-                <AllocationWizard embedded onSubmit={handleWizardSubmit} />
+                <StrategyTypePicker
+                  onSubmitBasket={handleWizardSubmit}
+                  onSubmitOverrides={handleWizardOverrides}
+                  disabled={isDisabled}
+                />
               </div>
             </div>
           </section>

@@ -6,6 +6,7 @@ type StreamRequestBody = {
   user_id?: unknown;
   text?: unknown;
   wizard_params?: unknown;
+  overrides?: unknown;
 };
 
 function errorResponse(error: unknown) {
@@ -38,6 +39,7 @@ export async function POST(request: Request) {
         strategy_id: body.strategy_id,
         text: body.text,
         wizard_params: body.wizard_params,
+        overrides: body.overrides,
       },
     });
 

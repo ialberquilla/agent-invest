@@ -26,14 +26,14 @@ import {
 } from "../tools/screen-markets";
 import { createOpencodeLLMClient } from "./workflow/llm";
 import { runWorkflowAndPersist } from "./workflow/persist";
-import type { WizardBrief } from "./workflow/state";
+import type { StrategyRunOverrides, WizardBrief } from "./workflow/state";
 
 export const CHAT_PROMPT = `You are the Agent Invest chat agent.
 
 Answer general investing and quantitative-finance questions clearly and directly. You can explain concepts, ask brief clarifying questions, and help the user shape an investment-strategy brief.
 
 You have exactly three tools available:
-- ${RUN_STRATEGY_PIPELINE_TOOL}({ brief, chat_session_id }): starts an asynchronous strategy pipeline from the user's brief and returns { run_id } immediately.
+- ${RUN_STRATEGY_PIPELINE_TOOL}({ brief, chat_session_id, based_on_run_id?, overrides?, data_as_of? }): starts an asynchronous strategy pipeline from the user's brief and returns { run_id } immediately. For a follow-up that reshapes a prior run (e.g. "try fewer assets", "lower the max drawdown", "exclude stablecoins"), pass based_on_run_id (the prior run_id) and an overrides object containing ONLY the fields the user asked to change — do not re-derive the whole brief.
 - ${SCREEN_MARKETS_TOOL}({ query, factor, limit, gmxOnly }): returns a read-only structured market screener backed by ingested data and GMX market resolution.
 - ${RUN_RESEARCH_CODE_TOOL}({ code, purpose }): runs short Python research code against read-only market-data views for open-ended quantitative analysis.
 
@@ -41,6 +41,7 @@ STRICT TOOL ROUTING RULES:
 - For any request asking to list, rank, screen, compare, find top/best/worst, or build a watchlist of coins/tickers/assets/markets, you MUST call ${SCREEN_MARKETS_TOOL}. This includes informal phrasing and typos.
 - Never answer market screen/ranking/list/watchlist requests with markdown tables, numbered lists, or remembered ticker rankings. The frontend can only render pin/refresh actions when ${SCREEN_MARKETS_TOOL} is called and returns structured data.
 - Use ${RUN_STRATEGY_PIPELINE_TOOL} only when the user explicitly asks you to build, test, run, launch, or evaluate an investment strategy.
+- When the user asks to iterate on a strategy run you already started in this chat (fewer/more assets, different drawdown/horizon/rebalance, exclude or hand-pick coins, change top_n/top_skip), call ${RUN_STRATEGY_PIPELINE_TOOL} again with based_on_run_id set to that run's run_id and an overrides object holding only the changed fields. Available overrides: asset_count_min, asset_count_max, max_weight_per_asset, max_cash_weight, max_drawdown, horizon_days, rebalance_frequency, top_n, top_skip, exclude_stablecoins, exclude_wrapped, hand_picked_coin_ids, strategy_mode, allowed_sides, execution_mode, target_coin_id, long_coin_ids, short_coin_ids, signal_speed. To pivot a basket into a single-market trend setup, pass strategy_mode="single_asset" with asset_count_min=1 and asset_count_max=1 (and optionally target_coin_id, and signal_speed="fast"|"balanced"|"slow" to choose the SMA trend-window sweep). For a pair trade, pass strategy_mode="pair_trade", allowed_sides="long_short", asset_count_min=2, asset_count_max=2, long_coin_ids=["<coin>"], short_coin_ids=["<coin>"]. For a market-neutral long/short momentum book, pass strategy_mode="long_short_portfolio", allowed_sides="long_short" (keep a pool of at least 4 assets). For a regime-gated long/flat rotation, pass strategy_mode="momentum_rotation". Reuse the original brief text.
 - Use ${RUN_RESEARCH_CODE_TOOL} for bespoke historical/statistical analysis, event studies, return distributions, regime splits, or bracket-style research that cannot be answered by ${SCREEN_MARKETS_TOOL}. Generated code must use query(sql), include sample sizes, and surface assumptions/uncertainty.
 - Do not launch a strategy pipeline for a market screen, watchlist, or discretionary single-position trade idea.
 - Do not use ${RUN_RESEARCH_CODE_TOOL} to fetch network data, read secrets, write databases, or give financial advice.
@@ -86,6 +87,12 @@ export type ChatStreamEvent =
 
 export type RunStrategyPipelineInput = {
   brief: string;
+  // Structured-rerun inputs (PR1). based_on_run_id traces the parent run
+  // a rerun was derived from; overrides deterministically reshape the
+  // interpreted thesis; data_as_of pins the data snapshot.
+  based_on_run_id?: string;
+  overrides?: StrategyRunOverrides;
+  data_as_of?: string;
 };
 
 export type RunStrategyPipelineResult = {
@@ -125,19 +132,35 @@ export function createChatAgent(dependencies: ChatAgentDependencies = {}) {
     const brief = input.brief.trim();
     if (!brief) throw new Error("run_strategy_pipeline requires a brief");
 
+    const options = {
+      overrides: input.overrides,
+      based_on_run_id: input.based_on_run_id,
+      data_as_of: input.data_as_of,
+    };
+
     const runId = randomUUID();
     await db.insert(runs).values({
       runId,
       threadId: chatSessionId,
       kind: "strategy_pipeline",
       status: "running",
-      metadata: { brief },
+      metadata: {
+        brief,
+        based_on_run_id: input.based_on_run_id ?? null,
+        overrides: input.overrides ?? null,
+        data_as_of: input.data_as_of ?? null,
+      },
     });
 
-    void executeWorkflow(runId, brief as string | WizardBrief, {
-      db,
-      llm: createOpencodeLLMClient({ env, sessionTitle: `workflow ${runId}` }),
-    }).catch((error: unknown) => {
+    void executeWorkflow(
+      runId,
+      brief as string | WizardBrief,
+      {
+        db,
+        llm: createOpencodeLLMClient({ env, sessionTitle: `workflow ${runId}` }),
+      },
+      options,
+    ).catch((error: unknown) => {
       // The persist helper already records status=failed on exception
       // before re-throwing, so this catch is just a notification hook.
       dependencies.onBackgroundError?.(error, runId);

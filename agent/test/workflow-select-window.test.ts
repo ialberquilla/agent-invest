@@ -102,6 +102,7 @@ test("selectWindow forwards coin_ids and horizon_days to the CLI", async () => {
   assert.deepEqual(recommendWindow.calls[0], {
     coin_ids: ["bitcoin", "ethereum", "binancecoin"],
     horizon_days: 365,
+    benchmark_objective: "balanced",
   });
 });
 
