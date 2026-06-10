@@ -596,6 +596,31 @@ test("POST /maintenance/storage/cleanup deletes old storage files", async () => 
   }
 });
 
+test("GET /markets/gmx returns the tradeable coin list", async () => {
+  const app = buildServer({
+    repositories: {
+      ...createRepositoryDouble(createState()),
+      listGmxTradeableCoins: async () => [
+        { coin_id: "bitcoin", symbol: "BTC" },
+        { coin_id: "ethereum", symbol: "ETH" },
+      ],
+    } as never,
+  });
+
+  try {
+    const response = await app.inject({ method: "GET", url: "/markets/gmx" });
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(response.json(), {
+      coins: [
+        { coin_id: "bitcoin", symbol: "BTC" },
+        { coin_id: "ethereum", symbol: "ETH" },
+      ],
+    });
+  } finally {
+    await app.close();
+  }
+});
+
 test("POST /messages forwards strategy-type overrides to the workflow", async () => {
   const state = createState();
   let captured: unknown;
