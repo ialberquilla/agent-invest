@@ -70,6 +70,9 @@ export type RecommendWindowRequest = {
   coin_ids: string[];
   horizon_days: number;
   require_drawdown_pct?: number;
+  // Keep the window inside this objective's benchmark data (the recommender
+  // folds the benchmark coins into the common-history intersection).
+  benchmark_objective?: "high_growth" | "balanced" | "preserve_capital" | "income";
 };
 
 export type RecommendWindowResponse = {
@@ -99,6 +102,9 @@ export async function runRecommendBacktestWindow(
   ];
   if (request.require_drawdown_pct !== undefined) {
     args.push("--require-drawdown-pct", String(request.require_drawdown_pct));
+  }
+  if (request.benchmark_objective !== undefined) {
+    args.push("--benchmark-objective", request.benchmark_objective);
   }
   const stdout = await runScript(
     "recommend_backtest_window",

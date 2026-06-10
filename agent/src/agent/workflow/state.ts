@@ -79,6 +79,31 @@ export const DEFAULT_STRATEGY_MODE: StrategyMode = "basket_allocation";
 export const DEFAULT_ALLOWED_SIDES: AllowedSides = "long_only";
 export const DEFAULT_EXECUTION_MODE: ExecutionMode = "strategy_vault";
 
+// Trend-signal speed for single_asset setups: a deterministic preset that
+// selects the SMA-lookback sweep propose_candidates explores. "balanced" is
+// the historical default ([20, 50, 100]); "fast"/"slow" shift the window so
+// the guided setup can offer a Fast/Balanced/Slow control without exposing
+// raw lookback numbers. Each maps to a fixed three-point sweep so the run
+// stays deterministic.
+export type SignalSpeed = "fast" | "balanced" | "slow";
+
+export const SIGNAL_SPEEDS: readonly SignalSpeed[] = [
+  "fast",
+  "balanced",
+  "slow",
+];
+
+export const DEFAULT_SIGNAL_SPEED: SignalSpeed = "balanced";
+
+export const SIGNAL_SPEED_LOOKBACKS: Record<
+  SignalSpeed,
+  readonly [number, number, number]
+> = {
+  fast: [10, 20, 50],
+  balanced: [20, 50, 100],
+  slow: [50, 100, 200],
+};
+
 export type UniverseHints = {
   top_n: number;
   // Skip the first N market-cap ranks before applying top_n. Lets the
@@ -136,6 +161,8 @@ export type Thesis = {
   target_coin_id?: string;
   long_coin_ids?: string[];
   short_coin_ids?: string[];
+  // Trend-signal speed for single_asset setups (selects the SMA sweep).
+  signal_speed?: SignalSpeed;
 };
 
 // Resolve a thesis mode field to its effective value, applying the
@@ -158,6 +185,12 @@ export function resolveExecutionMode(
   thesis: Pick<Thesis, "execution_mode">,
 ): ExecutionMode {
   return thesis.execution_mode ?? DEFAULT_EXECUTION_MODE;
+}
+
+export function resolveSignalSpeed(
+  thesis: Pick<Thesis, "signal_speed">,
+): SignalSpeed {
+  return thesis.signal_speed ?? DEFAULT_SIGNAL_SPEED;
 }
 
 // Deterministic overrides applied to the interpreted Thesis after
@@ -185,9 +218,11 @@ export type StrategyRunOverrides = {
   // (e.g. a basket result into a single-asset trend setup) on a rerun.
   strategy_mode?: StrategyMode;
   allowed_sides?: AllowedSides;
+  execution_mode?: ExecutionMode;
   target_coin_id?: string;
   long_coin_ids?: string[];
   short_coin_ids?: string[];
+  signal_speed?: SignalSpeed;
 };
 
 // The strategy-family catalog mirrors spec.md section 9. select_templates
@@ -1439,6 +1474,9 @@ export function validateThesis(value: unknown): asserts value is Thesis {
   }
   if (value.execution_mode !== undefined) {
     requireEnum(value.execution_mode, EXECUTION_MODES, "execution_mode");
+  }
+  if (value.signal_speed !== undefined) {
+    requireEnum(value.signal_speed, SIGNAL_SPEEDS, "signal_speed");
   }
   if (value.target_coin_id !== undefined) {
     requireString(value.target_coin_id, "target_coin_id");

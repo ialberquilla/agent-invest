@@ -24,7 +24,7 @@ export const STRATEGY_TYPE_OPTIONS: StrategyTypeOption[] = [
   },
   {
     value: "single_asset",
-    label: "Single-asset trend",
+    label: "Single-asset trend setup",
     description: "One market, long when trending up, otherwise cash.",
   },
   {
@@ -39,11 +39,45 @@ export const STRATEGY_TYPE_OPTIONS: StrategyTypeOption[] = [
   },
 ];
 
+// Trend-signal speed presets for single-asset setups. Map 1:1 to the
+// backend `signal_speed` override, which selects the deterministic SMA
+// lookback sweep. Kept here so the UI can show the actual lookbacks it maps
+// to as a read-only assumption.
+export type SignalSpeed = "fast" | "balanced" | "slow";
+
+export const SIGNAL_SPEED_OPTIONS: {
+  value: SignalSpeed;
+  label: string;
+  lookbacks: [number, number, number];
+}[] = [
+  { value: "fast", label: "Fast", lookbacks: [10, 20, 50] },
+  { value: "balanced", label: "Balanced", lookbacks: [20, 50, 100] },
+  { value: "slow", label: "Slow", lookbacks: [50, 100, 200] },
+];
+
+// Horizon presets for the single-asset assumptions block, mapped to the
+// backend `horizon_days` override.
+export type HorizonPreset = "6m" | "1y" | "2y";
+
+export const HORIZON_OPTIONS: {
+  value: HorizonPreset;
+  label: string;
+  days: number;
+}[] = [
+  { value: "6m", label: "6 months", days: 180 },
+  { value: "1y", label: "1 year", days: 365 },
+  { value: "2y", label: "2 years", days: 730 },
+];
+
 export type NonBasketFields = {
   targetCoin: string;
   longCoin: string;
   shortCoin: string;
   poolSize: number;
+  // Single-asset assumptions (visible + adjustable in the guided setup).
+  horizon: HorizonPreset;
+  maxDrawdownPct: number;
+  signalSpeed: SignalSpeed;
 };
 
 export const DEFAULT_NON_BASKET_FIELDS: NonBasketFields = {
@@ -51,6 +85,12 @@ export const DEFAULT_NON_BASKET_FIELDS: NonBasketFields = {
   longCoin: "",
   shortCoin: "",
   poolSize: 8,
+  // Defaults mirror the neutral base brief in ChatView (1y horizon, 50%
+  // max drawdown) and the historical balanced SMA sweep, so leaving the
+  // assumptions untouched reproduces the previous single-asset behavior.
+  horizon: "1y",
+  maxDrawdownPct: 50,
+  signalSpeed: "balanced",
 };
 
 // Per-side holding count for a long/short rotation given the ranking pool
@@ -106,13 +146,25 @@ export function buildStrategyOverrides(
   switch (type) {
     case "basket":
       return undefined;
-    case "single_asset":
+    case "single_asset": {
+      const horizonDays =
+        HORIZON_OPTIONS.find((o) => o.value === fields.horizon)?.days ?? 365;
       return {
         strategy_mode: "single_asset",
+        // Declare the shape explicitly so the persisted thesis matches the
+        // single-asset long/flat setup the backend runs (rather than leaving
+        // these to defaults that read as a vault-deployed long-only basket).
+        allowed_sides: "long_flat",
+        execution_mode: "wallet_direct",
         asset_count_min: 1,
         asset_count_max: 1,
         target_coin_id: normalizeCoinId(fields.targetCoin),
+        horizon_days: horizonDays,
+        // Backend max_drawdown is a fraction in [0, 1].
+        max_drawdown: fields.maxDrawdownPct / 100,
+        signal_speed: fields.signalSpeed,
       };
+    }
     case "pair_trade":
       return {
         strategy_mode: "pair_trade",

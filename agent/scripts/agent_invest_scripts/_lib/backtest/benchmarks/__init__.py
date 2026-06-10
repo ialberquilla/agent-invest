@@ -22,6 +22,16 @@ def benchmark_for(objective: Objective) -> Benchmark:
     raise ValueError(f"unsupported benchmark objective: {objective}")
 
 
+def benchmark_coin_ids(objective: Objective) -> tuple[str, ...]:
+    """Coins the objective's benchmark needs price history for.
+
+    The window selector folds these into the common-history intersection so a
+    backtest window can never start before the benchmark's own data exists
+    (otherwise the benchmark curve has leading gaps and the run fails).
+    """
+    return benchmark_for(objective).REQUIRED_COIN_IDS
+
+
 __all__ = [
     "BALANCED_5050",
     "BENCHMARKS",
@@ -30,5 +40,6 @@ __all__ = [
     "Objective",
     "STAKED_ETH_PROXY",
     "USDC",
+    "benchmark_coin_ids",
     "benchmark_for",
 ]

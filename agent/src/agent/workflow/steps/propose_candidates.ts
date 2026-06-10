@@ -11,6 +11,8 @@ import {
   REBALANCE_TRIGGER_FAMILIES,
   REBALANCE_TRIGGERS,
   resolveStrategyMode,
+  resolveSignalSpeed,
+  SIGNAL_SPEED_LOOKBACKS,
   LONG_SHORT_FAMILY,
   MOMENTUM_ROTATION_FAMILY,
   PAIR_TRADE_FAMILY,
@@ -214,8 +216,9 @@ export async function proposeCandidates(
 // SMA trend-signal window. The coin is the thesis target_coin_id when set,
 // else the top-ranked coin in the resolved universe (pinned so the run is
 // reproducible). select_top is always 1 (one position is the whole book).
-const SINGLE_ASSET_SMA_LOOKBACKS = [20, 50, 100] as const;
-
+// The sweep is the three-point set for the thesis signal_speed preset
+// (Fast/Balanced/Slow); default "balanced" reproduces the historical
+// [20, 50, 100].
 export function buildSingleAssetProposal(
   input: ProposeCandidatesInput,
 ): Proposal {
@@ -225,7 +228,9 @@ export function buildSingleAssetProposal(
       "single_asset proposal requires a target coin (thesis.target_coin_id or a non-empty universe)",
     );
   }
-  const candidates: ProposedCandidate[] = SINGLE_ASSET_SMA_LOOKBACKS.map(
+  const speed = resolveSignalSpeed(input.thesis);
+  const lookbacks = SIGNAL_SPEED_LOOKBACKS[speed];
+  const candidates: ProposedCandidate[] = lookbacks.map(
     (sma_lookback, index) => ({
       candidate_id: `sa${index + 1}`,
       template_id: SINGLE_ASSET_FAMILY,
@@ -237,7 +242,7 @@ export function buildSingleAssetProposal(
     }),
   );
   const proposal: Proposal = {
-    iteration_hypothesis: `Single-asset trend setup on ${target}; sweep the SMA trend-signal window.`,
+    iteration_hypothesis: `Single-asset ${speed} trend setup on ${target}; sweep the SMA trend-signal window.`,
     candidates,
   };
   validateProposal(proposal, {

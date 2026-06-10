@@ -18,8 +18,17 @@ def recommend_backtest_window(
     coin_ids: list[str],
     horizon_days: int,
     require_drawdown_pct: float = 0.30,
+    benchmark_coin_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Return a deterministic backtest window for the requested coin set."""
+    """Return a deterministic backtest window for the requested coin set.
+
+    ``benchmark_coin_ids`` (the coins the run's benchmark needs price history
+    for) are folded into the common-history intersection so the window never
+    starts before the benchmark's own data exists -- otherwise the benchmark
+    curve has leading gaps and the backtest fails. They do not otherwise join
+    the strategy universe: they are excluded from ``limiting_coin``, the
+    per-coin ``coins`` report, and the BTC drawdown scan.
+    """
     if horizon_days <= 0:
         raise ValueError("--horizon-days must be positive")
     if require_drawdown_pct <= 0 or require_drawdown_pct >= 1:
@@ -38,6 +47,20 @@ def recommend_backtest_window(
         date.fromisoformat(coin["last_price_date"])
         for coin in constraints["coins"].values()
     )
+
+    bench_ids = [c for c in (benchmark_coin_ids or []) if c.strip()]
+    if bench_ids:
+        bench_coins = _history_constraints(frame, bench_ids)["coins"]
+        for coin in bench_coins.values():
+            intersection_start = max(
+                intersection_start, date.fromisoformat(coin["first_price_date"])
+            )
+            intersection_end = min(
+                intersection_end, date.fromisoformat(coin["last_price_date"])
+            )
+        if intersection_start > intersection_end:
+            raise ValueError("coin histories do not overlap with benchmark history")
+
     if intersection_start > intersection_end:
         raise ValueError("coin histories do not overlap")
 
