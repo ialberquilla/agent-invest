@@ -64,7 +64,10 @@ import {
   bindVaultToMandate as defaultBindVaultToMandate,
   readVaultForMandate as defaultReadVaultForMandate,
 } from "../db/repositories/vaults";
-import { resolveMarketsBatch as defaultResolveMarketsBatch } from "../db/repositories/gmx-markets";
+import {
+  listGmxTradeableCoins as defaultListGmxTradeableCoins,
+  resolveMarketsBatch as defaultResolveMarketsBatch,
+} from "../db/repositories/gmx-markets";
 import {
   deletePinnedScreener as defaultDeletePinnedScreener,
   listPinnedScreeners as defaultListPinnedScreeners,
@@ -104,6 +107,7 @@ type Repositories = {
   bindVaultToMandate: typeof defaultBindVaultToMandate;
   readVaultForMandate: typeof defaultReadVaultForMandate;
   resolveMarketsBatch: typeof defaultResolveMarketsBatch;
+  listGmxTradeableCoins: typeof defaultListGmxTradeableCoins;
   listPinnedScreeners: typeof defaultListPinnedScreeners;
   upsertPinnedScreener: typeof defaultUpsertPinnedScreener;
   readPinnedScreener: typeof defaultReadPinnedScreener;
@@ -1086,6 +1090,7 @@ export function buildServer(dependencies: ServerDependencies = {}) {
     bindVaultToMandate: defaultBindVaultToMandate,
     readVaultForMandate: defaultReadVaultForMandate,
     resolveMarketsBatch: defaultResolveMarketsBatch,
+    listGmxTradeableCoins: defaultListGmxTradeableCoins,
     listPinnedScreeners: defaultListPinnedScreeners,
     upsertPinnedScreener: defaultUpsertPinnedScreener,
     readPinnedScreener: defaultReadPinnedScreener,
@@ -1244,6 +1249,14 @@ export function buildServer(dependencies: ServerDependencies = {}) {
   }
 
   app.get("/health", async () => ({ ok: true }));
+
+  // The GMX-tradeable coin set (coin_id + symbol), for the strategy-type
+  // picker's asset selector. Read-only; safe without the API key gate below
+  // would still apply -- this sits after it like the other routes.
+  app.get("/markets/gmx", async () => {
+    const coins = await repositories.listGmxTradeableCoins();
+    return { coins };
+  });
 
   app.post<{ Params: { id: string } }>("/users/:id/claim", async (request) => {
     const body = (request.body ?? {}) as Record<string, unknown>;

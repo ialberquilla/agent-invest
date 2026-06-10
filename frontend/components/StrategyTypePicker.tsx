@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { AllocationWizard } from "@/components/AllocationWizard";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,8 @@ type Props = {
   disabled?: boolean;
 };
 
+type GmxCoin = { coin_id: string; symbol: string };
+
 export function StrategyTypePicker({
   onSubmitBasket,
   onSubmitOverrides,
@@ -36,6 +38,34 @@ export function StrategyTypePicker({
     DEFAULT_NON_BASKET_FIELDS,
   );
   const [error, setError] = useState<string | null>(null);
+  const [coins, setCoins] = useState<GmxCoin[] | null>(null);
+  const [coinsError, setCoinsError] = useState<string | null>(null);
+
+  // Load the GMX-tradeable coin set once a non-basket type is in play, so the
+  // user picks from a list instead of typing a coin_id.
+  const needsCoins = type === "single_asset" || type === "pair_trade";
+  useEffect(() => {
+    if (!needsCoins || coins !== null) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch("/api/markets/gmx", { cache: "no-store" });
+        if (!response.ok) throw new Error("Unable to load tradeable markets");
+        const payload = (await response.json()) as { coins?: GmxCoin[] };
+        if (!cancelled) setCoins(payload.coins ?? []);
+      } catch (err) {
+        if (!cancelled) {
+          setCoinsError(
+            err instanceof Error ? err.message : "Unable to load markets",
+          );
+          setCoins([]);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [needsCoins, coins]);
 
   function update(patch: Partial<NonBasketFields>) {
     setFields((current) => ({ ...current, ...patch }));
@@ -98,33 +128,37 @@ export function StrategyTypePicker({
         <AllocationWizard embedded onSubmit={onSubmitBasket} />
       ) : (
         <div className="space-y-3 rounded-xl border bg-card p-4 shadow-xs">
+          {coinsError ? (
+            <p className="text-sm text-destructive">{coinsError}</p>
+          ) : null}
+
           {type === "single_asset" ? (
-            <Field
-              label="Coin id"
-              hint="The single market to trade, e.g. bitcoin."
+            <CoinSelect
+              label="Market"
+              hint="The single market to trade."
               value={fields.targetCoin}
               onChange={(v) => update({ targetCoin: v })}
-              placeholder="bitcoin"
+              coins={coins}
               disabled={disabled}
             />
           ) : null}
 
           {type === "pair_trade" ? (
             <>
-              <Field
-                label="Long coin id"
+              <CoinSelect
+                label="Long market"
                 hint="The market to go long."
                 value={fields.longCoin}
                 onChange={(v) => update({ longCoin: v })}
-                placeholder="ethereum"
+                coins={coins}
                 disabled={disabled}
               />
-              <Field
-                label="Short coin id"
+              <CoinSelect
+                label="Short market"
                 hint="The market to short against it."
                 value={fields.shortCoin}
                 onChange={(v) => update({ shortCoin: v })}
-                placeholder="bitcoin"
+                coins={coins}
                 disabled={disabled}
               />
             </>
@@ -146,12 +180,70 @@ export function StrategyTypePicker({
             <p className="text-sm text-destructive">{error}</p>
           ) : null}
 
-          <Button type="button" onClick={runNonBasket} disabled={disabled}>
-            Run backtest
+          <Button
+            type="button"
+            onClick={runNonBasket}
+            disabled={disabled || (needsCoins && coins === null)}
+          >
+            {needsCoins && coins === null ? "Loading markets…" : "Run backtest"}
           </Button>
         </div>
       )}
     </div>
+  );
+}
+
+// "bitcoin" -> "Bitcoin", "avalanche-2" -> "Avalanche 2".
+function coinName(coinId: string): string {
+  return coinId
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function CoinSelect({
+  label,
+  hint,
+  value,
+  onChange,
+  coins,
+  disabled,
+}: {
+  label: string;
+  hint: string;
+  value: string;
+  onChange: (value: string) => void;
+  coins: GmxCoin[] | null;
+  disabled?: boolean;
+}) {
+  return (
+    <label className="block space-y-1">
+      <span className="text-sm font-medium">{label}</span>
+      <select
+        value={value}
+        disabled={disabled || coins === null}
+        onChange={(event) => onChange(event.target.value)}
+        // Native selects ignore bg-transparent for the control and the popup
+        // options, so set themed colors explicitly (and color-scheme so the
+        // browser paints the dropdown in dark mode).
+        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-xs outline-none [color-scheme:light] focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:[color-scheme:dark]"
+      >
+        <option value="" className="bg-background text-foreground">
+          {coins === null ? "Loading markets…" : "Select a market"}
+        </option>
+        {(coins ?? []).map((coin) => (
+          <option
+            key={coin.coin_id}
+            value={coin.coin_id}
+            className="bg-background text-foreground"
+          >
+            {coin.symbol} · {coinName(coin.coin_id)}
+          </option>
+        ))}
+      </select>
+      <span className="block text-xs text-muted-foreground">{hint}</span>
+    </label>
   );
 }
 
