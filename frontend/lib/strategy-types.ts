@@ -53,6 +53,15 @@ export const DEFAULT_NON_BASKET_FIELDS: NonBasketFields = {
   poolSize: 8,
 };
 
+// Per-side holding count for a long/short rotation given the ranking pool
+// size. Mirrors the Python recipe's `_rotation_counts` (max(1, pool // 3)):
+// the strategy goes long the strongest N and short the weakest N, so the
+// pool size is NOT the holding count. Used to preview "8 -> 2 long / 2 short"
+// in the wizard so the pool size doesn't read as the number of positions.
+export function rotationPerSide(poolSize: number): number {
+  return Math.max(1, Math.floor(poolSize / 3));
+}
+
 // A coin id as the pipeline expects it: lower-case, hyphenated (e.g. "bitcoin",
 // "avalanche-2"). We normalise light user input but don't guess.
 export function normalizeCoinId(raw: string): string {

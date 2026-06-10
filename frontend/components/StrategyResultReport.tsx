@@ -2,11 +2,14 @@ import type { ReactNode } from "react";
 import {
   Area,
   AreaChart,
+  Bar,
+  BarChart,
   Cell,
   Legend,
   Line,
   Pie,
   PieChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -65,6 +68,10 @@ const CHART_AXIS_PROPS = {
 
 const STRATEGY_SERIES_COLOR = "var(--chart-1)";
 const BITCOIN_SERIES_COLOR = "var(--chart-4)";
+// Long/short books carry negative weights a pie cannot render, so they
+// get a diverging bar chart instead: green longs, red shorts.
+const LONG_SERIES_COLOR = "var(--chart-3)";
+const SHORT_SERIES_COLOR = "var(--destructive)";
 
 function hasValue(value: number | null | undefined): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -289,6 +296,13 @@ function AllocationChart({
     return <ChartFallback message="Allocation chart data was not provided." />;
   }
 
+  // A pie cannot represent negative slices, so any short leg flips the
+  // whole allocation to a diverging bar view (longs right, shorts left).
+  const hasShort = chartData.some((item) => item.weight < 0);
+  if (hasShort) {
+    return <DivergingAllocationChart data={chartData} label={label} />;
+  }
+
   return (
     <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_220px] lg:items-center">
       <div className="sr-only">{label}</div>
@@ -336,6 +350,87 @@ function AllocationChart({
             </span>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// Long/short allocation view. Pies can't show negative weights, so this
+// renders a horizontal diverging bar chart (longs to the right in green,
+// shorts to the left in red) plus a gross/net exposure summary so the
+// user reads the real book shape instead of a misleading basket.
+function DivergingAllocationChart({
+  data,
+  label,
+}: {
+  data: { asset: string; weight: number }[];
+  label: string;
+}) {
+  const sorted = [...data].sort((a, b) => b.weight - a.weight);
+  const longCount = sorted.filter((d) => d.weight > 0).length;
+  const shortCount = sorted.filter((d) => d.weight < 0).length;
+  const gross = sorted.reduce((sum, d) => sum + Math.abs(d.weight), 0);
+  const net = sorted.reduce((sum, d) => sum + d.weight, 0);
+  const maxAbs = Math.max(...sorted.map((d) => Math.abs(d.weight)), 0.01);
+  const domain = [-maxAbs * 1.1, maxAbs * 1.1] as const;
+
+  return (
+    <div className="min-w-0 space-y-3">
+      <div className="sr-only">{label}</div>
+      <ChartContainer className="h-[220px] w-full min-w-0 overflow-hidden sm:h-[260px]">
+        <ResponsiveContainer width="99%" height="100%">
+          <BarChart
+            data={sorted}
+            layout="vertical"
+            margin={{ top: 4, right: 12, bottom: 4, left: 12 }}
+          >
+            <XAxis
+              type="number"
+              domain={[domain[0], domain[1]]}
+              tickFormatter={(v: number) => formatPercent(v)}
+              {...CHART_AXIS_PROPS}
+            />
+            <YAxis
+              type="category"
+              dataKey="asset"
+              width={96}
+              {...CHART_AXIS_PROPS}
+            />
+            <ReferenceLine x={0} stroke="var(--chart-axis)" />
+            <Tooltip
+              cursor={{ fill: "var(--muted)", opacity: 0.3 }}
+              content={<ChartTooltipContent valueFormatter={formatPercent} />}
+            />
+            <Bar dataKey="weight" radius={3}>
+              {sorted.map((item) => (
+                <Cell
+                  key={item.asset}
+                  fill={
+                    item.weight < 0 ? SHORT_SERIES_COLOR : LONG_SERIES_COLOR
+                  }
+                />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartContainer>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-subtle-foreground">
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            className="h-2.5 w-2.5 rounded-full"
+            style={{ backgroundColor: LONG_SERIES_COLOR }}
+          />
+          {longCount} long
+        </span>
+        <span className="inline-flex items-center gap-1.5">
+          <span
+            className="h-2.5 w-2.5 rounded-full"
+            style={{ backgroundColor: SHORT_SERIES_COLOR }}
+          />
+          {shortCount} short
+        </span>
+        <span>{formatPercent(gross)} gross</span>
+        <span>{formatPercent(net)} net</span>
       </div>
     </div>
   );
