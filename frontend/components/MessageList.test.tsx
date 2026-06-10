@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { MessageList } from "@/components/MessageList";
@@ -33,5 +33,40 @@ describe("MessageList", () => {
     expect(screen.getByText("Partial streamed answer")).toBeInTheDocument();
     expect(screen.queryByText("streaming")).not.toBeInTheDocument();
     expect(screen.queryByText("thinking...")).not.toBeInTheDocument();
+  });
+
+  it("launches prompts from the progressive empty state", () => {
+    const onSelectPrompt = vi.fn();
+    render(
+      <MessageList
+        isThinking={false}
+        messages={[]}
+        onSelectPrompt={onSelectPrompt}
+        onOpenWizard={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Screen markets/i }));
+    fireEvent.click(screen.getByRole("button", { name: /Momentum leaders/i }));
+
+    expect(onSelectPrompt).toHaveBeenCalledWith(
+      expect.stringContaining("Screen GMX-tradeable markets"),
+    );
+  });
+
+  it("keeps the guided setup entry point in the empty state", () => {
+    const onOpenWizard = vi.fn();
+    render(
+      <MessageList
+        isThinking={false}
+        messages={[]}
+        onSelectPrompt={vi.fn()}
+        onOpenWizard={onOpenWizard}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Try the guided setup/i }));
+
+    expect(onOpenWizard).toHaveBeenCalledOnce();
   });
 });
