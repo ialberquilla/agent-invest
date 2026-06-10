@@ -9,6 +9,7 @@ import type { AllocationWizardState } from "@/lib/wizard-prompt";
 import {
   buildStrategyOverrides,
   DEFAULT_NON_BASKET_FIELDS,
+  rotationPerSide,
   STRATEGY_TYPE_OPTIONS,
   validateNonBasket,
   type NonBasketFields,
@@ -165,15 +166,25 @@ export function StrategyTypePicker({
           ) : null}
 
           {type === "long_short" ? (
-            <Field
-              label="Ranking pool size"
-              hint="How many assets to rank before going long the strongest and short the weakest (min 4)."
-              value={String(fields.poolSize)}
-              onChange={(v) => update({ poolSize: Number(v) || 0 })}
-              placeholder="8"
-              type="number"
-              disabled={disabled}
-            />
+            <div className="space-y-1">
+              <Field
+                label="Ranking pool size"
+                hint="How many assets to rank before going long the strongest and short the weakest (min 4)."
+                value={String(fields.poolSize)}
+                onChange={(v) => update({ poolSize: Number(v) || 0 })}
+                placeholder="8"
+                type="number"
+                disabled={disabled}
+              />
+              {fields.poolSize >= 4 ? (
+                <p className="text-xs text-subtle-foreground">
+                  Holds the {rotationPerSide(fields.poolSize)} strongest long
+                  and {rotationPerSide(fields.poolSize)} weakest short —{" "}
+                  {rotationPerSide(fields.poolSize) * 2} positions from a{" "}
+                  {Math.max(4, Math.round(fields.poolSize))}-asset pool.
+                </p>
+              ) : null}
+            </div>
           ) : null}
 
           {error ? (
