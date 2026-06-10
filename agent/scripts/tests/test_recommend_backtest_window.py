@@ -45,6 +45,45 @@ def test_relaxes_drawdown_requirement_when_common_history_cannot_cover_it() -> N
     assert "relaxed the BTC drawdown requirement" in payload["rationale"]
 
 
+def test_benchmark_coin_ids_clamp_window_start() -> None:
+    # A long-history single coin would otherwise pull the window back before
+    # the benchmark's data exists. Folding the benchmark coins into the
+    # intersection clamps the start to where the benchmark has prices.
+    prices = _fixture_with_late_benchmark()
+
+    without = recommend_backtest_window(
+        prices, coin_ids=["cardano"], horizon_days=365
+    )
+    assert without["start"] == "2020-01-01"  # cardano's full history
+
+    clamped = recommend_backtest_window(
+        prices,
+        coin_ids=["cardano"],
+        horizon_days=365,
+        benchmark_coin_ids=["bitcoin", "usd-coin"],
+    )
+    assert clamped["start"] == "2022-06-01"  # usd-coin's first observation
+    # Benchmark coins do not join the reported strategy universe.
+    assert clamped["history_constraints"]["limiting_coin"] == "cardano"
+    assert set(clamped["history_constraints"]["coins"]) == {"cardano"}
+
+
+def _fixture_with_late_benchmark() -> pl.DataFrame:
+    start, end = date(2020, 1, 1), date(2024, 1, 1)
+    rows: list[dict[str, object]] = []
+    histories = {
+        "cardano": date(2020, 1, 1),
+        "bitcoin": date(2020, 1, 1),
+        "usd-coin": date(2022, 6, 1),  # benchmark leg starts late
+    }
+    for coin_id, first in histories.items():
+        for day in _days(start, end):
+            if day < first:
+                continue
+            rows.append({"date": day, "coin_id": coin_id, "price": 100.0})
+    return pl.from_pandas(pd.DataFrame(rows))
+
+
 def test_cli_returns_recommendation(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

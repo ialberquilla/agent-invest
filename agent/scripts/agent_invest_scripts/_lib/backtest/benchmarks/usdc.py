@@ -12,6 +12,8 @@ from .base import Objective, daily_index
 class UsdcBenchmark:
     ID: str = "usdc"
     OBJECTIVE: Objective = "preserve_capital"
+    # A flat 1.0 curve reads no price history, so no coins constrain the window.
+    REQUIRED_COIN_IDS: tuple[str, ...] = ()
 
     def equity_curve(
         self,

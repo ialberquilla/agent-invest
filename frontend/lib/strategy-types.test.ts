@@ -46,12 +46,41 @@ describe("buildStrategyOverrides", () => {
     expect(buildStrategyOverrides("basket", fields())).toBeUndefined();
   });
 
-  it("collapses a single-asset run to one position", () => {
+  it("collapses a single-asset run to one position with explicit shape + defaults", () => {
     expect(buildStrategyOverrides("single_asset", fields({ targetCoin: "Bitcoin" }))).toEqual({
       strategy_mode: "single_asset",
+      allowed_sides: "long_flat",
+      execution_mode: "wallet_direct",
       asset_count_min: 1,
       asset_count_max: 1,
       target_coin_id: "bitcoin",
+      horizon_days: 365,
+      max_drawdown: 0.5,
+      signal_speed: "balanced",
+    });
+  });
+
+  it("maps single-asset assumption choices to overrides", () => {
+    expect(
+      buildStrategyOverrides(
+        "single_asset",
+        fields({
+          targetCoin: "ETH",
+          horizon: "2y",
+          maxDrawdownPct: 20,
+          signalSpeed: "fast",
+        }),
+      ),
+    ).toEqual({
+      strategy_mode: "single_asset",
+      allowed_sides: "long_flat",
+      execution_mode: "wallet_direct",
+      asset_count_min: 1,
+      asset_count_max: 1,
+      target_coin_id: "eth",
+      horizon_days: 730,
+      max_drawdown: 0.2,
+      signal_speed: "fast",
     });
   });
 

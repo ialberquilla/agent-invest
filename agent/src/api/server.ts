@@ -322,6 +322,28 @@ function parseStrategyRunOverrides(
     out.allowed_sides = raw.allowed_sides;
   }
 
+  if (raw.execution_mode !== undefined) {
+    const allowed = ["wallet_direct", "strategy_vault"];
+    if (!allowed.includes(raw.execution_mode as string)) {
+      throw httpError(
+        400,
+        `overrides.execution_mode must be one of ${allowed.join(", ")}`,
+      );
+    }
+    out.execution_mode = raw.execution_mode;
+  }
+
+  if (raw.signal_speed !== undefined) {
+    const allowed = ["fast", "balanced", "slow"];
+    if (!allowed.includes(raw.signal_speed as string)) {
+      throw httpError(
+        400,
+        `overrides.signal_speed must be one of ${allowed.join(", ")}`,
+      );
+    }
+    out.signal_speed = raw.signal_speed;
+  }
+
   for (const key of ["long_coin_ids", "short_coin_ids"] as const) {
     if (raw[key] === undefined) continue;
     if (

@@ -45,6 +45,8 @@ export function applyOverrides(
       overrides.rebalance_frequency ?? thesis.rebalance_frequency,
     strategy_mode: overrides.strategy_mode ?? thesis.strategy_mode,
     allowed_sides: overrides.allowed_sides ?? thesis.allowed_sides,
+    execution_mode: overrides.execution_mode ?? thesis.execution_mode,
+    signal_speed: overrides.signal_speed ?? thesis.signal_speed,
     ...(overrides.target_coin_id !== undefined
       ? { target_coin_id: overrides.target_coin_id }
       : {}),
