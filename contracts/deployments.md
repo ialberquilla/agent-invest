@@ -6,11 +6,11 @@
 - Deployment script: `script/DeployStrategyVault.s.sol:DeployStrategyVault`
 - Broadcast file: `broadcast/DeployStrategyVault.s.sol/42161/run-latest.json`
 
-### Contracts (current — Model B gas-tank, deployed 2026-06-09)
+### Contracts (current — keeper + mandate, deployed 2026-06-10)
 
 | Contract | Address |
 | --- | --- |
-| `StrategyVault` implementation (current, payable `deposit`) | `0xf04B711585360FD6b61e588369c651d1CF15dD2e` |
+| `StrategyVault` implementation (current, keeper + mandate) | `0xF33050467dDC712a35022297d1e31A7B8d7ad07A` |
 | `VaultFactory` | `0xd335d60DF2B199Cc3E7438A79a2725F64bD29F3b` |
 | `UpgradeableBeacon` | `0x637C3338D7FdE7092Aba28a6F98dc598D143CD78` |
 | Initial vault | `0x42E69E9b8e196c182c01C17219004CF7B10F2954` |
@@ -19,6 +19,7 @@
 
 | Date | New implementation | Tx | Notes |
 | --- | --- | --- | --- |
+| 2026-06-10 | `0xF33050467dDC712a35022297d1e31A7B8d7ad07A` | `0xf5ec63c74df6dd113d3f1c9a99d7a55a693c6fc0562b47188ee882bcb16cb261` | keeper role (`setKeeper`/`keeper`) + mandate (`setMandate`/`mandate`); decrease collateral-withdrawal is owner-only. Storage append-only (ERC-7201); existing vaults default to keeper=0 / unbounded mandate until owner opts in. |
 | 2026-06-09 | `0xf04B711585360FD6b61e588369c651d1CF15dD2e` | `0x54b42d69bd49e32bbb28a7251a26a69015795346f269c2048d12efbe5700a9c7` | payable `deposit` (USDC + gas-tank top-up in one tx) |
 
 Original impl at this factory: `0x5379ED99B967B1371FB01533E6d64c1AaD0425F3`.

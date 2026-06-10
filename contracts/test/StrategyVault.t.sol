@@ -681,6 +681,306 @@ contract StrategyVaultTest is Test {
         vm.stopPrank();
     }
 
+    /*//////////////////////////////////////////////////////////////
+                          KEEPER (CUSTODY/EXECUTION)
+    //////////////////////////////////////////////////////////////*/
+
+    address internal keeper = address(0xCAFE);
+
+    /// @dev Funds collateral + the gas tank and delegates a keeper, so the keeper can submit orders
+    ///      with `value: 0` (the keeper flow: it pays the GMX fee from the pre-funded tank).
+    function _enableKeeper() internal {
+        _fundVault(1_000e18);
+        vm.deal(owner, 1 ether);
+        vm.startPrank(owner);
+        vault.depositNative{value: 1 ether}();
+        vault.setKeeper(keeper);
+        vm.stopPrank();
+    }
+
+    function test_OwnerCanSetAndRevokeKeeper() external {
+        vm.startPrank(owner);
+        vault.setKeeper(keeper);
+        assertEq(vault.keeper(), keeper);
+        vault.setKeeper(address(0));
+        assertEq(vault.keeper(), address(0));
+        vm.stopPrank();
+    }
+
+    function test_OnlyOwnerCanSetKeeper() external {
+        vm.prank(keeper);
+        vm.expectRevert();
+        vault.setKeeper(keeper);
+    }
+
+    function test_KeeperCanCreateIncreaseOrder() external {
+        (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) = _gmx();
+        _enableKeeper();
+        StrategyVaultBase.GmxMarketIncreaseOrder memory order =
+            _increaseOrder(address(exchangeRouter), router, orderVault);
+
+        vm.prank(keeper);
+        bytes32 orderKey = vault.createGmxMarketIncreaseOrder(order);
+
+        assertEq(orderKey, keccak256("order-key"));
+        // receiver is still pinned to the vault even though the keeper submitted the order.
+        assertEq(exchangeRouter.getLastOrder().addresses.receiver, address(vault));
+    }
+
+    function test_KeeperCanCreateDecreaseOrder() external {
+        (MockGmxExchangeRouter exchangeRouter,, address orderVault) = _gmx();
+        _enableKeeper();
+        StrategyVaultBase.GmxMarketDecreaseOrder memory order = _decreaseOrder(address(exchangeRouter), orderVault);
+        order.collateralWithdrawalAmount = 0; // pure size reduction — the keeper's protective lane
+
+        vm.prank(keeper);
+        bytes32 orderKey = vault.createGmxMarketDecreaseOrder(order);
+
+        assertEq(orderKey, keccak256("order-key"));
+    }
+
+    /// @dev Finding 1: a collateral-withdrawing decrease raises leverage, so the keeper must NOT be able
+    ///      to submit it — otherwise it defeats the leverage mandate (open at-cap, then strip margin).
+    function test_KeeperCannotWithdrawCollateralViaDecrease() external {
+        (MockGmxExchangeRouter exchangeRouter,, address orderVault) = _gmx();
+        _enableKeeper();
+        StrategyVaultBase.GmxMarketDecreaseOrder memory order = _decreaseOrder(address(exchangeRouter), orderVault);
+        order.sizeDeltaUsd = 0;
+        order.collateralWithdrawalAmount = 900e18; // strip margin without reducing size
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__KeeperCannotWithdrawCollateral.selector);
+        vault.createGmxMarketDecreaseOrder(order);
+    }
+
+    function test_OwnerCanWithdrawCollateralViaDecrease() external {
+        (MockGmxExchangeRouter exchangeRouter,, address orderVault) = _gmx();
+        StrategyVaultBase.GmxMarketDecreaseOrder memory order = _decreaseOrder(address(exchangeRouter), orderVault);
+        order.sizeDeltaUsd = 0;
+        order.collateralWithdrawalAmount = 900e18;
+
+        vm.deal(owner, order.executionFee);
+        vm.prank(owner);
+        bytes32 orderKey = vault.createGmxMarketDecreaseOrder{value: order.executionFee}(order);
+        assertEq(orderKey, keccak256("order-key")); // owner may pull bare margin
+    }
+
+    function test_KeeperCanCancelOrder() external {
+        (MockGmxExchangeRouter exchangeRouter,,) = _gmx();
+        _enableKeeper();
+        bytes32 orderKey = keccak256("k");
+
+        vm.prank(keeper);
+        vault.cancelGmxOrder(address(exchangeRouter), orderKey);
+
+        assertEq(exchangeRouter.lastCancelledOrderKey(), orderKey);
+    }
+
+    function test_StrangerCannotCreateOrder() external {
+        (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) = _gmx();
+        _enableKeeper();
+        StrategyVaultBase.GmxMarketIncreaseOrder memory order =
+            _increaseOrder(address(exchangeRouter), router, orderVault);
+
+        vm.prank(address(0xBAD));
+        vm.expectRevert(StrategyVaultBase.StrategyVault__NotKeeperOrOwner.selector);
+        vault.createGmxMarketIncreaseOrder(order);
+    }
+
+    /// @dev The core invariant: a keeper can execute but can NEVER move funds or change config.
+    function test_KeeperCannotExfiltrateOrReconfigure() external {
+        _enableKeeper();
+        vm.startPrank(keeper);
+
+        vm.expectRevert();
+        vault.withdraw(1, keeper);
+
+        vm.expectRevert();
+        vault.withdrawNative(1, keeper);
+
+        vm.expectRevert();
+        vault.setGmxRouting(address(1), address(2), address(3));
+
+        vm.expectRevert();
+        vault.setKeeper(keeper);
+
+        address[] memory markets = new address[](0);
+        vm.expectRevert();
+        vault.setMandate(0, markets);
+
+        vm.expectRevert();
+        vault.pause();
+
+        vm.stopPrank();
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                          MANDATE (COMMITMENT DEVICE)
+    //////////////////////////////////////////////////////////////*/
+
+    function test_OwnerCanSetMandate() external {
+        address[] memory markets = new address[](2);
+        markets[0] = market;
+        markets[1] = address(0x1234);
+
+        vm.prank(owner);
+        vault.setMandate(30_000, markets);
+
+        (uint256 maxLeverageBps, address[] memory allowed) = vault.mandate();
+        assertEq(maxLeverageBps, 30_000);
+        assertEq(allowed.length, 2);
+        assertEq(allowed[0], market);
+        assertEq(allowed[1], address(0x1234));
+    }
+
+    function test_OnlyOwnerCanSetMandate() external {
+        address[] memory markets = new address[](0);
+        vm.prank(keeper);
+        vm.expectRevert();
+        vault.setMandate(30_000, markets);
+    }
+
+    function test_SetMandateRevertsOnTooManyMarkets() external {
+        address[] memory markets = new address[](17);
+        for (uint256 i; i < 17; ++i) {
+            markets[i] = address(uint160(i + 1));
+        }
+        vm.prank(owner);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__TooManyMarkets.selector);
+        vault.setMandate(0, markets);
+    }
+
+    function test_SetMandateReplacesPreviousMarkets() external {
+        address[] memory first = new address[](2);
+        first[0] = address(0xAAA1);
+        first[1] = address(0xAAA2);
+        vm.prank(owner);
+        vault.setMandate(0, first);
+
+        address[] memory second = new address[](1);
+        second[0] = address(0xBBB1);
+        vm.prank(owner);
+        vault.setMandate(0, second);
+
+        (, address[] memory allowed) = vault.mandate();
+        assertEq(allowed.length, 1);
+        assertEq(allowed[0], address(0xBBB1));
+    }
+
+    function test_IncreaseRevertsWhenMarketNotAllowed() external {
+        (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) = _gmx();
+        _fundVault(1_000e18);
+        address[] memory markets = new address[](1);
+        markets[0] = address(0x1234); // not the order's market
+        vm.prank(owner);
+        vault.setMandate(0, markets);
+
+        StrategyVaultBase.GmxMarketIncreaseOrder memory order =
+            _increaseOrder(address(exchangeRouter), router, orderVault);
+        vm.deal(owner, order.executionFee);
+        vm.prank(owner);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__MarketNotAllowed.selector);
+        vault.createGmxMarketIncreaseOrder{value: order.executionFee}(order);
+    }
+
+    function test_IncreaseSucceedsWhenMarketAllowed() external {
+        (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) = _gmx();
+        _fundVault(1_000e18);
+        address[] memory markets = new address[](1);
+        markets[0] = market;
+        vm.prank(owner);
+        vault.setMandate(0, markets);
+
+        StrategyVaultBase.GmxMarketIncreaseOrder memory order =
+            _increaseOrder(address(exchangeRouter), router, orderVault);
+        vm.deal(owner, order.executionFee);
+        vm.prank(owner);
+        bytes32 orderKey = vault.createGmxMarketIncreaseOrder{value: order.executionFee}(order);
+        assertEq(orderKey, keccak256("order-key"));
+    }
+
+    function test_IncreaseRevertsWhenLeverageTooHigh() external {
+        (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) = _gmx();
+        _fundVault(1_000e18);
+        address[] memory markets = new address[](0);
+        vm.prank(owner);
+        vault.setMandate(10_000, markets); // 1x ceiling
+
+        StrategyVaultBase.GmxMarketIncreaseOrder memory order =
+            _increaseOrder(address(exchangeRouter), router, orderVault);
+        order.sizeDeltaUsd = 2_000e30; // 2x against 1_000e18 collateral
+
+        vm.deal(owner, order.executionFee);
+        vm.prank(owner);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__LeverageTooHigh.selector);
+        vault.createGmxMarketIncreaseOrder{value: order.executionFee}(order);
+    }
+
+    function test_IncreaseSucceedsAtLeverageCeiling() external {
+        (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) = _gmx();
+        _fundVault(1_000e18);
+        address[] memory markets = new address[](0);
+        vm.prank(owner);
+        vault.setMandate(10_000, markets); // 1x ceiling; default order is exactly 1x
+
+        StrategyVaultBase.GmxMarketIncreaseOrder memory order =
+            _increaseOrder(address(exchangeRouter), router, orderVault);
+        vm.deal(owner, order.executionFee);
+        vm.prank(owner);
+        bytes32 orderKey = vault.createGmxMarketIncreaseOrder{value: order.executionFee}(order);
+        assertEq(orderKey, keccak256("order-key"));
+    }
+
+    function test_IncreaseRevertsOnZeroCollateralWhenLeverageBounded() external {
+        (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) = _gmx();
+        _fundVault(1_000e18);
+        address[] memory markets = new address[](0);
+        vm.prank(owner);
+        vault.setMandate(30_000, markets); // any non-zero ceiling triggers the zero-collateral guard
+
+        StrategyVaultBase.GmxMarketIncreaseOrder memory order =
+            _increaseOrder(address(exchangeRouter), router, orderVault);
+        order.collateralAmount = 0; // would be infinite leverage
+
+        vm.deal(owner, order.executionFee);
+        vm.prank(owner);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__ZeroCollateral.selector);
+        vault.createGmxMarketIncreaseOrder{value: order.executionFee}(order);
+    }
+
+    function test_DecreaseIgnoresMandate() external {
+        (MockGmxExchangeRouter exchangeRouter,, address orderVault) = _gmx();
+        // Restrictive mandate that the decrease order's market/leverage would both violate.
+        address[] memory markets = new address[](1);
+        markets[0] = address(0x1234);
+        vm.prank(owner);
+        vault.setMandate(10_000, markets);
+
+        StrategyVaultBase.GmxMarketDecreaseOrder memory order = _decreaseOrder(address(exchangeRouter), orderVault);
+        order.sizeDeltaUsd = 5_000e30; // far above the 1x ceiling, market not in allowlist
+
+        vm.deal(owner, order.executionFee);
+        vm.prank(owner);
+        bytes32 orderKey = vault.createGmxMarketDecreaseOrder{value: order.executionFee}(order);
+        assertEq(orderKey, keccak256("order-key")); // de-risking is never blocked by the mandate
+    }
+
+    function test_KeeperIncreaseRespectsMandate() external {
+        (MockGmxExchangeRouter exchangeRouter, address router, address orderVault) = _gmx();
+        _enableKeeper();
+        address[] memory markets = new address[](0);
+        vm.prank(owner);
+        vault.setMandate(10_000, markets); // 1x ceiling
+
+        StrategyVaultBase.GmxMarketIncreaseOrder memory order =
+            _increaseOrder(address(exchangeRouter), router, orderVault);
+        order.sizeDeltaUsd = 2_000e30; // 2x
+
+        vm.prank(keeper);
+        vm.expectRevert(StrategyVaultBase.StrategyVault__LeverageTooHigh.selector);
+        vault.createGmxMarketIncreaseOrder(order);
+    }
+
     function test_FactoryConstructorRevertsOnZeroImplementation() external {
         vm.expectRevert(VaultFactory.VaultFactory__ZeroAddress.selector);
         new VaultFactory(address(0), beaconOwner, address(gmxExchangeRouter), gmxRouter, gmxOrderVault);
