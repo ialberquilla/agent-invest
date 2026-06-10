@@ -22,7 +22,7 @@ const TOOL_STATUS_LABEL: Record<ToolStatus, string> = {
 
 const TOOL_STATUS_TONE: Record<ToolStatus, string> = {
   pending: "bg-muted text-muted-foreground",
-  running: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
+  running: "bg-muted text-foreground",
   completed: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
   error: "bg-destructive/15 text-destructive",
 };
@@ -55,7 +55,7 @@ const STAGE_EVENT_LABEL: Record<StageEventType, string> = {
 };
 
 const STAGE_EVENT_TONE: Record<StageEventType, string> = {
-  "stage.started": "bg-blue-500/15 text-blue-700 dark:text-blue-300",
+  "stage.started": "bg-muted text-foreground",
   "stage.tool_call": "bg-violet-500/15 text-violet-700 dark:text-violet-300",
   "stage.completed": "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
   "stage.failed": "bg-destructive/15 text-destructive",
@@ -399,7 +399,7 @@ function FriendlyStepView({
       ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
       : step.status === "failed"
         ? "bg-destructive/15 text-destructive"
-        : "bg-blue-500/15 text-blue-700 dark:text-blue-300";
+        : "bg-muted text-foreground";
 
   return (
     <section className="rounded-lg border bg-background/70 px-3 py-2">
