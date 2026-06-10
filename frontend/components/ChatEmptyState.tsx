@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { Compass, Sparkles } from "lucide-react";
+import Image from "next/image";
+import { Compass } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -170,8 +171,23 @@ export function ChatEmptyState({
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-1 flex-col items-center justify-center gap-8 py-12">
       <div className="space-y-2 text-center">
-        <div className="mx-auto flex size-11 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Sparkles className="size-5" />
+        <div className="mx-auto flex h-24 w-40 items-center justify-center sm:h-28 sm:w-48">
+          <Image
+            src="/logo-white-transparent.png"
+            alt="POND3R logo"
+            width={227}
+            height={182}
+            priority
+            className="h-full w-full object-contain dark:hidden"
+          />
+          <Image
+            src="/logo-black-transparent.png"
+            alt="POND3R logo"
+            width={313}
+            height={250}
+            priority
+            className="hidden h-full w-full object-contain dark:block"
+          />
         </div>
         <h2 className="font-heading text-xl font-semibold tracking-tight">
           What should we build?
