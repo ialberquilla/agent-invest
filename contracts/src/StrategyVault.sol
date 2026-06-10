@@ -2,7 +2,9 @@
 pragma solidity 0.8.26;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
@@ -26,6 +28,19 @@ contract StrategyVault is
     ReentrancyGuardTransient
 {
     using SafeERC20 for IERC20;
+    using EnumerableSet for EnumerableSet.AddressSet;
+
+    /// @dev Mutating GMX order funcs may be called by the owner OR a delegated keeper. The keeper
+    ///      can execute/adjust/close positions but can NEVER move funds out: every fund-exit and
+    ///      config path ({withdraw}, {withdrawNative}, {setGmxRouting}, {setKeeper}, {setMandate},
+    ///      pause) stays {onlyOwner}, and order `receiver`/`cancellationReceiver` are pinned to the
+    ///      vault in {GmxOrderBuilder}. This separation is the vault's reason to exist over an EOA.
+    modifier onlyOwnerOrKeeper() {
+        if (msg.sender != owner() && msg.sender != _strategyVaultStorage().keeper) {
+            revert StrategyVault__NotKeeperOrOwner();
+        }
+        _;
+    }
 
     constructor() {
         _disableInitializers();
@@ -77,6 +92,19 @@ contract StrategyVault is
         return ($.gmxExchangeRouter, $.gmxRouter, $.gmxOrderVault);
     }
 
+    /// @notice The keeper allowed to execute GMX orders (cannot withdraw). `address(0)` = owner-only.
+    function keeper() external view returns (address) {
+        return _strategyVaultStorage().keeper;
+    }
+
+    /// @notice The mandate bounds enforced on keeper/owner increase orders.
+    /// @return maxLeverageBps Max leverage in bps of 1x (0 = unbounded).
+    /// @return allowedMarkets GMX markets the agent may open into (empty = any market).
+    function mandate() external view returns (uint256 maxLeverageBps, address[] memory allowedMarkets) {
+        StrategyVaultStorage storage $ = _strategyVaultStorage();
+        return ($.maxLeverageBps, $.allowedMarkets.values());
+    }
+
     /*//////////////////////////////////////////////////////////////
                               OWNER CONFIG
     //////////////////////////////////////////////////////////////*/
@@ -92,6 +120,37 @@ contract StrategyVault is
         $.gmxOrderVault = orderVault;
 
         emit GmxRoutingUpdated(exchangeRouter, router, orderVault);
+    }
+
+    /// @notice Set (or revoke, with `address(0)`) the keeper allowed to execute GMX orders.
+    /// @dev Owner-only: delegating execution must never delegate custody.
+    function setKeeper(address keeper_) external onlyOwner {
+        _strategyVaultStorage().keeper = keeper_;
+        emit KeeperUpdated(keeper_);
+    }
+
+    /// @notice Set the mandate bounds enforced on every increase order (owner and keeper alike).
+    /// @param maxLeverageBps_ Max leverage in bps of 1x (0 = unbounded). e.g. 30_000 = 3x.
+    /// @param allowedMarkets The GMX markets the agent may open into. Empty = any market allowed.
+    /// @dev Replaces the existing mandate wholesale. Owner-only. Decrease/close orders are never
+    ///      constrained by the mandate so the agent can always de-risk an out-of-bounds position.
+    function setMandate(uint256 maxLeverageBps_, address[] calldata allowedMarkets) external onlyOwner {
+        if (allowedMarkets.length > MAX_ALLOWED_MARKETS) revert StrategyVault__TooManyMarkets();
+
+        StrategyVaultStorage storage $ = _strategyVaultStorage();
+        $.maxLeverageBps = maxLeverageBps_;
+
+        // Clear then repopulate the allowed-markets set. `remove` swaps the last element into the
+        // removed slot, so repeatedly removing index 0 drains the set in O(n).
+        uint256 existing = $.allowedMarkets.length();
+        for (uint256 i; i < existing; ++i) {
+            $.allowedMarkets.remove($.allowedMarkets.at(0));
+        }
+        for (uint256 i; i < allowedMarkets.length; ++i) {
+            $.allowedMarkets.add(allowedMarkets[i]);
+        }
+
+        emit MandateUpdated(maxLeverageBps_, allowedMarkets);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -151,7 +210,7 @@ contract StrategyVault is
     function createGmxMarketIncreaseOrder(GmxMarketIncreaseOrder calldata order)
         external
         payable
-        onlyOwner
+        onlyOwnerOrKeeper
         nonReentrant
         whenNotPaused
         returns (bytes32 orderKey)
@@ -159,6 +218,7 @@ contract StrategyVault is
         _requireValidIncreaseOrderShape(order);
         _requireSufficientExecutionGas(order.executionFee);
         _requireTrustedIncreaseOrder(order);
+        _requireWithinMandate(order);
 
         orderKey = _createGmxMarketIncreaseOrder(order, order.executionFee);
     }
@@ -166,7 +226,7 @@ contract StrategyVault is
     function createGmxMarketIncreaseOrders(GmxMarketIncreaseOrder[] calldata orders)
         external
         payable
-        onlyOwner
+        onlyOwnerOrKeeper
         nonReentrant
         whenNotPaused
         returns (bytes32[] memory orderKeys)
@@ -184,14 +244,20 @@ contract StrategyVault is
             GmxMarketIncreaseOrder calldata order = orders[i];
             _requireValidIncreaseOrderShape(order);
             _requireTrustedIncreaseOrder(order);
+            _requireWithinMandate(order);
             orderKeys[i] = _createGmxMarketIncreaseOrder(order, order.executionFee);
         }
     }
 
+    /// @dev Size-reducing/closing decreases are de-risking actions, so they are gated only on
+    ///      `owner || keeper` and are NOT mandate-constrained: the agent must be able to reduce or close
+    ///      a position even in a market later removed from the allowlist or now over the leverage ceiling.
+    ///      A *collateral-withdrawing* decrease (`collateralWithdrawalAmount > 0`) is the exception — it
+    ///      raises leverage, so {_requireDecreaseAllowed} restricts it to the owner (see I5/Finding 1).
     function createGmxMarketDecreaseOrder(GmxMarketDecreaseOrder calldata order)
         external
         payable
-        onlyOwner
+        onlyOwnerOrKeeper
         nonReentrant
         whenNotPaused
         returns (bytes32 orderKey)
@@ -199,6 +265,7 @@ contract StrategyVault is
         _requireValidDecreaseOrderShape(order);
         _requireSufficientExecutionGas(order.executionFee);
         _requireTrustedDecreaseOrder(order);
+        _requireDecreaseAllowed(order);
 
         orderKey = _createGmxMarketDecreaseOrder(order, order.executionFee);
     }
@@ -206,7 +273,7 @@ contract StrategyVault is
     function createGmxMarketDecreaseOrders(GmxMarketDecreaseOrder[] calldata orders)
         external
         payable
-        onlyOwner
+        onlyOwnerOrKeeper
         nonReentrant
         whenNotPaused
         returns (bytes32[] memory orderKeys)
@@ -224,6 +291,7 @@ contract StrategyVault is
             GmxMarketDecreaseOrder calldata order = orders[i];
             _requireValidDecreaseOrderShape(order);
             _requireTrustedDecreaseOrder(order);
+            _requireDecreaseAllowed(order);
             orderKeys[i] = _createGmxMarketDecreaseOrder(order, order.executionFee);
         }
     }
@@ -231,7 +299,7 @@ contract StrategyVault is
     /// @dev Not `whenNotPaused`: cancelling a pending order is a de-risking action the owner must be able to
     ///      perform during an emergency pause. GMX `cancelOrder` charges no execution fee (it refunds the
     ///      original), so no exact-fee check is imposed; any forwarded `msg.value` is normally zero.
-    function cancelGmxOrder(address exchangeRouter, bytes32 orderKey) external payable onlyOwner nonReentrant {
+    function cancelGmxOrder(address exchangeRouter, bytes32 orderKey) external payable onlyOwnerOrKeeper nonReentrant {
         if (exchangeRouter == address(0)) revert StrategyVault__ZeroAddress();
         if (exchangeRouter != _strategyVaultStorage().gmxExchangeRouter) revert StrategyVault__UntrustedRouting();
 
@@ -311,6 +379,54 @@ contract StrategyVault is
             order.exchangeRouter != $.gmxExchangeRouter || order.orderVault != $.gmxOrderVault
                 || order.collateralToken != address($.asset)
         ) revert StrategyVault__UntrustedRouting();
+    }
+
+    /// @dev Enforces the mandate on an increase order. Two independent bounds, each opt-in:
+    ///        1. Market allowlist — empty set means any GMX market is permitted (e.g. a momentum
+    ///           strategy that trades the whole screened universe leaves it empty).
+    ///        2. Leverage ceiling — `maxLeverageBps == 0` means unbounded. When set, the order MUST
+    ///           add collateral (`collateralAmount > 0`), otherwise size could be added against zero
+    ///           new margin and leverage would be unbounded (the "zero-collateral bypass").
+    ///      NOTE: this bounds each order's OWN leverage (sizeDeltaUsd vs the collateral it adds); it
+    ///      does not track cumulative position leverage across multiple increases — that needs a GMX
+    ///      Reader call and is intentionally out of scope. Collateral is valued 1:1 in USD (the asset
+    ///      is a USD stablecoin), so no price oracle is required.
+    function _requireWithinMandate(GmxMarketIncreaseOrder calldata order) internal view {
+        StrategyVaultStorage storage $ = _strategyVaultStorage();
+
+        if ($.allowedMarkets.length() != 0 && !$.allowedMarkets.contains(order.market)) {
+            revert StrategyVault__MarketNotAllowed();
+        }
+
+        uint256 maxLeverageBps = $.maxLeverageBps;
+        if (maxLeverageBps != 0) {
+            if (order.collateralAmount == 0) revert StrategyVault__ZeroCollateral();
+
+            // sizeDeltaUsd is GMX 30-decimal USD; collateral is the asset's own decimals valued 1:1.
+            // Scale collateral up to 30 decimals, then compare leverage in bps:
+            //   sizeDeltaUsd / collateralUsd30 * ONE_X_BPS <= maxLeverageBps
+            // rearranged to avoid division/precision loss.
+            uint256 collateralUsd30 = order.collateralAmount * (10 ** (30 - _assetDecimals()));
+            if (order.sizeDeltaUsd * ONE_X_BPS > maxLeverageBps * collateralUsd30) {
+                revert StrategyVault__LeverageTooHigh();
+            }
+        }
+    }
+
+    function _assetDecimals() internal view returns (uint256) {
+        return IERC20Metadata(address(_strategyVaultStorage().asset)).decimals();
+    }
+
+    /// @dev A decrease that withdraws collateral (`collateralWithdrawalAmount > 0`) without reducing
+    ///      size RAISES the position's leverage — it is the opposite of de-risking and would let a
+    ///      keeper defeat the mandate's leverage ceiling (open at-cap, then strip margin). Such bare
+    ///      collateral withdrawals are therefore restricted to the owner. The keeper retains full
+    ///      ability to reduce or fully close size (collateral returns to the vault on close), so the
+    ///      protective lane is intact. See INVARIANTS.md I5.
+    function _requireDecreaseAllowed(GmxMarketDecreaseOrder calldata order) internal view {
+        if (order.collateralWithdrawalAmount > 0 && msg.sender != owner()) {
+            revert StrategyVault__KeeperCannotWithdrawCollateral();
+        }
     }
 
     /// @dev The execution fee is paid out of the vault's native balance (the "gas tank"). Any `msg.value`
