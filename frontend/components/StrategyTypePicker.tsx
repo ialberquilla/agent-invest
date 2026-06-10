@@ -224,13 +224,20 @@ function CoinSelect({
         value={value}
         disabled={disabled || coins === null}
         onChange={(event) => onChange(event.target.value)}
-        className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+        // Native selects ignore bg-transparent for the control and the popup
+        // options, so set themed colors explicitly (and color-scheme so the
+        // browser paints the dropdown in dark mode).
+        className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-xs outline-none [color-scheme:light] focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 dark:[color-scheme:dark]"
       >
-        <option value="">
+        <option value="" className="bg-background text-foreground">
           {coins === null ? "Loading markets…" : "Select a market"}
         </option>
         {(coins ?? []).map((coin) => (
-          <option key={coin.coin_id} value={coin.coin_id}>
+          <option
+            key={coin.coin_id}
+            value={coin.coin_id}
+            className="bg-background text-foreground"
+          >
             {coin.symbol} · {coinName(coin.coin_id)}
           </option>
         ))}
