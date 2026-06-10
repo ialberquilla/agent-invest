@@ -52,52 +52,47 @@
 }
 
 :root {
-  /* Open WebUI-inspired neutral light theme: white canvas, a slightly
-     darker flush sidebar, white raised cards/bubbles. Mirrors the dark
-     theme's neutral hue so toggling stays consistent. */
-  --background: oklch(0.99 0.002 256);
-  --foreground: oklch(0.21 0.01 256);
+  /* Neutral light theme: white canvas, black text, no blue tint. */
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.16 0 0);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.21 0.01 256);
+  --card-foreground: oklch(0.16 0 0);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.21 0.01 256);
-  --primary: oklch(0.26 0.01 256);
-  --primary-foreground: oklch(0.98 0.002 256);
-  --secondary: oklch(0.96 0.004 256);
-  --secondary-foreground: oklch(0.26 0.01 256);
-  --muted: oklch(0.965 0.004 256);
-  --muted-foreground: oklch(0.45 0.01 256);
+  --popover-foreground: oklch(0.16 0 0);
+  --primary: oklch(0.18 0 0);
+  --primary-foreground: oklch(1 0 0);
+  --secondary: oklch(0.96 0 0);
+  --secondary-foreground: oklch(0.18 0 0);
+  --muted: oklch(0.96 0 0);
+  --muted-foreground: oklch(0.43 0 0);
   --subtle-foreground: var(--muted-foreground);
-  --accent: oklch(0.94 0.005 256);
-  --accent-foreground: oklch(0.26 0.01 256);
+  --accent: oklch(0.93 0 0);
+  --accent-foreground: oklch(0.18 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.91 0.004 256);
-  --input: oklch(0.91 0.004 256);
-  --ring: oklch(0.6 0.02 256);
-  --chart-1: oklch(0.56 0.21 257.2);
-  --chart-2: oklch(0.67 0.16 223.5);
-  --chart-3: oklch(0.7 0.15 164.5);
-  --chart-4: oklch(0.72 0.17 70.2);
-  --chart-5: oklch(0.62 0.2 293.1);
+  --border: oklch(0.88 0 0);
+  --input: oklch(0.88 0 0);
+  --ring: oklch(0.52 0 0);
+  --chart-1: oklch(0.2 0 0);
+  --chart-2: oklch(0.38 0 0);
+  --chart-3: oklch(0.52 0 0);
+  --chart-4: oklch(0.66 0 0);
+  --chart-5: oklch(0.78 0 0);
   --chart-axis: var(--muted-foreground);
   --chart-grid: var(--border);
   --chart-legend: var(--muted-foreground);
   --radius: 0.625rem;
-  --sidebar: oklch(0.965 0.004 256);
-  --sidebar-foreground: oklch(0.26 0.01 256);
+  --sidebar: oklch(0.96 0 0);
+  --sidebar-foreground: oklch(0.18 0 0);
   --sidebar-primary: var(--primary);
   --sidebar-primary-foreground: var(--primary-foreground);
-  --sidebar-accent: oklch(0.92 0.005 256);
+  --sidebar-accent: oklch(0.9 0 0);
   --sidebar-accent-foreground: var(--accent-foreground);
   --sidebar-border: var(--border);
   --sidebar-ring: var(--ring);
 }
 
 .dark {
-  /* Open WebUI-inspired neutral graphite. True neutral gray (zero chroma) so
-     the surfaces read as graphite rather than blue. The canvas is the lightest
-     of the three surfaces; the sidebar sits darker and flush; cards/bubbles sit
-     slightly lighter so they read as raised against the canvas. */
+  /* Neutral dark theme: black/graphite surfaces, no blue tint. */
   --background: oklch(0.205 0 0);
   --foreground: oklch(0.985 0 0);
   --card: oklch(0.27 0 0);
@@ -117,11 +112,11 @@
   --border: oklch(1 0 0 / 14%);
   --input: oklch(1 0 0 / 16%);
   --ring: oklch(0.7 0 0);
-  --chart-1: oklch(0.75 0.17 252.9);
-  --chart-2: oklch(0.78 0.14 221.1);
-  --chart-3: oklch(0.76 0.14 164.5);
-  --chart-4: oklch(0.8 0.16 78.4);
-  --chart-5: oklch(0.72 0.18 294.8);
+  --chart-1: oklch(0.95 0 0);
+  --chart-2: oklch(0.82 0 0);
+  --chart-3: oklch(0.68 0 0);
+  --chart-4: oklch(0.55 0 0);
+  --chart-5: oklch(0.42 0 0);
   --chart-axis: oklch(0.82 0 0);
   --chart-grid: oklch(1 0 0 / 14%);
   --chart-legend: oklch(0.88 0 0);
