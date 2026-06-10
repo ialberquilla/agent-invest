@@ -3,9 +3,9 @@ import { arbitrum } from "viem/chains";
 export const STRATEGY_VAULT_CHAIN_ID = arbitrum.id;
 
 export const STRATEGY_VAULT_ADDRESSES = {
-  // Model B (gas-tank) deployment — Arbitrum One. `implementation` reflects the latest beacon impl
-  // (payable deposit). Factory/beacon/vault addresses are stable across beacon upgrades.
-  implementation: "0xf04B711585360FD6b61e588369c651d1CF15dD2e",
+  // Arbitrum One. `implementation` reflects the latest beacon impl (keeper + mandate, 2026-06-10).
+  // Factory/beacon/vault addresses are stable across beacon upgrades.
+  implementation: "0xF33050467dDC712a35022297d1e31A7B8d7ad07A",
   factory: "0xd335d60DF2B199Cc3E7438A79a2725F64bD29F3b",
   beacon: "0x637C3338D7FdE7092Aba28a6F98dc598D143CD78",
   initialVault: "0x42E69E9b8e196c182c01C17219004CF7B10F2954",
