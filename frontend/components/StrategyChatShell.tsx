@@ -409,7 +409,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   }, [bootstrapKey, ready, authenticated, getAccessToken]);
 
   async function handleNewStrategy() {
-    if (isCreatingStrategy || isChatBusy) {
+    if (isCreatingStrategy) {
       return;
     }
 
@@ -439,7 +439,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   }
 
   function handleSelectStrategy(nextStrategyId: string) {
-    if (isCreatingStrategy || isChatBusy || nextStrategyId === strategyId) {
+    if (isCreatingStrategy || nextStrategyId === strategyId) {
       return;
     }
 
@@ -505,7 +505,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   }
 
   async function handleSelectScreener(screener: PinnedScreener) {
-    if (isCreatingStrategy || isChatBusy || screener.id === activeScreenerId) {
+    if (isCreatingStrategy || screener.id === activeScreenerId) {
       return;
     }
 
@@ -546,7 +546,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   }
 
   function handleSelectWalletPositions() {
-    if (isCreatingStrategy || isChatBusy || isWalletPositionsActive) {
+    if (isCreatingStrategy || isWalletPositionsActive) {
       return;
     }
 
@@ -559,7 +559,7 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
   }
 
   function handleSelectDeployedStrategy(strategy: DeployedStrategy) {
-    if (isCreatingStrategy || isChatBusy) return;
+    if (isCreatingStrategy) return;
     setStrategyError(null);
     setScreenerError(null);
     setActiveScreenerId(null);
@@ -618,7 +618,8 @@ function StrategyChatShellContent({ auth }: { auth: AuthState }) {
         walletPositionCount={walletPositionCount}
         walletPositionStatus={walletPositionStatus}
         activeVaultMandateId={selectedVault?.mandate_id ?? null}
-        disabled={isCreatingStrategy || isChatBusy}
+        disabled={isCreatingStrategy}
+        deleteDisabled={isCreatingStrategy || isChatBusy}
         onSelectStrategy={handleSelectStrategy}
         onDeleteStrategy={handleDeleteStrategy}
         onSelectScreener={handleSelectScreener}

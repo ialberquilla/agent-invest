@@ -36,6 +36,7 @@ type StrategySidebarProps = {
   walletPositionStatus?: "idle" | "loading" | "error";
   activeVaultMandateId?: string | null;
   disabled?: boolean;
+  deleteDisabled?: boolean;
   onSelectStrategy: (strategyId: string) => void;
   onDeleteStrategy: (strategyId: string) => void;
   onSelectScreener: (screener: PinnedScreener) => void;
@@ -56,6 +57,7 @@ export function StrategySidebar({
   walletPositionStatus = "idle",
   activeVaultMandateId = null,
   disabled = false,
+  deleteDisabled = disabled,
   onSelectStrategy,
   onDeleteStrategy,
   onSelectScreener,
@@ -360,7 +362,7 @@ export function StrategySidebar({
                   <button
                     type="button"
                     onClick={() => onDeleteStrategy(strategy.strategy_id)}
-                    disabled={disabled}
+                    disabled={deleteDisabled}
                     aria-label={`Delete ${strategy.label}`}
                     title="Delete chat"
                     className={cn(
