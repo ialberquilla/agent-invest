@@ -20,6 +20,19 @@ describe("MessageList", () => {
     expect(screen.queryByText("streaming")).not.toBeInTheDocument();
   });
 
+  it("shows the live tool activity label while a tool runs with no text yet", () => {
+    render(
+      <MessageList
+        isThinking
+        liveActivity="Screening markets…"
+        messages={[{ role: "agent", text: "", status: "running" }]}
+      />,
+    );
+
+    expect(screen.getByText("Screening markets…")).toBeInTheDocument();
+    expect(screen.queryByText("thinking...")).not.toBeInTheDocument();
+  });
+
   it("renders streamed assistant text without showing streaming metadata", () => {
     render(
       <MessageList
