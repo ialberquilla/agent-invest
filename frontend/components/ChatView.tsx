@@ -189,6 +189,12 @@ export function ChatView({
   }, [isSending]);
 
   useEffect(() => {
+    return () => {
+      reportBusyChange(false);
+    };
+  }, []);
+
+  useEffect(() => {
     persistStrategyId(strategyId);
     persistMessages(strategyId, messages);
 
