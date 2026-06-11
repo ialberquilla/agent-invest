@@ -28,35 +28,35 @@ const lanes: LauncherLane[] = [
   {
     id: "deployable",
     title: "Build a deployable backtest",
-    subtitle: "template-backed strategy runs",
+    subtitle: "validated strategy runs",
     options: [
       {
         title: "Diversified basket",
         subtitle: "multi-asset long allocation",
-        badge: "Deployable template",
+        badge: "Deployable",
         prompt:
-          "Build a balanced diversified crypto basket from GMX-tradeable assets, target a 1-year horizon, cap drawdown around 35%, and backtest it through the deterministic strategy pipeline.",
+          "Build a balanced diversified crypto basket from GMX-tradeable assets, target a 1-year horizon, cap drawdown around 35%, and backtest it.",
       },
       {
         title: "Single-asset trend",
         subtitle: "one market, long/flat",
-        badge: "Deployable template",
+        badge: "Deployable",
         prompt:
-          "Backtest a single-asset SOL trend setup using the supported deterministic template. Keep it long/flat, explain the tested signal assumptions, and only recommend it if validation passes.",
+          "Backtest a single-asset SOL trend setup. Keep it long/flat, explain the tested signal assumptions, and only flag it as deployable if validation passes.",
       },
       {
         title: "Pair trade",
         subtitle: "long one market, short another",
-        badge: "Deployable template",
+        badge: "Deployable",
         prompt:
-          "Backtest a deterministic pair trade: long ETH and short BTC. Use the supported pair-trade template, test the predefined hedge-ratio variants, and disclose short/funding-cost caveats.",
+          "Backtest a pair trade: long ETH and short BTC. Test the supported hedge-ratio variants, and disclose short/funding-cost caveats.",
       },
       {
         title: "Long/short momentum",
         subtitle: "strongest long, weakest short",
-        badge: "Deployable template",
+        badge: "Deployable",
         prompt:
-          "Build a market-neutral long/short momentum strategy over GMX-tradeable assets. Use supported deterministic templates, validate exposure and beta, and disclose short/funding-cost caveats.",
+          "Build a market-neutral long/short momentum strategy over GMX-tradeable assets. Validate exposure and beta, and disclose short/funding-cost caveats.",
       },
     ],
   },
@@ -70,21 +70,21 @@ const lanes: LauncherLane[] = [
         subtitle: "describe rules in plain English",
         badge: "Research-only",
         prompt:
-          "Run an exploratory research-only backtest for this idea: SOL long when 20-day momentum is positive, flat otherwise. Compare it against buy-and-hold and explain whether it could later become a supported deterministic template.",
+          "Run an exploratory research-only backtest for this idea: SOL long when 20-day momentum is positive, flat otherwise. Compare it against buy-and-hold and explain how it behaved.",
       },
       {
         title: "Compare two ideas",
         subtitle: "side-by-side research",
         badge: "Research-only",
         prompt:
-          "Research whether a single-asset trend-following setup or a diversified momentum basket has historically behaved better for drawdown-adjusted returns. Treat this as exploratory only, not deployable yet.",
+          "Research whether a single-asset trend-following setup or a diversified momentum basket has historically behaved better for drawdown-adjusted returns. Treat this as exploratory only.",
       },
       {
         title: "Check a thesis",
         subtitle: "did the idea hold historically?",
         badge: "Research-only",
         prompt:
-          "Research this thesis: ETH outperforms BTC during broad crypto uptrends but underperforms in drawdowns. Use available historical data, show evidence, and say what template-backed strategy could test it next.",
+          "Research this thesis: ETH outperforms BTC during broad crypto uptrends but underperforms in drawdowns. Use available historical data, show evidence, and say what strategy could test it next.",
       },
     ],
   },
@@ -98,7 +98,7 @@ const lanes: LauncherLane[] = [
         subtitle: "rank strong GMX markets",
         badge: "Market screening",
         prompt:
-          "Screen GMX-tradeable markets for the strongest recent momentum candidates. Return the ranked list and explain which names are worth considering for a deterministic backtest.",
+          "Screen GMX-tradeable markets for the strongest recent momentum candidates. Return the ranked list and explain which names are worth considering for a backtest.",
       },
       {
         title: "Lower-drawdown assets",
@@ -112,7 +112,7 @@ const lanes: LauncherLane[] = [
         subtitle: "look for relative-value pairs",
         badge: "Market screening",
         prompt:
-          "Screen GMX-tradeable markets for possible pair-trade candidates. Look for liquid large-cap pairs with a plausible relative-value thesis, then suggest one deterministic pair backtest to run next.",
+          "Screen GMX-tradeable markets for possible pair-trade candidates. Look for liquid large-cap pairs with a plausible relative-value thesis, then suggest one pair backtest to run next.",
       },
     ],
   },
@@ -132,12 +132,12 @@ const lanes: LauncherLane[] = [
         subtitle: "what backtests can and cannot do",
         badge: "Learn",
         prompt:
-          "Explain how this crypto strategy copilot works: deterministic backtests, research-only custom analysis, market screening, max drawdown, and what can become deployable.",
+          "Explain how this crypto strategy copilot works: backtests, research-only custom analysis, market screening, max drawdown, and what can become deployable.",
       },
       {
         title: "Balanced starter brief",
         subtitle: "simple first portfolio",
-        badge: "Deployable template",
+        badge: "Deployable",
         prompt:
           "Create a beginner-friendly balanced crypto basket from GMX-tradeable assets, explain the assumptions, backtest it, and keep the recommendation educational rather than financial advice.",
       },
@@ -193,7 +193,7 @@ export function ChatEmptyState({
           What should we build?
         </h2>
         <p className="text-sm leading-6 text-muted-foreground">
-          Choose a path to see what the copilot can do: deployable templates,
+          Choose a path to see what the copilot can do: deployable strategies,
           research-only custom ideas, market screens, or reruns.
         </p>
       </div>
