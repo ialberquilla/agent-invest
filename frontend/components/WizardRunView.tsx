@@ -19,7 +19,6 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { initialTimeline, reduceTimeline } from "@/lib/agent-events";
 import type { TimelineState } from "@/lib/agent-events";
-import { trackEvent } from "@/lib/analytics";
 import type { Run } from "@/lib/types";
 import {
   deriveStrategyLabel,
@@ -47,24 +46,6 @@ type RunState = {
   error: string | null;
   timeline: TimelineState;
 };
-
-type FailureStage =
-  | "missing_stored_run"
-  | "strategy_create"
-  | "stream_start"
-  | "stream_processing"
-  | "final_result"
-  | "unknown";
-
-class WizardRunError extends Error {
-  constructor(
-    message: string,
-    readonly failureStage: FailureStage,
-  ) {
-    super(message);
-    this.name = "WizardRunError";
-  }
-}
 
 const initialRunState: RunState = {
   status: "loading",
@@ -109,13 +90,6 @@ function getErrorMessage(payload: unknown, fallback: string) {
   }
 
   return fallback;
-}
-
-function trackRunFailed(failureStage: FailureStage) {
-  trackEvent("wizard_run_failed", {
-    run_source: "allocation_wizard",
-    failure_stage: failureStage,
-  });
 }
 
 function readStoredRun(id: string | null): StoredWizardRun | null {
@@ -211,7 +185,6 @@ export function WizardRunView() {
     const next = readStoredRun(id);
     setStoredRun(next);
     if (!next) {
-      trackRunFailed("missing_stored_run");
       setRunState({
         ...initialRunState,
         status: "error",
@@ -233,9 +206,6 @@ export function WizardRunView() {
     async function run() {
       setRunState({ ...initialRunState, status: "running" });
       const storageId = id;
-      trackEvent("wizard_run_started", {
-        run_source: "allocation_wizard",
-      });
 
       try {
         const strategyId = activeRun.strategyId;
@@ -260,23 +230,21 @@ export function WizardRunView() {
             }),
           });
         } catch (error) {
-          throw new WizardRunError(
+          throw new Error(
             error instanceof Error
               ? error.message
               : "Unable to run allocation agent",
-            "stream_start",
           );
         }
 
         if (!response.ok) {
           const payload = await readJson(response);
-          throw new WizardRunError(
+          throw new Error(
             getErrorMessage(payload, "Unable to run allocation agent"),
-            "stream_start",
           );
         }
         if (!response.body) {
-          throw new WizardRunError("Stream returned no body", "stream_start");
+          throw new Error("Stream returned no body");
         }
 
         let timeline: TimelineState = initialTimeline;
@@ -296,20 +264,16 @@ export function WizardRunView() {
             if (timeline.done) break;
           }
         } catch (error) {
-          throw new WizardRunError(
+          throw new Error(
             error instanceof Error
               ? error.message
               : "Unable to process allocation agent stream",
-            "stream_processing",
           );
         }
 
         const runResult = timeline.finalRun;
         if (!runResult) {
-          throw new WizardRunError(
-            "Stream ended without a completed run",
-            "stream_processing",
-          );
+          throw new Error("Stream ended without a completed run");
         }
 
         const artifacts = runResult.artifacts ?? [];
@@ -325,15 +289,6 @@ export function WizardRunView() {
             artifacts,
           },
         ]);
-        if (runResult.error) {
-          trackRunFailed("final_result");
-        } else {
-          trackEvent("wizard_run_completed", {
-            run_source: "allocation_wizard",
-            has_artifacts: artifacts.length > 0,
-            artifact_count: artifacts.length,
-          });
-        }
         setRunState({
           status: runResult.error ? "error" : "completed",
           strategyId,
@@ -342,9 +297,6 @@ export function WizardRunView() {
           timeline,
         });
       } catch (error) {
-        trackRunFailed(
-          error instanceof WizardRunError ? error.failureStage : "unknown",
-        );
         setRunState((current) => ({
           ...current,
           status: "error",

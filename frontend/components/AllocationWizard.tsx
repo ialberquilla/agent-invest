@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
@@ -18,7 +18,6 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { readSse } from "@/lib/sse";
 import type { StrategyCreateResponse } from "@/lib/types";
 import type { AllocationWizardState } from "@/lib/wizard-prompt";
-import { trackEvent } from "@/lib/analytics";
 
 type Option<T extends string = string> = {
   value: T;
@@ -68,13 +67,6 @@ const defaultState: AllocationWizardState = {
 };
 
 const initialCapitalInvalidCode = "initial_capital_invalid";
-
-type NavigationSource =
-  | "next"
-  | "back"
-  | "sidebar"
-  | "summary"
-  | "review_button";
 
 type ValidationResult = {
   messages: string[];
@@ -265,24 +257,6 @@ function validateState(state: AllocationWizardState): ValidationResult {
   return { messages, codes };
 }
 
-function getStepParams(stepIndex: number) {
-  return {
-    step_index: stepIndex,
-    step_name: steps[stepIndex].title,
-  };
-}
-
-function getInitialCapitalMetadata(value: string) {
-  const trimmed = value.trim();
-  const amount = Number(trimmed);
-
-  return {
-    initial_capital_provided: trimmed.length > 0,
-    initial_capital_valid:
-      trimmed.length === 0 || (Number.isFinite(amount) && amount > 0),
-  };
-}
-
 function OptionGroup<T extends string>({
   label,
   options,
@@ -388,44 +362,8 @@ export function AllocationWizard({
   const [preparationError, setPreparationError] = useState<string | null>(null);
   const validation = useMemo(() => validateState(state), [state]);
   const errors = validation.messages;
-  const navigationSourceRef = useRef<NavigationSource | undefined>(undefined);
   const progress = Math.round(((selectedStepIndex + 1) / steps.length) * 100);
   const isReviewStep = selectedStepIndex === steps.length - 1;
-
-  const trackSelectedStepViewed = useEffectEvent(() => {
-    const navigationSource = navigationSourceRef.current;
-    navigationSourceRef.current = undefined;
-
-    trackEvent("wizard_step_viewed", {
-      ...getStepParams(selectedStepIndex),
-      navigation_source: navigationSource,
-    });
-
-    if (selectedStepIndex === steps.length - 1) {
-      trackEvent("wizard_review_opened", {
-        completed_steps: steps.length - 1,
-        has_validation_errors: validation.codes.length > 0,
-        initial_capital_provided: getInitialCapitalMetadata(
-          state.initialCapitalUsd,
-        ).initial_capital_provided,
-      });
-
-      if (validation.codes.length > 0) {
-        trackEvent("wizard_validation_failed", {
-          error_count: validation.codes.length,
-          error_codes: validation.codes.join(","),
-        });
-      }
-    }
-  });
-
-  useEffect(() => {
-    trackEvent("wizard_started", getStepParams(0));
-  }, []);
-
-  useEffect(() => {
-    trackSelectedStepViewed();
-  }, [selectedStepIndex]);
 
   function updateState(update: Partial<AllocationWizardState>) {
     setState((current) => ({ ...current, ...update }));
@@ -436,25 +374,19 @@ export function AllocationWizard({
     fieldValue: AllocationWizardState[K],
   ) {
     updateState({ [fieldName]: fieldValue });
-    trackEvent("wizard_field_selected", {
-      ...getStepParams(selectedStepIndex),
-      field_name: fieldName,
-      field_value: String(fieldValue),
-    });
   }
 
-  function goToStep(stepIndex: number, navigationSource: NavigationSource) {
-    navigationSourceRef.current = navigationSource;
+  function goToStep(stepIndex: number) {
     setSelectedStepIndex(stepIndex);
   }
 
   function goNext() {
     if (selectedStepIndex === steps.length - 2 && errors.length > 0) {
-      goToStep(steps.length - 1, "next");
+      goToStep(steps.length - 1);
       return;
     }
 
-    goToStep(Math.min(selectedStepIndex + 1, steps.length - 1), "next");
+    goToStep(Math.min(selectedStepIndex + 1, steps.length - 1));
   }
 
   function toggleExclusion(value: string) {
@@ -466,20 +398,6 @@ export function AllocationWizard({
         ? [...current.exclusions, value]
         : current.exclusions.filter((item) => item !== value),
     }));
-
-    trackEvent("wizard_exclusion_toggled", {
-      ...getStepParams(selectedStepIndex),
-      field_name: "exclusions",
-      field_value: value,
-      selected,
-    });
-  }
-
-  function trackInitialCapitalChanged() {
-    trackEvent("wizard_initial_capital_changed", {
-      ...getStepParams(selectedStepIndex),
-      ...getInitialCapitalMetadata(state.initialCapitalUsd),
-    });
   }
 
   async function runAllocationAgent() {
@@ -490,28 +408,8 @@ export function AllocationWizard({
     setPreparationError(null);
 
     if (errors.length > 0) {
-      trackEvent("wizard_validation_failed", {
-        error_count: validation.codes.length,
-        error_codes: validation.codes.join(","),
-      });
       return;
     }
-
-    trackEvent("wizard_run_submitted", {
-      universe: state.universe,
-      minimumMarketCap: state.minimumMarketCap,
-      concentrationLimit: state.concentrationLimit,
-      maxDrawdown: state.maxDrawdown,
-      riskPreference: state.riskPreference,
-      horizon: state.horizon,
-      rebalance: state.rebalance,
-      cashAllocation: state.cashAllocation,
-      targetAssets: state.targetAssets,
-      exclusions_count: state.exclusions.length,
-      initial_capital_provided: getInitialCapitalMetadata(
-        state.initialCapitalUsd,
-      ).initial_capital_provided,
-    });
 
     setIsPreparingAgent(true);
 
@@ -525,9 +423,6 @@ export function AllocationWizard({
       const strategy = await requestStrategy();
       const strategyId = strategy.strategy_id;
       const runId = await requestWizardRun(strategyId, state);
-      trackEvent("wizard_run_started", {
-        run_source: "allocation_wizard",
-      });
       router.push(`/runs/${encodeURIComponent(runId)}`);
     } catch (error) {
       setPreparationError(
@@ -693,7 +588,7 @@ export function AllocationWizard({
                       : "border-border bg-background text-foreground hover:bg-muted"
                   }`}
                   aria-current={isSelected ? "step" : undefined}
-                  onClick={() => goToStep(index, "sidebar")}
+                  onClick={() => goToStep(index)}
                 >
                   <span
                     className={`flex size-5 items-center justify-center rounded-full text-[11px] font-bold ${
@@ -747,7 +642,7 @@ export function AllocationWizard({
                               : "border-border bg-background text-foreground hover:border-foreground/20 hover:bg-muted/70"
                           }`}
                           aria-current={isSelected ? "step" : undefined}
-                          onClick={() => goToStep(index, "sidebar")}
+                          onClick={() => goToStep(index)}
                         >
                           <span
                             className={`flex size-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
@@ -807,7 +702,7 @@ export function AllocationWizard({
                     disabled={selectedStepIndex === 0}
                     className="sm:min-w-28"
                     onClick={() =>
-                      goToStep(Math.max(selectedStepIndex - 1, 0), "back")
+                      goToStep(Math.max(selectedStepIndex - 1, 0))
                     }
                   >
                     Back
@@ -962,7 +857,6 @@ export function AllocationWizard({
                       onChange={(event) =>
                         updateState({ initialCapitalUsd: event.target.value })
                       }
-                      onBlur={trackInitialCapitalChanged}
                     />
                     <p className="text-xs leading-5 text-muted-foreground">
                       Leave blank if the agent should reason in percentages
@@ -1022,7 +916,7 @@ export function AllocationWizard({
                             variant="outline"
                             size="sm"
                             onClick={() =>
-                              goToStep(section.stepIndex, "summary")
+                              goToStep(section.stepIndex)
                             }
                           >
                             Edit {steps[section.stepIndex].title}
@@ -1050,7 +944,7 @@ export function AllocationWizard({
                   size="lg"
                   disabled={selectedStepIndex === 0}
                   onClick={() =>
-                    goToStep(Math.max(selectedStepIndex - 1, 0), "back")
+                    goToStep(Math.max(selectedStepIndex - 1, 0))
                   }
                 >
                   Back
@@ -1104,7 +998,7 @@ export function AllocationWizard({
               </div>
               <Button
                 disabled={errors.length > 0}
-                onClick={() => goToStep(steps.length - 1, "review_button")}
+                onClick={() => goToStep(steps.length - 1)}
               >
                 Review mandate
               </Button>
@@ -1146,7 +1040,7 @@ export function AllocationWizard({
                     key={step.title}
                     type="button"
                     className="flex min-w-0 items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left hover:bg-muted"
-                    onClick={() => goToStep(index, "summary")}
+                    onClick={() => goToStep(index)}
                   >
                     <span className="truncate">{step.title}</span>
                     <Badge
@@ -1163,7 +1057,7 @@ export function AllocationWizard({
             <CardFooter className="flex-col items-stretch gap-3">
               <Button
                 disabled={errors.length > 0}
-                onClick={() => goToStep(steps.length - 1, "review_button")}
+                onClick={() => goToStep(steps.length - 1)}
               >
                 Review mandate
               </Button>

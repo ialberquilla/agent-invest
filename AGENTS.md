@@ -57,9 +57,7 @@ repos. **Default to the smallest thing that works — no speculative abstraction
 
 ## Storage & data
 
-Phase 1 storage is **local filesystem only** (no S3/AWS). Memory files and parquet
-datasets live under `STORAGE_ROOT` (default `<repo>/.data/storage`, Docker
-`/app/.data/storage`). See `README.md` for the layout. Postgres runs in Docker.
+Phase 1 storage is **local filesystem only** (no S3/AWS). Postgres runs in Docker.
 
 **Postgres is exposed on host port `5434`** (not 5432) to coexist with pond3r-postgres.
 
