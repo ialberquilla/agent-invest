@@ -1,11 +1,7 @@
 import type { Metadata } from "next";
 import { Inter, Manrope, Geist_Mono } from "next/font/google";
-import Script from "next/script";
-import { Suspense } from "react";
 import "./globals.css";
-import { RoutePageViewTracker } from "@/components/RoutePageViewTracker";
 import { Providers } from "@/components/Providers";
-import { gaMeasurementId } from "@/lib/analytics";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -35,8 +31,6 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
-  const shouldLoadGoogleAnalytics = Boolean(gaMeasurementId);
-
   return (
     <html
       lang="en"
@@ -54,28 +48,7 @@ export default function RootLayout({
       </head>
       <body className="min-h-full flex flex-col">
         <Providers>{children}</Providers>
-        {shouldLoadGoogleAnalytics ? (
-          <Suspense fallback={null}>
-            <RoutePageViewTracker />
-          </Suspense>
-        ) : null}
       </body>
-      {shouldLoadGoogleAnalytics ? (
-        <>
-          <Script
-            src={`https://www.googletagmanager.com/gtag/js?id=${gaMeasurementId}`}
-            strategy="afterInteractive"
-          />
-          <Script id="google-analytics" strategy="afterInteractive">
-            {`
-              window.dataLayer = window.dataLayer || [];
-              function gtag(){window.dataLayer.push(arguments);}
-              gtag('js', new Date());
-              gtag('config', '${gaMeasurementId}');
-            `}
-          </Script>
-        </>
-      ) : null}
     </html>
   );
 }
