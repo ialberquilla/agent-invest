@@ -81,6 +81,25 @@ function getChatRunId(payload: unknown) {
     : null;
 }
 
+function getChatTool(payload: unknown) {
+  return isRecord(payload) && typeof payload.tool === "string"
+    ? payload.tool
+    : null;
+}
+
+// Friendly "what the agent is doing right now" copy for tool-first turns,
+// where the model emits no text until the tool finishes. Shown in the
+// streaming bubble in place of a bare "thinking…".
+function friendlyToolLabel(tool: string | null): string | null {
+  if (!tool) return null;
+  if (tool.includes("screen_markets")) return "Screening markets…";
+  if (tool.includes("run_research_code")) return "Running research…";
+  if (tool.includes("run_strategy_pipeline"))
+    return "Starting your strategy run…";
+  if (tool.startsWith("pond3r-portfolio:")) return "Crunching the numbers…";
+  return "Working…";
+}
+
 function getChatContent(payload: unknown) {
   if (!isRecord(payload)) return "";
   for (const key of ["content", "delta", "text"] as const) {
@@ -169,6 +188,7 @@ export function ChatView({
   );
   const [isSending, setIsSending] = useState(false);
   const [liveRunId, setLiveRunId] = useState<string | null>(null);
+  const [liveActivity, setLiveActivity] = useState<string | null>(null);
   const [liveTimeline, setLiveTimeline] =
     useState<TimelineState>(initialTimeline);
   const [inspectedRunId, setInspectedRunId] = useState<string | null>(null);
@@ -226,6 +246,7 @@ export function ChatView({
     setMessages((current) => [...current, { role: "user", text: userText }]);
     setIsSending(true);
     setLiveRunId(null);
+    setLiveActivity(null);
     setLiveTimeline(initialTimeline);
 
     try {
@@ -288,6 +309,8 @@ export function ChatView({
               { ...current[placeholderIndex], text: finalText, status: "streaming" },
             ]);
           } else if (sseMessage.event === "tool.updated") {
+            const label = friendlyToolLabel(getChatTool(payload));
+            if (label) setLiveActivity(label);
             const runId = getChatRunId(payload);
             if (runId) {
               finalRunId = runId;
@@ -443,6 +466,7 @@ export function ChatView({
     } finally {
       setIsSending(false);
       setLiveRunId(null);
+      setLiveActivity(null);
       setLiveTimeline(initialTimeline);
     }
   }
@@ -549,6 +573,7 @@ export function ChatView({
             messages={messages}
             isThinking={isSending}
             liveRunId={liveRunId}
+            liveActivity={liveActivity}
             liveParts={liveTimeline.parts}
             onInspectRun={handleInspectRun}
             emptyStateDisabled={isDisabled}

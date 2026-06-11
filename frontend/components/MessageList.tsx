@@ -46,6 +46,7 @@ type MessageListProps = {
   messages: ChatMessage[];
   isThinking: boolean;
   liveRunId?: string | null;
+  liveActivity?: string | null;
   liveParts?: TimelinePart[];
   onInspectRun?: (runId: string, trigger: HTMLButtonElement) => void;
   emptyStateDisabled?: boolean;
@@ -60,6 +61,7 @@ export function MessageList({
   messages,
   isThinking,
   liveRunId = null,
+  liveActivity = null,
   liveParts = [],
   onInspectRun,
   emptyStateDisabled = false,
@@ -73,7 +75,9 @@ export function MessageList({
   const latestReportRef = useRef<HTMLDivElement | null>(null);
   const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
   const hasStreamingAssistant = messages.some(
-    (message) => message.role === "agent" && message.status === "streaming",
+    (message) =>
+      message.role === "agent" &&
+      (message.status === "streaming" || message.status === "running"),
   );
 
   useEffect(() => {
@@ -186,9 +190,10 @@ export function MessageList({
             >
               {message.text ? (
                 <MarkdownMessage text={message.text} />
-              ) : message.status === "streaming" ? (
+              ) : message.status === "streaming" ||
+                message.status === "running" ? (
                 <p className="text-sm italic text-muted-foreground">
-                  thinking...
+                  {liveActivity ?? "thinking..."}
                 </p>
               ) : null}
               {metadata ? (

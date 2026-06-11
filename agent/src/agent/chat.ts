@@ -81,7 +81,7 @@ export type ChatStreamEvent =
       opencode_session_id: string;
     }
   | { type: "chat.delta"; content: string }
-  | { type: "tool.updated"; run_id?: string; status?: string }
+  | { type: "tool.updated"; tool?: string; run_id?: string; status?: string }
   | (ChatAgentResponse & { type: "chat.completed" })
   | { type: "chat.error"; message: string };
 
@@ -388,8 +388,27 @@ async function collectChatSessionEvents({
 }: CollectChatSessionEventsInput) {
   const seenCallIds = new Set<string>();
   const finishedCallIds = new Set<string>();
+  // opencode streams the reply token-by-token via `message.part.delta`
+  // events; `message.part.updated` only carries a one-shot full-text
+  // snapshot at the end. We accumulate deltas per part so the user sees
+  // text as it is written, and let the final snapshot reconcile each part.
+  const textByPart = new Map<string, string>();
+  const reasoningParts = new Set<string>();
+  // opencode also emits a snapshot for the user's own message part; exclude
+  // it (and any reasoning parts) so we stream only the assistant's reply.
+  const ignoredParts = new Set<string>();
+  const ignoredText = inputMessage.trim();
   let lastText = "";
   let screenerResult: ScreenerResult | null = null;
+
+  const currentReply = () => {
+    let reply = "";
+    for (const [partId, text] of textByPart) {
+      if (reasoningParts.has(partId) || ignoredParts.has(partId)) continue;
+      reply += text;
+    }
+    return reply.trim();
+  };
 
   try {
     const response = await managed.client.event.subscribe({ signal });
@@ -397,18 +416,49 @@ async function collectChatSessionEvents({
       const eventSessionId = extractSessionId(event);
       if (eventSessionId && eventSessionId !== sessionId) continue;
 
+      // Emit user-facing deltas before persisting the raw event. opencode
+      // fires hundreds of streaming events per turn; awaiting the Postgres
+      // write per event would gate token cadence on DB round-trips.
+      const partDelta = extractPartDelta(event);
+      if (
+        partDelta &&
+        partDelta.field === "text" &&
+        !ignoredParts.has(partDelta.partID)
+      ) {
+        textByPart.set(
+          partDelta.partID,
+          (textByPart.get(partDelta.partID) ?? "") + partDelta.delta,
+        );
+      }
+      const partUpdate = extractPartUpdate(event);
+      if (partUpdate) {
+        if (partUpdate.type === "reasoning") {
+          reasoningParts.add(partUpdate.id);
+        } else if (partUpdate.type === "text") {
+          // The user's own prompt arrives as a text-part snapshot; exclude it
+          // so the streamed reply never echoes the question back.
+          if (partUpdate.text.trim() === ignoredText) {
+            ignoredParts.add(partUpdate.id);
+            textByPart.delete(partUpdate.id);
+          } else {
+            reasoningParts.delete(partUpdate.id);
+            // The snapshot is authoritative for this part's final text.
+            textByPart.set(partUpdate.id, partUpdate.text);
+          }
+        }
+      }
+      const text = currentReply();
+      if (text && text !== lastText && text !== ignoredText) {
+        lastText = text;
+        await onEvent?.({ type: "chat.delta", content: text });
+      }
+
       const rawEvent = await appendEvent({
         threadId,
         eventType: extractEventType(event),
         payload: { event },
       });
       const rawEventId = rawEvent?.eventId ?? null;
-
-      const text = extractTextFromEvent(event, inputMessage);
-      if (text && text !== lastText) {
-        lastText = text;
-        await onEvent?.({ type: "chat.delta", content: text });
-      }
 
       const toolPart = extractToolPart(event);
       if (!toolPart) continue;
@@ -418,6 +468,7 @@ async function collectChatSessionEvents({
       }
       await onEvent?.({
         type: "tool.updated",
+        tool: effectiveToolName(toolPart.tool, toolPart.state?.input),
         status: toolPart.state?.status,
         run_id: extractRunId({ parts: [toolPart] }) ?? undefined,
       });
@@ -630,6 +681,42 @@ function parseJson(value: string) {
   } catch {
     return null;
   }
+}
+
+// opencode emits `message.part.delta` while streaming text (and reasoning):
+// { type, properties: { partID, field: "text", delta: "<token>" } }.
+export function extractPartDelta(event: unknown): {
+  partID: string;
+  field: string;
+  delta: string;
+} | null {
+  if (!isRecord(event) || event.type !== "message.part.delta") return null;
+  const properties = isRecord(event.properties) ? event.properties : event;
+  const partID = properties.partID;
+  const delta = properties.delta;
+  const field = properties.field;
+  if (typeof partID !== "string" || typeof delta !== "string") return null;
+  return { partID, delta, field: typeof field === "string" ? field : "text" };
+}
+
+// `message.part.updated` carries the full part snapshot (once, at the end of
+// streaming for text parts): { type, properties: { part: { id, type, text } } }.
+export function extractPartUpdate(event: unknown): {
+  id: string;
+  type: string;
+  text: string;
+} | null {
+  if (!isRecord(event) || event.type !== "message.part.updated") return null;
+  const properties = isRecord(event.properties) ? event.properties : event;
+  const part = isRecord(properties.part) ? properties.part : null;
+  if (!part || typeof part.id !== "string" || typeof part.type !== "string") {
+    return null;
+  }
+  return {
+    id: part.id,
+    type: part.type,
+    text: typeof part.text === "string" ? part.text : "",
+  };
 }
 
 export function extractTextFromEvent(event: unknown, inputMessage = "") {
