@@ -95,7 +95,7 @@ const WORKFLOW_STEP_COPY: Record<string, { title: string; description: string }>
     description: "Deciding whether to refine, broaden, or select a winner.",
   },
   finalize: {
-    title: "Preparing the recommendation",
+    title: "Preparing the report",
     description: "Packaging the chosen strategy into a readable report.",
   },
   workflow: {
@@ -812,8 +812,8 @@ function friendlyStepSummary(
     case "finalize": {
       const title = details.title;
       return typeof title === "string" && title.trim()
-        ? `Recommendation ready: ${title}`
-        : "Prepared the final recommendation.";
+        ? `Report ready: ${title}`
+        : "Prepared the final report.";
     }
     default:
       return WORKFLOW_STEP_COPY[stage]?.description ?? "Completed this research step.";
