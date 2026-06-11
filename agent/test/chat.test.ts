@@ -5,6 +5,8 @@ import {
   CHAT_ALLOWED_TOOLS,
   createChatAgent,
   extractChatResponseText,
+  extractPartDelta,
+  extractPartUpdate,
   extractTextFromEvent,
 } from "../src/agent/chat";
 
@@ -186,4 +188,85 @@ test("extractTextFromEvent keeps assistant text", () => {
   );
 
   assert.equal(text, "I can help research strategies.");
+});
+
+test("extractPartDelta reads streaming text tokens", () => {
+  const delta = extractPartDelta({
+    type: "message.part.delta",
+    properties: { partID: "prt_1", field: "text", delta: " world" },
+  });
+
+  assert.deepEqual(delta, { partID: "prt_1", field: "text", delta: " world" });
+});
+
+test("extractPartDelta ignores non-delta events", () => {
+  assert.equal(extractPartDelta({ type: "message.part.updated" }), null);
+  assert.equal(
+    extractPartDelta({ type: "message.part.delta", properties: {} }),
+    null,
+  );
+});
+
+test("extractPartUpdate reads the part snapshot", () => {
+  const update = extractPartUpdate({
+    type: "message.part.updated",
+    properties: { part: { id: "prt_2", type: "text", text: "Hello world" } },
+  });
+
+  assert.deepEqual(update, { id: "prt_2", type: "text", text: "Hello world" });
+});
+
+// The reply accumulates many message.part.delta tokens; the trailing
+// message.part.updated snapshot only reconciles the part's final text.
+test("streaming deltas accumulate into the assistant reply, excluding the prompt", () => {
+  const events = [
+    {
+      type: "message.part.updated",
+      properties: { part: { id: "user", type: "text", text: "hi there" } },
+    },
+    {
+      type: "message.part.delta",
+      properties: { partID: "asst", field: "text", delta: "Hello" },
+    },
+    {
+      type: "message.part.delta",
+      properties: { partID: "asst", field: "text", delta: " world" },
+    },
+    {
+      type: "message.part.updated",
+      properties: { part: { id: "asst", type: "text", text: "Hello world" } },
+    },
+  ];
+
+  const ignored = "hi there";
+  const textByPart = new Map<string, string>();
+  const ignoredParts = new Set<string>();
+  const snapshots: string[] = [];
+
+  for (const event of events) {
+    const delta = extractPartDelta(event);
+    if (delta && delta.field === "text" && !ignoredParts.has(delta.partID)) {
+      textByPart.set(
+        delta.partID,
+        (textByPart.get(delta.partID) ?? "") + delta.delta,
+      );
+    }
+    const update = extractPartUpdate(event);
+    if (update && update.type === "text") {
+      if (update.text.trim() === ignored) {
+        ignoredParts.add(update.id);
+        textByPart.delete(update.id);
+      } else {
+        textByPart.set(update.id, update.text);
+      }
+    }
+    let reply = "";
+    for (const [partId, value] of textByPart) {
+      if (ignoredParts.has(partId)) continue;
+      reply += value;
+    }
+    snapshots.push(reply.trim());
+  }
+
+  assert.deepEqual(snapshots, ["", "Hello", "Hello world", "Hello world"]);
 });
