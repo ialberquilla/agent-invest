@@ -1,5 +1,7 @@
 # Pond3r
 
+**Live product: [app.pond3r.xyz](https://app.pond3r.xyz)**
+
 **An AI trading terminal for GMX perpetuals.** Describe an investment goal in plain language;
 Pond3r turns it into a backtested, validated strategy — single-position or portfolio-level across
 many markets — and executes it on GMX. Your funds stay in a **non-custodial vault**, and an
